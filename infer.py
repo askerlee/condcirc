@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import inspect
 import json
 import os
@@ -19,7 +20,12 @@ import torch
 from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
-from recirculation import MagnitudeDiffStats, RecirculationConfig, recirculate
+from recirculation import (
+    MagnitudeDiffStats,
+    RecirculationConfig,
+    SimilarityStats,
+    recirculate,
+)
 
 
 EXAMPLE_QUERIES = (
@@ -269,7 +275,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="https://api.openai.com/v1",
         help="OpenAI API base URL, also usable with compatible APIs.",
     )
-    parser.add_argument("--destination", type=int, default=4)
+    parser.add_argument(
+        "--destination",
+        type=int,
+        default=4,
+        help="Destination block index; -n selects the nth-to-last block (default: 4).",
+    )
     parser.add_argument(
         "--source",
         type=int,
@@ -281,6 +292,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("source", "layerwise"),
         default="source",
         help="Recirculate source features or repeat each selected layer in place.",
+    )
+    parser.add_argument(
+        "--override-to-global-attn",
+        action="store_true",
+        help=(
+            "Override --destination/--source with the nearest full/global-attention "
+            "layers, for models that interleave sliding and global attention."
+        ),
     )
     # alpha: weight of the source residual stream in the convex combination. 
     parser.add_argument("--alpha", type=float, default=0.5)
@@ -328,6 +347,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0.67,
         metavar="THRESHOLD",
         help="Conditional recirculation similarity threshold (default: 0.67).",
+    )
+    parser.add_argument(
+        "--debug-layer-sim",
+        action="store_true",
+        help=(
+            "Collect per-token source/destination activation similarity and "
+            "print summary stats after each query, even without recirculation."
+        ),
     )
     parser.add_argument(
         "--exp_emb",
@@ -511,12 +538,38 @@ def resolve_source(source: int, num_blocks: int) -> int:
     return num_blocks + source if source < 0 else source
 
 
+def find_global_attention_layer_indices(
+    model: nn.Module, num_blocks: int
+) -> tuple[int, ...] | None:
+    # Models that interleave sliding-window and full/global attention layers
+    # (e.g. Gemma) expose the pattern via layer_types or sliding_window_pattern.
+    text_config = getattr(model.config, "text_config", model.config)
+    layer_types = getattr(text_config, "layer_types", None)
+    if layer_types is not None and len(layer_types) == num_blocks:
+        return tuple(
+            index
+            for index, layer_type in enumerate(layer_types)
+            if layer_type in ("full_attention", "global_attention")
+        )
+    pattern = getattr(text_config, "sliding_window_pattern", None)
+    if isinstance(pattern, int) and pattern > 0:
+        return tuple(range(pattern - 1, num_blocks, pattern))
+    return None
+
+
+def nearest_global_layer(candidates: Sequence[int], target: int) -> int:
+    return min(candidates, key=lambda candidate: (abs(candidate - target), candidate))
+
+
 def find_decoder_blocks(model: nn.Module) -> Sequence[nn.Module]:
     candidate_paths = (
         ("model", "layers"),
         ("transformer", "h"),
         ("gpt_neox", "layers"),
         ("transformer", "blocks"),
+        # Multimodal wrappers (e.g. Gemma 4) nest the text decoder under language_model.
+        ("model", "language_model", "layers"),
+        ("language_model", "layers"),
     )
     for path in candidate_paths:
         value: Any = model
@@ -886,6 +939,7 @@ def main() -> None:
         ).to(dtype=token_embeddings.dtype)
 
     blocks = find_decoder_blocks(model)
+    global_attention_layers = find_global_attention_layer_indices(model, len(blocks))
 
     def model_step(
         active_model: nn.Module, token: Tensor, cache: DynamicCache
@@ -975,6 +1029,9 @@ def main() -> None:
     ) -> tuple[Tensor, list[dict[str, float | int | str]]]:
         torch.manual_seed(run_args.seed)
         magnitude_diff_stats = MagnitudeDiffStats()
+        similarity_stats = (
+            SimilarityStats() if run_args.debug_layer_sim else None
+        )
         use_expert_shards = expert_shards is not None and run_args.tempshard
         condition_threshold = (
             run_args.cond_recirculate_thres
@@ -996,6 +1053,42 @@ def main() -> None:
             else None
         )
 
+        # Probe the residual streams with a single pass so the similarity stats
+        # are also collected for runs without recirculation.
+        def probe_step(
+            tokens: Tensor, cache: DynamicCache
+        ) -> tuple[Tensor, DynamicCache]:
+            return recirculate(
+                tokens,
+                blocks=blocks,
+                cache=cache,
+                step=student_step,
+                rewind_one=rewind_dynamic_cache,
+                config=dataclasses.replace(run_config, mode="source"),
+                passes=1,
+                rewind_layer=rewind_dynamic_cache_layer,
+                similarity_stats=similarity_stats,
+            )
+
+        plain_step = student_step if similarity_stats is None else probe_step
+
+        def report_stats() -> None:
+            if use_recirculation and magnitude_diff_stats.mean is not None:
+                print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
+            if use_recirculation and magnitude_diff_stats.projection_means:
+                projection_means = [
+                    round(mean, 3)
+                    for mean in magnitude_diff_stats.projection_means
+                ]
+                print(f"projection_means = {projection_means}")
+            summary = similarity_stats.summary() if similarity_stats else None
+            if summary is not None:
+                formatted = ", ".join(
+                    f"{name}={value:.3f}" if name != "count" else f"{name}={value:.0f}"
+                    for name, value in summary.items()
+                )
+                print(f"src_dst_similarity: {formatted}")
+
         if not args.debug:
             if use_recirculation:
                 prompt_logits, student_cache = recirculate(
@@ -1010,6 +1103,7 @@ def main() -> None:
                     ),
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
+                    similarity_stats=similarity_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_threshold=condition_threshold,
@@ -1018,7 +1112,7 @@ def main() -> None:
             else:
                 token_logits: Tensor | None = None
                 for position in range(input_ids.shape[1]):
-                    token_logits, student_cache = student_step(
+                    token_logits, student_cache = plain_step(
                         input_ids[:, position : position + 1], student_cache
                     )
                 assert token_logits is not None
@@ -1043,24 +1137,18 @@ def main() -> None:
                         ),
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
+                        similarity_stats=similarity_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_threshold=condition_threshold,
                     )
                 else:
-                    token_logits, student_cache = student_step(
+                    token_logits, student_cache = plain_step(
                         next_token, student_cache
                     )
                 next_logits = token_logits[:, -1, :]
 
-            if use_recirculation and magnitude_diff_stats.mean is not None:
-                print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
-            if use_recirculation and magnitude_diff_stats.projection_means:
-                projection_means = [
-                    round(mean, 3)
-                    for mean in magnitude_diff_stats.projection_means
-                ]
-                print(f"projection_means = {projection_means}")
+            report_stats()
             return generated_ids, []
 
         assert teacher_model is not None
@@ -1132,6 +1220,7 @@ def main() -> None:
                     ),
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
+                    similarity_stats=similarity_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_threshold=condition_threshold,
@@ -1139,7 +1228,7 @@ def main() -> None:
             logits: Tensor | None = None
             cache = student_cache
             for position in range(input_ids.shape[1]):
-                logits, cache = student_step(
+                logits, cache = plain_step(
                     input_ids[:, position : position + 1], cache
                 )
             assert logits is not None
@@ -1203,13 +1292,14 @@ def main() -> None:
                         ),
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
+                        similarity_stats=similarity_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_threshold=condition_threshold,
                     )
                 else:
                     student_future = executor.submit(
-                        student_step, next_token, student_cache
+                        plain_step, next_token, student_cache
                     )
                 teacher_logits, teacher_cache = teacher_future.result()
                 student_logits, student_cache = student_future.result()
@@ -1219,13 +1309,7 @@ def main() -> None:
         for handle in teacher_activation_handles:
             handle.remove()
 
-        if use_recirculation and magnitude_diff_stats.mean is not None:
-            print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
-        if use_recirculation and magnitude_diff_stats.projection_means:
-            projection_means = [
-                round(mean, 3) for mean in magnitude_diff_stats.projection_means
-            ]
-            print(f"projection_means = {projection_means}")
+        report_stats()
 
         return generated_ids, similarities
 
@@ -1237,9 +1321,22 @@ def main() -> None:
     def timed_generate(
         use_recirculation: bool, run_args: argparse.Namespace
     ) -> tuple[Tensor, list[dict[str, float | int | str]], float]:
+        destination = resolve_source(run_args.destination, len(blocks))
+        source = resolve_source(run_args.source, len(blocks))
+        if run_args.override_to_global_attn and global_attention_layers:
+            snapped_destination = nearest_global_layer(global_attention_layers, destination)
+            snapped_source = nearest_global_layer(global_attention_layers, source)
+            if snapped_destination != destination or snapped_source != source:
+                print(
+                    f"Overriding destination={destination}, source={source} with "
+                    f"nearest global-attention layers destination={snapped_destination}, "
+                    f"source={snapped_source}."
+                )
+            destination = snapped_destination
+            source = snapped_source
         run_config = RecirculationConfig(
-            destination=run_args.destination,
-            source=resolve_source(run_args.source, len(blocks)),
+            destination=destination,
+            source=source,
             alpha=run_args.alpha,
             beta=run_args.beta,
             ortho_mix=run_args.ortho_mix,

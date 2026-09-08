@@ -49,6 +49,33 @@ class RecirculationConfig:
 
 
 @dataclass
+class SimilarityStats:
+    values: list[float] = field(default_factory=list)
+
+    def summary(self) -> dict[str, float] | None:
+        if not self.values:
+            return None
+        ordered = sorted(self.values)
+        count = len(ordered)
+        mean = sum(ordered) / count
+        variance = sum((value - mean) ** 2 for value in ordered) / count
+
+        def quantile(fraction: float) -> float:
+            return ordered[min(count - 1, int(fraction * count))]
+
+        return {
+            "count": count,
+            "mean": mean,
+            "std": variance**0.5,
+            "min": ordered[0],
+            "p25": quantile(0.25),
+            "median": quantile(0.5),
+            "p75": quantile(0.75),
+            "max": ordered[-1],
+        }
+
+
+@dataclass
 class MagnitudeDiffStats:
     fraction_sum: float = 0.0
     count: int = 0
@@ -292,6 +319,7 @@ def recirculate(
     select_expert_subset: Callable[[int], None] | None = None,
     expected_embedding: Callable[[Tensor], Tensor] | None = None,
     magnitude_diff_stats: MagnitudeDiffStats | None = None,
+    similarity_stats: SimilarityStats | None = None,
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_threshold: float | None = None,
@@ -313,6 +341,10 @@ def recirculate(
         if condition_threshold is not None:
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
+            )
+        if similarity_stats is not None:
+            raise ValueError(
+                "Source/destination similarity stats require --mode source."
             )
         if rewind_layer is None:
             raise ValueError("Layerwise mode requires rewind_layer.")
@@ -354,9 +386,17 @@ def recirculate(
             hooks.mode = "off"
             final_logits = first_logits
 
-            should_recirculate = (
-                condition_threshold is None
-                or hooks.activation_similarity() >= condition_threshold
+            similarity = (
+                hooks.activation_similarity()
+                if similarity_stats is not None or condition_threshold is not None
+                else None
+            )
+            if similarity_stats is not None:
+                assert similarity is not None
+                similarity_stats.values.append(similarity)
+
+            should_recirculate = condition_threshold is None or (
+                similarity is not None and similarity >= condition_threshold
             )
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)

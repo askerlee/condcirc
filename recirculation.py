@@ -360,6 +360,7 @@ def recirculate(
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
+    gating_pair_index: int = 0,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
@@ -421,6 +422,10 @@ def recirculate(
         )
     if condition_thresholds is not None and len(condition_thresholds) == 1:
         condition_thresholds = condition_thresholds * len(config.pairs)
+    if not 0 <= gating_pair_index < len(config.pairs):
+        raise ValueError(
+            f"gating_pair_index must be in [0, {len(config.pairs)})."
+        )
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
@@ -443,12 +448,17 @@ def recirculate(
                 assert similarities is not None
                 similarity_stats.values.append(sum(similarities) / len(similarities))
 
-            should_recirculate = condition_thresholds is None or all(
-                similarity >= threshold
-                for similarity, threshold in zip(similarities, condition_thresholds)
+            should_recirculate = condition_thresholds is None or (
+                similarities[gating_pair_index]
+                >= condition_thresholds[gating_pair_index]
             )
-            hooks.active_pairs = tuple(
-                should_recirculate for _pair in config.pairs
+            hooks.active_pairs = (
+                tuple(True for _pair in config.pairs)
+                if condition_thresholds is None
+                else tuple(
+                    should_recirculate and similarity >= threshold
+                    for similarity, threshold in zip(similarities, condition_thresholds)
+                )
             )
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)

@@ -334,8 +334,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="THRESHOLD",
         help=(
             "Conditional similarity thresholds in --pair order. Provide one value "
-            "for all pairs or one per pair; all pairs must meet their thresholds "
-            "to recirculate (default: 0.67)."
+            "for all pairs or one per pair; each pair must meet its own threshold "
+            "to inject (default: 0.67)."
+        ),
+    )
+    parser.add_argument(
+        "--gating-pair-index",
+        type=int,
+        default=0,
+        metavar="INDEX",
+        help=(
+            "Zero-based --pair index that must meet its threshold before any "
+            "conditional recirculation occurs (default: 0)."
         ),
     )
     parser.add_argument(
@@ -1115,6 +1125,7 @@ def main() -> None:
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
+                    gating_pair_index=run_args.gating_pair_index,
                 )
                 next_logits = prompt_logits[:, -1, :]
             else:
@@ -1150,6 +1161,7 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
+                        gating_pair_index=run_args.gating_pair_index,
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1238,6 +1250,7 @@ def main() -> None:
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
+                    gating_pair_index=run_args.gating_pair_index,
                 )
             logits: Tensor | None = None
             cache = student_cache
@@ -1311,6 +1324,7 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
+                        gating_pair_index=run_args.gating_pair_index,
                     )
                 else:
                     student_future = executor.submit(

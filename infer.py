@@ -10,7 +10,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -258,12 +257,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Run parallel teacher/student inference and record distribution similarities.",
-    )
-    parser.add_argument(
-        "--teacher-model",
-        default=None,
-        help="Teacher checkpoint used by --debug (default: --model).",
+        help=(
+            "Compare unmodified and recirculated passes of --model and record "
+            "distribution similarities."
+        ),
     )
     parser.add_argument(
         "--evaluation-model",
@@ -322,11 +319,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Recirculate only when the inference model's source/destination "
-            "activation similarity reaches --cond-recirculate-thres."
+            "activation similarity reaches --act-sim-thres."
         ),
     )
     parser.add_argument(
-        "--cond-recirculate-thres",
+        "--act-sim-thres",
         type=float,
         nargs="+",
         default=[0.67],
@@ -335,6 +332,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Conditional similarity thresholds in --pair order. Provide one value "
             "for all pairs or one per pair; each pair must meet its own threshold "
             "to inject (default: 0.67)."
+        ),
+    )
+    parser.add_argument(
+        "--margin-thres",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Primary conditional gate: recirculate only when the top-1 versus "
+            "top-2 probability margin is at most this value. Requires "
+            "--cond-recirculate."
         ),
     )
     parser.add_argument(
@@ -474,7 +482,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             (
                 parser._option_string_actions[option_name].dest,
                 (
-                    not getattr(args, parser._option_string_actions[option_name].dest)
+                    getattr(variation, parser._option_string_actions[option_name].dest)
                     if parser._option_string_actions[option_name].nargs == 0
                     and isinstance(
                         parser._option_string_actions[option_name].const, bool
@@ -611,6 +619,11 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
     )
 
 
+def validate_run_arguments(args: argparse.Namespace) -> None:
+    if args.margin_thres is not None and not args.cond_recirculate:
+        raise ValueError("--margin-thres requires --cond-recirculate.")
+
+
 def main() -> None:
     args = parse_args()
     if args.list_queries:
@@ -622,6 +635,7 @@ def main() -> None:
         raise ValueError("--max-new-tokens must be nonnegative.")
     if args.passes < 1:
         raise ValueError("--passes must be at least 1.")
+    validate_run_arguments(args)
     if args.exp_emb_K < 1:
         raise ValueError("--exp_emb_K must be at least 1.")
     if args.exp_emb and (args.mode != "source" or args.pairs != [[-1, 0]]):
@@ -722,20 +736,6 @@ def main() -> None:
         print(args.evaluation_output.read_text(encoding="utf-8"), end="")
         return
 
-    teacher_model: nn.Module | None = None
-    teacher_input_device: torch.device | None = None
-    if args.debug:
-        teacher_model_name = args.teacher_model or args.model
-        teacher_model = AutoModelForCausalLM.from_pretrained(
-            teacher_model_name, **load_kwargs
-        )
-        if not use_device_map:
-            teacher_model.to(device)
-        teacher_model.eval()
-        teacher_input_device = teacher_model.get_input_embeddings().weight.device
-        print(f"Student model: {args.model}")
-        print(f"Teacher model: {teacher_model_name}")
-
     def expected_embedding(logits: Tensor, requested_top_k: int) -> Tensor:
         embedding = model.get_input_embeddings()
         top_k = min(requested_top_k, logits.shape[-1])
@@ -788,11 +788,6 @@ def main() -> None:
     def student_step(token: Tensor, cache: DynamicCache) -> tuple[Tensor, DynamicCache]:
         return model_step(model, token, cache)
 
-    def teacher_step(token: Tensor, cache: DynamicCache) -> tuple[Tensor, DynamicCache]:
-        if teacher_model is None or teacher_input_device is None:
-            raise RuntimeError("Teacher inference requires --debug.")
-        return model_step(teacher_model, token.to(teacher_input_device), cache)
-
     eos_token_ids = model.generation_config.eos_token_id
     if isinstance(eos_token_ids, int):
         eos_token_ids = [eos_token_ids]
@@ -842,7 +837,7 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
-    ) -> tuple[Tensor, list[dict[str, float | int | str]]]:
+    ) -> tuple[Tensor, list[dict[str, Any]]]:
         torch.manual_seed(run_args.seed)
         magnitude_diff_stats = MagnitudeDiffStats()
         similarity_stats = (
@@ -852,7 +847,7 @@ def main() -> None:
             AdjacentLayerSimilarityStats() if run_args.debug_adj_layer_sim else None
         )
         condition_thresholds = (
-            run_args.cond_recirculate_thres
+            run_args.act_sim_thres
             if run_args.cond_recirculate
             else None
         )
@@ -933,6 +928,7 @@ def main() -> None:
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
+                    margin_threshold=run_args.margin_thres,
                     gating_pair_index=run_args.gating_pair_index,
                 )
                 next_logits = prompt_logits[:, -1, :]
@@ -966,6 +962,7 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
+                        margin_threshold=run_args.margin_thres,
                         gating_pair_index=run_args.gating_pair_index,
                     )
                 else:
@@ -977,165 +974,77 @@ def main() -> None:
             report_stats()
             return generated_ids, []
 
-        assert teacher_model is not None
-        # Triton autotuners use process-global caches that are not safe when two
-        # identical FP8 kernels are compiled for the first time concurrently.
-        # Run one throwaway token through each model sequentially before the
-        # teacher and student enter the thread pool.
-        warmup_token = input_ids[:, :1]
-        student_step(warmup_token, DynamicCache(config=model.config))
-        teacher_step(
-            warmup_token,
-            DynamicCache(config=teacher_model.config),
-        )
-        synchronize_devices()
-        teacher_cache = DynamicCache(config=teacher_model.config)
-
-        teacher_blocks = find_decoder_blocks(teacher_model)
-        teacher_activations: dict[int, Tensor] = {}
-
-        def capture_teacher_activation(layer_index: int) -> Callable[..., None]:
-            def capture(
-                _module: nn.Module, _inputs: tuple[Any, ...], output: Any
-            ) -> None:
-                residual = output[0] if isinstance(output, tuple) else output
-                if not isinstance(residual, Tensor):
-                    raise TypeError(
-                        "A teacher transformer block must return its residual "
-                        "stream first."
-                    )
-                teacher_activations[layer_index] = residual[:, -1, :].detach().clone()
-
-            return capture
-
-        teacher_activation_handles = tuple(
-            teacher_blocks[layer_index].register_forward_hook(
-                capture_teacher_activation(layer_index)
-            )
-            for layer_index in {
-                layer_index for pair in run_config.pairs for layer_index in pair
-            }
-        )
-
-        def teacher_activation_similarity() -> float:
-            similarities = []
-            try:
-                for source_index, destination_index in run_config.pairs:
-                    destination = teacher_activations[destination_index].float()
-                    source = teacher_activations[source_index].to(
-                        destination.device, dtype=torch.float32
-                    )
-                    similarities.append(
-                        torch.nn.functional.cosine_similarity(
-                            destination, source, dim=-1
-                        ).mean()
-                    )
-            except KeyError as error:
-                raise RuntimeError(
-                    "Teacher source/destination activations were not captured."
-                ) from error
-            return round(float(torch.stack(similarities).mean().item()), 3)
-
-        def student_prefill() -> tuple[Tensor, DynamicCache]:
-            if use_recirculation:
-                return recirculate(
-                    input_ids,
-                    blocks=blocks,
-                    cache=student_cache,
-                    step=student_step,
-                    rewind_one=rewind_dynamic_cache,
-                    config=run_config,
-                    expected_embedding=expected_embedding_fn,
-                    magnitude_diff_stats=magnitude_diff_stats,
-                    similarity_stats=similarity_stats,
-                    adjacent_layer_stats=adjacent_layer_stats,
-                    passes=run_args.passes,
-                    rewind_layer=rewind_dynamic_cache_layer,
-                    condition_thresholds=condition_thresholds,
-                    gating_pair_index=run_args.gating_pair_index,
-                )
-            logits: Tensor | None = None
-            cache = student_cache
-            for position in range(input_ids.shape[1]):
-                logits, cache = plain_step(
-                    input_ids[:, position : position + 1], cache
-                )
-            assert logits is not None
-            return logits, cache
-
-        def teacher_prefill() -> tuple[Tensor, DynamicCache]:
-            logits: Tensor | None = None
-            cache = teacher_cache
-            teacher_prompt = input_ids.to(teacher_input_device)
-            for position in range(teacher_prompt.shape[1]):
-                logits, cache = teacher_step(
-                    teacher_prompt[:, position : position + 1], cache
-                )
-            assert logits is not None
-            return logits, cache
-
-        similarities: list[dict[str, float | int | str]] = []
+        similarities: list[dict[str, Any]] = []
         generated_ids = input_ids.clone()
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            teacher_future = executor.submit(teacher_prefill)
-            student_future = executor.submit(student_prefill)
-            teacher_logits, teacher_cache = teacher_future.result()
-            student_logits, student_cache = student_future.result()
+        first_pass_logits: list[Tensor] = []
+        first_pass_similarities: list[tuple[float, ...]] = []
+        pass_probability_margins: list[list[float]] = []
+        student_logits, student_cache = recirculate(
+            input_ids,
+            blocks=blocks,
+            cache=student_cache,
+            step=student_step,
+            rewind_one=rewind_dynamic_cache,
+            config=run_config,
+            expected_embedding=expected_embedding_fn,
+            magnitude_diff_stats=magnitude_diff_stats,
+            similarity_stats=similarity_stats,
+            adjacent_layer_stats=adjacent_layer_stats,
+            passes=run_args.passes if use_recirculation else 1,
+            rewind_layer=rewind_dynamic_cache_layer,
+            condition_thresholds=condition_thresholds,
+            margin_threshold=run_args.margin_thres,
+            gating_pair_index=run_args.gating_pair_index,
+            first_pass_logits=first_pass_logits,
+            first_pass_similarities=first_pass_similarities,
+            pass_probability_margins=pass_probability_margins,
+        )
+        teacher_logits = first_pass_logits[-1]
+        teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
+        teacher_next_logits = teacher_logits[:, -1, :]
+        student_next_logits = student_logits[:, -1, :]
+
+        for token_index in range(run_args.max_new_tokens):
+            comparison = distribution_similarity(teacher_next_logits, student_next_logits)
+            comparison["teacher_src_dst_sim"] = teacher_src_dst_sim
+            comparison["top1_top2_margin"] = pass_probability_margins[-1]
+            next_token = sample_token(student_next_logits, run_args.temperature)
+            comparison.update(
+                token_index=token_index,
+                selected_token=tokenizer.decode(next_token[0]),
+            )
+            similarities.append(comparison)
+            generated_ids = torch.cat((generated_ids, next_token), dim=1)
+
+            if next_token.item() in eos_token_ids:
+                break
+
+            student_logits, student_cache = recirculate(
+                next_token,
+                blocks=blocks,
+                cache=student_cache,
+                step=student_step,
+                rewind_one=rewind_dynamic_cache,
+                config=run_config,
+                expected_embedding=expected_embedding_fn,
+                magnitude_diff_stats=magnitude_diff_stats,
+                similarity_stats=similarity_stats,
+                adjacent_layer_stats=adjacent_layer_stats,
+                passes=run_args.passes if use_recirculation else 1,
+                rewind_layer=rewind_dynamic_cache_layer,
+                condition_thresholds=condition_thresholds,
+                margin_threshold=run_args.margin_thres,
+                gating_pair_index=run_args.gating_pair_index,
+                first_pass_logits=first_pass_logits,
+                first_pass_similarities=first_pass_similarities,
+                pass_probability_margins=pass_probability_margins,
+            )
+            teacher_logits = first_pass_logits[-1]
+            teacher_src_dst_sim = (
+                sum(first_pass_similarities[-1]) / len(run_config.pairs)
+            )
             teacher_next_logits = teacher_logits[:, -1, :]
             student_next_logits = student_logits[:, -1, :]
-
-            for token_index in range(run_args.max_new_tokens):
-                comparison = distribution_similarity(
-                    teacher_next_logits, student_next_logits
-                )
-                comparison["teacher_src_dst_sim"] = (
-                    teacher_activation_similarity()
-                )
-                next_token = sample_token(
-                    student_next_logits, run_args.temperature
-                )
-                comparison.update(
-                    token_index=token_index,
-                    selected_token=tokenizer.decode(next_token[0]),
-                )
-                similarities.append(comparison)
-                generated_ids = torch.cat((generated_ids, next_token), dim=1)
-
-                if next_token.item() in eos_token_ids:
-                    break
-
-                teacher_future = executor.submit(
-                    teacher_step, next_token, teacher_cache
-                )
-                if use_recirculation:
-                    student_future = executor.submit(
-                        recirculate,
-                        next_token,
-                        blocks=blocks,
-                        cache=student_cache,
-                        step=student_step,
-                        rewind_one=rewind_dynamic_cache,
-                        config=run_config,
-                        expected_embedding=expected_embedding_fn,
-                        magnitude_diff_stats=magnitude_diff_stats,
-                        similarity_stats=similarity_stats,
-                        adjacent_layer_stats=adjacent_layer_stats,
-                        passes=run_args.passes,
-                        rewind_layer=rewind_dynamic_cache_layer,
-                        condition_thresholds=condition_thresholds,
-                        gating_pair_index=run_args.gating_pair_index,
-                    )
-                else:
-                    student_future = executor.submit(
-                        plain_step, next_token, student_cache
-                    )
-                teacher_logits, teacher_cache = teacher_future.result()
-                student_logits, student_cache = student_future.result()
-                teacher_next_logits = teacher_logits[:, -1, :]
-                student_next_logits = student_logits[:, -1, :]
-
-        for handle in teacher_activation_handles:
-            handle.remove()
 
         report_stats()
 
@@ -1195,6 +1104,7 @@ def main() -> None:
             ablation_args = argparse.Namespace(**vars(args))
             for option, value in overrides:
                 setattr(ablation_args, option, value)
+            validate_run_arguments(ablation_args)
             arguments = format_run_arguments(ablation_args, label_options)
             runs.append((ablation_args, True, f"Ablation: {arguments}"))
 
@@ -1204,8 +1114,13 @@ def main() -> None:
         else tuple(EXAMPLE_QUERIES[index - 1] for index in args.query_indices)
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
+    model_slug = args.model.rstrip("/").rsplit("/", maxsplit=1)[-1]
+    similarities_path = args.similarities_output.with_name(
+        f"{args.similarities_output.stem}-{model_slug}"
+        f"{args.similarities_output.suffix}"
+    )
     similarities_file = (
-        args.similarities_output.open("w", encoding="utf-8")
+        similarities_path.open("w", encoding="utf-8")
         if args.debug and args.similarities_output
         else None
     )

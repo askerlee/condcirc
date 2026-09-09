@@ -101,6 +101,12 @@ def _residual(output: Any) -> Tensor:
     return hidden
 
 
+def _top1_top2_probability_margin(logits: Tensor) -> float:
+    probabilities = torch.softmax(logits[:, -1, :].float(), dim=-1)
+    top_two = torch.topk(probabilities, k=2, dim=-1).values
+    return float((top_two[..., 0] - top_two[..., 1]).item())
+
+
 class _Hooks:
     def __init__(
         self,
@@ -360,7 +366,11 @@ def recirculate(
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
+    margin_threshold: float | None = None,
     gating_pair_index: int = 0,
+    first_pass_logits: list[Tensor] | None = None,
+    first_pass_similarities: list[tuple[float, ...]] | None = None,
+    pass_probability_margins: list[list[float]] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
@@ -371,6 +381,10 @@ def recirculate(
         if condition_thresholds is not None:
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
+            )
+        if margin_threshold is not None:
+            raise ValueError(
+                "Margin-gated recirculation currently requires --mode source."
             )
         if similarity_stats is not None:
             raise ValueError(
@@ -398,6 +412,10 @@ def recirculate(
                     select_expert_subset(0)
                 token_logits, cache = step(token, hooks.cache)
                 hooks.cache = cache
+                if pass_probability_margins is not None:
+                    pass_probability_margins.append(
+                        [_top1_top2_probability_margin(token_logits)]
+                    )
                 logits.append(token_logits)
         finally:
             if select_expert_subset is not None:
@@ -426,6 +444,10 @@ def recirculate(
         raise ValueError(
             f"gating_pair_index must be in [0, {len(config.pairs)})."
         )
+    if margin_threshold is not None and condition_thresholds is None:
+        raise ValueError(
+            "margin_threshold requires condition_thresholds."
+        )
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
@@ -436,24 +458,45 @@ def recirculate(
             hooks.mode = "capture"
             first_logits, cache = step(token, cache)
             hooks.mode = "off"
+            if first_pass_logits is not None:
+                first_pass_logits.append(first_logits)
+            first_margin = (
+                _top1_top2_probability_margin(first_logits)
+                if margin_threshold is not None or pass_probability_margins is not None
+                else None
+            )
+            token_pass_probability_margins = (
+                [first_margin]
+                if pass_probability_margins is not None
+                else None
+            )
             final_logits = first_logits
             hooks.record_adjacent_similarities()
 
             similarities = (
                 hooks.activation_similarities()
-                if similarity_stats is not None or condition_thresholds is not None
+                if (
+                    similarity_stats is not None
+                    or condition_thresholds is not None
+                    or first_pass_similarities is not None
+                )
                 else None
             )
+            if first_pass_similarities is not None:
+                assert similarities is not None
+                first_pass_similarities.append(similarities)
             if similarity_stats is not None:
                 assert similarities is not None
                 similarity_stats.values.append(sum(similarities) / len(similarities))
 
-            should_recirculate = condition_thresholds is None or (
-                similarities[gating_pair_index]
+            margin_gate = margin_threshold is None or first_margin <= margin_threshold
+            should_recirculate = margin_gate and (
+                condition_thresholds is None
+                or similarities[gating_pair_index]
                 >= condition_thresholds[gating_pair_index]
             )
             hooks.active_pairs = (
-                tuple(True for _pair in config.pairs)
+                tuple(margin_gate for _pair in config.pairs)
                 if condition_thresholds is None
                 else tuple(
                     should_recirculate and similarity >= threshold
@@ -475,6 +518,13 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
+                if token_pass_probability_margins is not None:
+                    token_pass_probability_margins.append(
+                        _top1_top2_probability_margin(final_logits)
+                    )
+            if pass_probability_margins is not None:
+                assert token_pass_probability_margins is not None
+                pass_probability_margins.append(token_pass_probability_margins)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

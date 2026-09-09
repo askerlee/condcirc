@@ -76,6 +76,20 @@ class SimilarityStats:
 
 
 @dataclass
+class AdjacentLayerSimilarityStats:
+    """Per-token cosine similarity between every pair of adjacent blocks."""
+
+    per_layer: list[SimilarityStats] = field(default_factory=list)
+
+    def ensure_layers(self, count: int) -> None:
+        while len(self.per_layer) < count:
+            self.per_layer.append(SimilarityStats())
+
+    def summaries(self) -> list[dict[str, float] | None]:
+        return [stats.summary() for stats in self.per_layer]
+
+
+@dataclass
 class MagnitudeDiffStats:
     fraction_sum: float = 0.0
     count: int = 0
@@ -109,6 +123,7 @@ class _Hooks:
         blocks: Sequence[nn.Module],
         cfg: RecirculationConfig,
         magnitude_diff_stats: MagnitudeDiffStats,
+        adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     ) -> None:
         if not 0 <= cfg.destination < cfg.source < len(blocks):
             raise ValueError("Expected 0 <= destination < source < number of blocks.")
@@ -120,11 +135,45 @@ class _Hooks:
         self.expected_embedding: Tensor | None = None
         self.recirculation_index = 0
         self.magnitude_diff_stats = magnitude_diff_stats
-        self.handles = (
+        self.adjacent_layer_stats = adjacent_layer_stats
+        self.layer_residuals: dict[int, Tensor] = {}
+        handles = [
             blocks[cfg.destination].register_forward_hook(self._save_destination),
             blocks[cfg.source].register_forward_hook(self._save_source),
             blocks[cfg.destination + 1].register_forward_pre_hook(self._inject),
-        )
+        ]
+        if adjacent_layer_stats is not None:
+            adjacent_layer_stats.ensure_layers(len(blocks) - 1)
+            handles.extend(
+                block.register_forward_hook(self._save_layer(layer_index))
+                for layer_index, block in enumerate(blocks)
+            )
+        self.handles = tuple(handles)
+
+    def _save_layer(self, layer_index: int) -> Callable[..., None]:
+        def hook(_module: nn.Module, _inputs: tuple, output: Any) -> None:
+            if self.mode == "capture":
+                self.layer_residuals[layer_index] = (
+                    _residual(output)[:, -1, :].detach().float()
+                )
+
+        return hook
+
+    def record_adjacent_similarities(self) -> None:
+        if self.adjacent_layer_stats is None:
+            return
+        for layer_index in range(len(self.adjacent_layer_stats.per_layer)):
+            previous = self.layer_residuals.get(layer_index)
+            current = self.layer_residuals.get(layer_index + 1)
+            if previous is None or current is None:
+                continue
+            cosine = torch.nn.functional.cosine_similarity(
+                previous, current.to(previous.device), dim=-1
+            )
+            self.adjacent_layer_stats.per_layer[layer_index].values.append(
+                float(cosine.mean().item())
+            )
+        self.layer_residuals.clear()
 
     def _save_destination(self, _module: nn.Module, _inputs: tuple, output: Any) -> None:
         if self.mode in ("capture", "inject"):
@@ -320,6 +369,7 @@ def recirculate(
     expected_embedding: Callable[[Tensor], Tensor] | None = None,
     magnitude_diff_stats: MagnitudeDiffStats | None = None,
     similarity_stats: SimilarityStats | None = None,
+    adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_threshold: float | None = None,
@@ -345,6 +395,10 @@ def recirculate(
         if similarity_stats is not None:
             raise ValueError(
                 "Source/destination similarity stats require --mode source."
+            )
+        if adjacent_layer_stats is not None:
+            raise ValueError(
+                "Adjacent-layer similarity stats require --mode source."
             )
         if rewind_layer is None:
             raise ValueError("Layerwise mode requires rewind_layer.")
@@ -372,7 +426,12 @@ def recirculate(
         return torch.cat(logits, dim=1), hooks.cache
 
     logits = []
-    hooks = _Hooks(blocks, config, magnitude_diff_stats or MagnitudeDiffStats())
+    hooks = _Hooks(
+        blocks,
+        config,
+        magnitude_diff_stats or MagnitudeDiffStats(),
+        adjacent_layer_stats=adjacent_layer_stats,
+    )
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
@@ -385,6 +444,7 @@ def recirculate(
             first_logits, cache = step(token, cache)
             hooks.mode = "off"
             final_logits = first_logits
+            hooks.record_adjacent_similarities()
 
             similarity = (
                 hooks.activation_similarity()

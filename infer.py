@@ -21,6 +21,7 @@ from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
 from recirculation import (
+    AdjacentLayerSimilarityStats,
     MagnitudeDiffStats,
     RecirculationConfig,
     SimilarityStats,
@@ -357,6 +358,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--debug-adj-layer-sim",
+        action="store_true",
+        help=(
+            "Collect per-token cosine similarity between every pair of "
+            "adjacent decoder blocks and print summary stats after each query."
+        ),
+    )
+    parser.add_argument(
         "--exp_emb",
         action="store_true",
         help="Subtract the top-K expected token embedding from the source latent.",
@@ -416,7 +425,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default="results.json",
+        default=None,
         help="Save queries and generated outputs as pretty JSON.",
     )
     parser.add_argument(
@@ -940,6 +949,14 @@ def main() -> None:
 
     blocks = find_decoder_blocks(model)
     global_attention_layers = find_global_attention_layer_indices(model, len(blocks))
+    if args.output is None:
+        source = resolve_source(args.source, len(blocks))
+        destination = resolve_source(args.destination, len(blocks))
+        if args.override_to_global_attn and global_attention_layers:
+            destination = nearest_global_layer(global_attention_layers, destination)
+            source = nearest_global_layer(global_attention_layers, source)
+        model_slug = args.model.rsplit("/", 1)[-1]
+        args.output = Path(f"{model_slug}-{source}-{destination}.json")
 
     def model_step(
         active_model: nn.Module, token: Tensor, cache: DynamicCache
@@ -1032,6 +1049,9 @@ def main() -> None:
         similarity_stats = (
             SimilarityStats() if run_args.debug_layer_sim else None
         )
+        adjacent_layer_stats = (
+            AdjacentLayerSimilarityStats() if run_args.debug_adj_layer_sim else None
+        )
         use_expert_shards = expert_shards is not None and run_args.tempshard
         condition_threshold = (
             run_args.cond_recirculate_thres
@@ -1068,9 +1088,14 @@ def main() -> None:
                 passes=1,
                 rewind_layer=rewind_dynamic_cache_layer,
                 similarity_stats=similarity_stats,
+                adjacent_layer_stats=adjacent_layer_stats,
             )
 
-        plain_step = student_step if similarity_stats is None else probe_step
+        plain_step = (
+            student_step
+            if similarity_stats is None and adjacent_layer_stats is None
+            else probe_step
+        )
 
         def report_stats() -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
@@ -1087,7 +1112,24 @@ def main() -> None:
                     f"{name}={value:.3f}" if name != "count" else f"{name}={value:.0f}"
                     for name, value in summary.items()
                 )
-                print(f"src_dst_similarity: {formatted}")
+                print(
+                    f"src_dst_similarity {run_config.destination}-"
+                    f"{run_config.source}: {formatted}"
+                )
+            if adjacent_layer_stats is not None:
+                for layer_index, layer_summary in enumerate(
+                    adjacent_layer_stats.summaries()
+                ):
+                    if layer_summary is None:
+                        continue
+                    formatted = ", ".join(
+                        f"{name}={value:.3f}" if name != "count" else f"{name}={value:.0f}"
+                        for name, value in layer_summary.items()
+                    )
+                    print(
+                        f"adjacent_layer_similarity {layer_index}-"
+                        f"{layer_index + 1}: {formatted}"
+                    )
 
         if not args.debug:
             if use_recirculation:
@@ -1104,6 +1146,7 @@ def main() -> None:
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
                     similarity_stats=similarity_stats,
+                    adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_threshold=condition_threshold,
@@ -1138,6 +1181,7 @@ def main() -> None:
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
                         similarity_stats=similarity_stats,
+                        adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_threshold=condition_threshold,
@@ -1221,6 +1265,7 @@ def main() -> None:
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
                     similarity_stats=similarity_stats,
+                    adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_threshold=condition_threshold,
@@ -1293,6 +1338,7 @@ def main() -> None:
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
                         similarity_stats=similarity_stats,
+                        adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_threshold=condition_threshold,

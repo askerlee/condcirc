@@ -12,7 +12,6 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Sequence
-from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -387,17 +386,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--tempshard",
-        action="store_true",
-        help="Split MoE experts into one temporal shard per pass.",
-    )
-    parser.add_argument(
-        "--expert-overlap",
-        type=float,
-        default=0.2,
-        help="Fraction of total experts assigned to each pair's common group (default: 0.2).",
-    )
-    parser.add_argument(
         "--temperature",
         type=float,
         default=0.0,
@@ -588,173 +576,6 @@ def find_decoder_blocks(model: nn.Module) -> Sequence[nn.Module]:
     )
 
 
-def resolve_pairwise_expert_count(
-    num_experts: int, overlap: float, num_shards: int
-) -> int:
-    if num_shards < 2:
-        return 0
-    return min(round(num_experts * overlap), num_experts)
-
-
-class TemporalExpertShards:
-    def __init__(
-        self,
-        blocks: Sequence[nn.Module],
-        num_shards: int,
-        seed: int,
-        overlap: float = 0.2,
-    ) -> None:
-        if num_shards < 1:
-            raise ValueError("The number of temporal shards must be at least 1.")
-        if not 0.0 <= overlap < 1.0:
-            raise ValueError("Expert overlap must be in the range [0, 1).")
-        self._num_shards = num_shards
-        self._enabled = False
-        self._subset = 0
-        self._expert_subsets: dict[nn.Module, tuple[Tensor, ...]] = {}
-        self._handles: list[Any] = []
-        layout_counts: dict[
-            tuple[int, int, tuple[int, ...], tuple[int, ...]], int
-        ] = {}
-        partitions: dict[int, tuple[Tensor, ...]] = {}
-        generator = torch.Generator().manual_seed(seed)
-
-        for block in blocks:
-            mlp = getattr(block, "mlp", None)
-            router = getattr(mlp, "gate", None)
-            experts = getattr(mlp, "experts", None)
-            num_experts = getattr(router, "num_experts", None)
-            top_k = getattr(router, "top_k", None)
-            if not (
-                isinstance(router, nn.Module)
-                and isinstance(experts, nn.Module)
-                and isinstance(num_experts, int)
-                and isinstance(top_k, int)
-            ):
-                continue
-            pairwise_count = resolve_pairwise_expert_count(
-                num_experts, overlap, num_shards
-            )
-            shard_pairs = tuple(combinations(range(num_shards), 2))
-            subsets = partitions.get(num_experts)
-            if subsets is None:
-                pairwise_experts = {
-                    pair: torch.randperm(num_experts, generator=generator)[
-                        :pairwise_count
-                    ]
-                    for pair in shard_pairs
-                }
-                shared_mask = torch.zeros(num_experts, dtype=torch.bool)
-                for shared in pairwise_experts.values():
-                    shared_mask[shared] = True
-                exclusive = torch.arange(num_experts)[~shared_mask]
-                exclusive_subsets = torch.tensor_split(
-                    exclusive[torch.randperm(len(exclusive), generator=generator)],
-                    num_shards,
-                )
-                subsets = tuple(
-                    torch.unique(
-                        torch.cat(
-                            [
-                                exclusive_subsets[subset],
-                                *(
-                                    pairwise_experts[pair]
-                                    for pair in shard_pairs
-                                    if subset in pair
-                                ),
-                            ]
-                        )
-                    )
-                    for subset in range(num_shards)
-                )
-                partitions[num_experts] = subsets
-            minimum_shard_size = min(len(subset) for subset in subsets)
-            if top_k > minimum_shard_size:
-                raise ValueError(
-                    f"The router selects {top_k} experts, but the smallest temporal "
-                    f"shard contains only {minimum_shard_size}."
-                )
-            self._expert_subsets[router] = subsets
-            self._handles.append(router.register_forward_hook(self._route_with_subset))
-            layout = (
-                num_experts,
-                pairwise_count,
-                tuple(len(subset) for subset in subsets),
-                tuple(
-                    int(torch.isin(subsets[left], subsets[right]).sum())
-                    for left, right in shard_pairs
-                ),
-            )
-            layout_counts[layout] = layout_counts.get(layout, 0) + 1
-
-        print(
-            f"Temporal expert sharding into {num_shards} sets with "
-            f"{overlap:.0%} overlap for {len(self._handles)} MoE layers."
-        )
-        shard_pairs = tuple(combinations(range(num_shards), 2))
-        for (
-            total_experts,
-            common_group_size,
-            shard_sizes,
-            pairwise_shared,
-        ), layer_count in layout_counts.items():
-            shared_by_pair = {
-                f"{left}-{right}": count
-                for (left, right), count in zip(shard_pairs, pairwise_shared)
-            }
-            print(
-                f"  {layer_count} layer(s): {total_experts} total experts; "
-                f"{common_group_size} assigned to each pair group; "
-                f"experts per shard {list(shard_sizes)}; "
-                f"actual intersections {shared_by_pair}."
-            )
-
-    @property
-    def is_moe(self) -> bool:
-        return bool(self._handles)
-
-    def select(self, subset: int) -> None:
-        if not 0 <= subset < self._num_shards:
-            raise ValueError(
-                f"Temporal expert subset must be in [0, {self._num_shards})."
-            )
-        self._enabled = True
-        self._subset = subset
-
-    def disable(self) -> None:
-        self._enabled = False
-
-    def _route_with_subset(
-        self, router: nn.Module, _inputs: tuple[Any, ...], output: Any
-    ) -> Any:
-        if not self._enabled:
-            return output
-        if not (
-            isinstance(output, tuple)
-            and len(output) == 3
-            and all(isinstance(value, Tensor) for value in output)
-        ):
-            raise TypeError(
-                f"Unsupported MoE router output from {type(router).__name__}; "
-                "expected (logits, scores, expert_indices)."
-            )
-
-        router_logits, router_scores, _selected_experts = output
-        allowed = self._expert_subsets[router][self._subset].to(router_logits.device)
-        allowed_logits = router_logits.index_select(-1, allowed)
-        probabilities = torch.softmax(allowed_logits, dtype=torch.float, dim=-1)
-        scores, local_indices = torch.topk(
-            probabilities, router_scores.shape[-1], dim=-1
-        )
-        scores /= scores.sum(dim=-1, keepdim=True)
-        selected_experts = allowed[local_indices]
-        return router_logits, scores.to(router_logits.dtype), selected_experts
-
-    def close(self) -> None:
-        for handle in self._handles:
-            handle.remove()
-
-
 def rewind_dynamic_cache(cache: DynamicCache) -> DynamicCache:
     crop_parameter = next(iter(inspect.signature(cache.crop).parameters.values()))
     if crop_parameter.name == "tokens_to_remove":
@@ -814,9 +635,6 @@ def main() -> None:
 
     if args.temperature < 0:
         raise ValueError("--temperature must be nonnegative.")
-    if not 0.0 <= args.expert_overlap < 1.0:
-        raise ValueError("--expert-overlap must be in the range [0, 1).")
-
     if args.eval_provider == "openai" and args.evaluate_results is not None:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
@@ -1024,7 +842,6 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
-        expert_shards: TemporalExpertShards | None,
     ) -> tuple[Tensor, list[dict[str, float | int | str]]]:
         torch.manual_seed(run_args.seed)
         magnitude_diff_stats = MagnitudeDiffStats()
@@ -1034,17 +851,11 @@ def main() -> None:
         adjacent_layer_stats = (
             AdjacentLayerSimilarityStats() if run_args.debug_adj_layer_sim else None
         )
-        use_expert_shards = expert_shards is not None and run_args.tempshard
         condition_thresholds = (
             run_args.cond_recirculate_thres
             if run_args.cond_recirculate
             else None
         )
-        if expert_shards is not None:
-            if use_recirculation and use_expert_shards:
-                expert_shards.select(0)
-            else:
-                expert_shards.disable()
 
         student_cache = DynamicCache(config=model.config)
         if use_recirculation:
@@ -1115,9 +926,6 @@ def main() -> None:
                     step=student_step,
                     rewind_one=rewind_dynamic_cache,
                     config=run_config,
-                    select_expert_subset=(
-                        expert_shards.select if use_expert_shards else None
-                    ),
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
                     similarity_stats=similarity_stats,
@@ -1151,9 +959,6 @@ def main() -> None:
                         step=student_step,
                         rewind_one=rewind_dynamic_cache,
                         config=run_config,
-                        select_expert_subset=(
-                            expert_shards.select if use_expert_shards else None
-                        ),
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
                         similarity_stats=similarity_stats,
@@ -1240,9 +1045,6 @@ def main() -> None:
                     step=student_step,
                     rewind_one=rewind_dynamic_cache,
                     config=run_config,
-                    select_expert_subset=(
-                        expert_shards.select if use_expert_shards else None
-                    ),
                     expected_embedding=expected_embedding_fn,
                     magnitude_diff_stats=magnitude_diff_stats,
                     similarity_stats=similarity_stats,
@@ -1314,9 +1116,6 @@ def main() -> None:
                         step=student_step,
                         rewind_one=rewind_dynamic_cache,
                         config=run_config,
-                        select_expert_subset=(
-                            expert_shards.select if use_expert_shards else None
-                        ),
                         expected_embedding=expected_embedding_fn,
                         magnitude_diff_stats=magnitude_diff_stats,
                         similarity_stats=similarity_stats,
@@ -1369,39 +1168,15 @@ def main() -> None:
             )
         if run_config.mode == "layerwise" and len(run_config.pairs) != 1:
             raise ValueError("--mode layerwise requires exactly one --pair.")
-        source, destination = run_config.pairs[0]
-        sharded_blocks = (
-            blocks[destination : source + 1]
-            if run_config.mode == "layerwise"
-            else blocks[min(destination for _source, destination in run_config.pairs) :]
-        )
-        expert_shards = (
-            TemporalExpertShards(
-                sharded_blocks,
-                num_shards=run_args.passes,
-                seed=run_args.seed,
-                overlap=run_args.expert_overlap,
-            )
-            if use_recirculation and run_args.tempshard
-            else None
-        )
-        if expert_shards is not None and not expert_shards.is_moe:
-            expert_shards.close()
-            expert_shards = None
         synchronize_devices()
         start = time.perf_counter()
-        try:
-            generated_ids, similarities = generate(
-                use_recirculation=use_recirculation,
-                run_args=run_args,
-                run_config=run_config,
-                expert_shards=expert_shards,
-            )
-            synchronize_devices()
-            return generated_ids, similarities, time.perf_counter() - start
-        finally:
-            if expert_shards is not None:
-                expert_shards.close()
+        generated_ids, similarities = generate(
+            use_recirculation=use_recirculation,
+            run_args=run_args,
+            run_config=run_config,
+        )
+        synchronize_devices()
+        return generated_ids, similarities, time.perf_counter() - start
 
     if args.ablations is False or args.ablations is None:
         runs = [(args, True, "Recirculation ON")]

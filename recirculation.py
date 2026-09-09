@@ -2,8 +2,9 @@
    Originally implemented by Benhao Huang:
    https://gist.github.com/huskydoge/1ff29693e2172226ec26081f208b19d6
 
-In source-to-destination mode, for every token (with three passes):
-  1. Run a normal cached pass; return its logits and save residuals h_d, h_s.
+In source-to-destination mode, each configured ``(source, destination)`` pair
+is recirculated for every token (with three passes):
+    1. Run a normal cached pass; return its logits and save residuals h_d, h_s.
   2. Rewind the KV cache by one position.
   3. Run the token again, replacing the output of destination block d with
      beta * h_d + alpha * (||h_d|| / ||h_s||) * h_s.
@@ -12,8 +13,6 @@ In source-to-destination mode, for every token (with three passes):
 
 When expected-embedding subtraction is enabled, each replay subtracts the
 top-K expected next-token embedding from h_s before norm matching and mixing.
-With orthogonal mixing, each replay removes source projections onto every
-destination activation captured by earlier passes for the current token.
 
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
@@ -38,14 +37,11 @@ from torch import Tensor, nn
 
 @dataclass(frozen=True)
 class RecirculationConfig:
-    destination: int
-    source: int
+    pairs: tuple[tuple[int, int], ...]
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
-    ortho_mix: bool = False
-    ortho_mix_coeffs: tuple[float, ...] = (0.1,)
 
 
 @dataclass
@@ -93,22 +89,10 @@ class AdjacentLayerSimilarityStats:
 class MagnitudeDiffStats:
     fraction_sum: float = 0.0
     count: int = 0
-    projection_sums: list[float] = field(default_factory=list)
-    projection_counts: list[int] = field(default_factory=list)
 
     @property
     def mean(self) -> float | None:
         return self.fraction_sum / self.count if self.count else None
-
-    @property
-    def projection_means(self) -> list[float]:
-        return [
-            projection_sum / projection_count
-            for projection_sum, projection_count in zip(
-                self.projection_sums, self.projection_counts
-            )
-        ]
-
 
 def _residual(output: Any) -> Tensor:
     hidden = output[0] if isinstance(output, tuple) else output
@@ -125,23 +109,39 @@ class _Hooks:
         magnitude_diff_stats: MagnitudeDiffStats,
         adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     ) -> None:
-        if not 0 <= cfg.destination < cfg.source < len(blocks):
-            raise ValueError("Expected 0 <= destination < source < number of blocks.")
+        if not cfg.pairs:
+            raise ValueError("At least one source/destination pair is required.")
+        if len({destination for _source, destination in cfg.pairs}) != len(cfg.pairs):
+            raise ValueError("Each source/destination pair must have a unique destination.")
+        if any(
+            not 0 <= destination < source < len(blocks)
+            for source, destination in cfg.pairs
+        ):
+            raise ValueError(
+                "Expected 0 <= destination < source < number of blocks for every pair."
+            )
         self.cfg = cfg
         self.mode = "off"
-        self.h_d: Tensor | None = None
-        self.h_d_history: list[Tensor] = []
-        self.h_s: Tensor | None = None
+        self.destinations = {destination for _source, destination in cfg.pairs}
+        self.sources = {source for source, _destination in cfg.pairs}
+        self.residuals: dict[int, Tensor] = {}
+        self.injection_sources: dict[int, Tensor] = {}
         self.expected_embedding: Tensor | None = None
-        self.recirculation_index = 0
+        self.active_pairs = tuple(True for _pair in cfg.pairs)
         self.magnitude_diff_stats = magnitude_diff_stats
         self.adjacent_layer_stats = adjacent_layer_stats
         self.layer_residuals: dict[int, Tensor] = {}
+        watched_layers = self.destinations | self.sources
         handles = [
-            blocks[cfg.destination].register_forward_hook(self._save_destination),
-            blocks[cfg.source].register_forward_hook(self._save_source),
-            blocks[cfg.destination + 1].register_forward_pre_hook(self._inject),
+            blocks[layer_index].register_forward_hook(self._save_residual(layer_index))
+            for layer_index in watched_layers
         ]
+        handles.extend(
+            blocks[destination + 1].register_forward_pre_hook(
+                self._inject(pair_index, source, destination)
+            )
+            for pair_index, (source, destination) in enumerate(cfg.pairs)
+        )
         if adjacent_layer_stats is not None:
             adjacent_layer_stats.ensure_layers(len(blocks) - 1)
             handles.extend(
@@ -175,96 +175,80 @@ class _Hooks:
             )
         self.layer_residuals.clear()
 
-    def _save_destination(self, _module: nn.Module, _inputs: tuple, output: Any) -> None:
-        if self.mode in ("capture", "inject"):
-            self.h_d = _residual(output).detach().clone()
-            self.h_d_history.append(self.h_d)
+    def _save_residual(self, layer_index: int) -> Callable[..., None]:
+        def hook(_module: nn.Module, _inputs: tuple, output: Any) -> None:
+            if self.mode in ("capture", "inject"):
+                residual = _residual(output).detach().clone()
+                self.residuals[layer_index] = residual
 
-    def _save_source(self, _module: nn.Module, _inputs: tuple, output: Any) -> None:
-        if self.mode in ("capture", "inject"):
-            self.h_s = _residual(output).detach().clone()
+        return hook
 
-    def _inject(self, _module: nn.Module, inputs: tuple) -> tuple | None:
-        if self.mode != "inject":
-            return None
-        if self.h_d is None or self.h_s is None:
-            raise RuntimeError("The first pass did not capture both residual streams.")
+    def _inject(
+        self, pair_index: int, source_index: int, destination_index: int
+    ) -> Callable[..., tuple | None]:
+        def hook(_module: nn.Module, inputs: tuple) -> tuple | None:
+            if self.mode != "inject" or not self.active_pairs[pair_index]:
+                return None
+            try:
+                destination = self.residuals[destination_index]
+                source = self.injection_sources[source_index]
+            except KeyError as error:
+                raise RuntimeError(
+                    "The first pass did not capture both residual streams for every pair."
+                ) from error
 
-        input_device = _residual(inputs).device
-        destination = self.h_d.to(device=input_device, dtype=torch.float32)
-        source = self.h_s.to(device=input_device, dtype=torch.float32)
-        source_norm_before = torch.linalg.vector_norm(
-            source, dim=-1, keepdim=True
-        )
-        source *= torch.linalg.vector_norm(destination, dim=-1, keepdim=True) / (
-            torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
-        )
-
-        if self.expected_embedding is not None:
-            expected = self.expected_embedding.to(
-                device=input_device, dtype=torch.float32
-            )
-            projection = (source * expected).sum(dim=-1, keepdim=True) / (
-                expected.square().sum(dim=-1, keepdim=True).clamp_min(self.cfg.eps)
-            )
-            source -= projection * expected
-
-        beta = 1.0 - self.cfg.alpha if self.cfg.beta is None else self.cfg.beta
-        if self.cfg.ortho_mix:
-            coeff_index = (
-                0 if len(self.cfg.ortho_mix_coeffs) == 1 else self.recirculation_index
-            )
-            coefficient = self.cfg.ortho_mix_coeffs[coeff_index]
-            for history_index, previous_destination in enumerate(
-                self.h_d_history[:-1]
-            ):
-                previous_destination = previous_destination.to(
-                    device=input_device, dtype=torch.float32
-                )
-                projection = (source * previous_destination).sum(
-                    dim=-1, keepdim=True
-                ) / previous_destination.square().sum(
-                    dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
-                if history_index == len(
-                    self.magnitude_diff_stats.projection_sums
-                ):
-                    self.magnitude_diff_stats.projection_sums.append(0.0)
-                    self.magnitude_diff_stats.projection_counts.append(0)
-                self.magnitude_diff_stats.projection_sums[history_index] += (
-                    projection.sum().item()
-                )
-                self.magnitude_diff_stats.projection_counts[history_index] += (
-                    projection.numel()
-                )
-                source -= coefficient * projection * previous_destination
-
-        if self.expected_embedding is not None or self.cfg.ortho_mix:
-            source_norm_after = torch.linalg.vector_norm(
+            input_device = _residual(inputs).device
+            destination = destination.to(device=input_device, dtype=torch.float32)
+            source = source.to(device=input_device, dtype=torch.float32)
+            source_norm_before = torch.linalg.vector_norm(
                 source, dim=-1, keepdim=True
             )
-            magnitude_diff_fraction = (
-                source_norm_before - source_norm_after
-            ) / source_norm_before.clamp_min(self.cfg.eps)
-            self.magnitude_diff_stats.fraction_sum += (
-                magnitude_diff_fraction.sum().item()
+            source *= torch.linalg.vector_norm(destination, dim=-1, keepdim=True) / (
+                torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
-            self.magnitude_diff_stats.count += magnitude_diff_fraction.numel()
 
-        mixed = (beta * destination + self.cfg.alpha * source).to(inputs[0].dtype)
-        return (mixed, *inputs[1:])
+            if self.expected_embedding is not None:
+                expected = self.expected_embedding.to(
+                    device=input_device, dtype=torch.float32
+                )
+                projection = (source * expected).sum(dim=-1, keepdim=True) / (
+                    expected.square().sum(dim=-1, keepdim=True).clamp_min(self.cfg.eps)
+                )
+                source -= projection * expected
 
-    def activation_similarity(self) -> float:
-        if self.h_d is None or self.h_s is None:
-            raise RuntimeError("The first pass did not capture both residual streams.")
-        destination = self.h_d[:, -1, :].float()
-        source = self.h_s[:, -1, :].to(
-            destination.device, dtype=torch.float32
-        )
-        cosine = torch.nn.functional.cosine_similarity(
-            destination, source, dim=-1
-        )
-        return float(cosine.mean().item())
+            beta = 1.0 - self.cfg.alpha if self.cfg.beta is None else self.cfg.beta
+            if self.expected_embedding is not None:
+                source_norm_after = torch.linalg.vector_norm(
+                    source, dim=-1, keepdim=True
+                )
+                magnitude_diff_fraction = (
+                    source_norm_before - source_norm_after
+                ) / source_norm_before.clamp_min(self.cfg.eps)
+                self.magnitude_diff_stats.fraction_sum += (
+                    magnitude_diff_fraction.sum().item()
+                )
+                self.magnitude_diff_stats.count += magnitude_diff_fraction.numel()
+
+            mixed = (beta * destination + self.cfg.alpha * source).to(inputs[0].dtype)
+            return (mixed, *inputs[1:])
+
+        return hook
+
+    def activation_similarities(self) -> tuple[float, ...]:
+        similarities = []
+        for source_index, destination_index in self.cfg.pairs:
+            try:
+                destination = self.residuals[destination_index][:, -1, :].float()
+                source = self.residuals[source_index][:, -1, :].to(
+                    destination.device, dtype=torch.float32
+                )
+            except KeyError as error:
+                raise RuntimeError(
+                    "The first pass did not capture both residual streams for every pair."
+                ) from error
+            cosine = torch.nn.functional.cosine_similarity(destination, source, dim=-1)
+            similarities.append(float(cosine.mean().item()))
+        return tuple(similarities)
 
     def close(self) -> None:
         for handle in self.handles:
@@ -281,7 +265,10 @@ class _LayerwiseHooks:
         passes: int,
         select_expert_subset: Callable[[int], None] | None,
     ) -> None:
-        if not 0 <= config.destination < config.source < len(blocks):
+        if len(config.pairs) != 1:
+            raise ValueError("Layerwise mode requires exactly one source/destination pair.")
+        source, destination = config.pairs[0]
+        if not 0 <= destination < source < len(blocks):
             raise ValueError("Expected 0 <= destination < source < number of blocks.")
         self.cache = cache
         self.rewind_layer = rewind_layer
@@ -294,8 +281,8 @@ class _LayerwiseHooks:
                 self._repeat_layer(layer_index), with_kwargs=True
             )
             for layer_index, block in enumerate(
-                blocks[config.destination : config.source + 1],
-                start=config.destination,
+                blocks[destination : source + 1],
+                start=destination,
             )
         )
 
@@ -372,23 +359,15 @@ def recirculate(
     adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
-    condition_threshold: float | None = None,
+    condition_thresholds: Sequence[float] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
-    recirculation_count = passes - 1
-    if not config.ortho_mix_coeffs:
-        raise ValueError("ortho_mix_coeffs must contain at least one value.")
-    if len(config.ortho_mix_coeffs) not in (1, recirculation_count):
-        raise ValueError(
-            "ortho_mix_coeffs must contain one value or one value per "
-            f"recirculation ({recirculation_count} for {passes} passes)."
-        )
 
     if config.mode == "layerwise":
-        if condition_threshold is not None:
+        if condition_thresholds is not None:
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
             )
@@ -432,42 +411,57 @@ def recirculate(
         magnitude_diff_stats or MagnitudeDiffStats(),
         adjacent_layer_stats=adjacent_layer_stats,
     )
+    if condition_thresholds is not None and len(condition_thresholds) not in (
+        1,
+        len(config.pairs),
+    ):
+        raise ValueError(
+            "condition_thresholds must contain one value or one value per "
+            f"source/destination pair ({len(config.pairs)})."
+        )
+    if condition_thresholds is not None and len(condition_thresholds) == 1:
+        condition_thresholds = condition_thresholds * len(config.pairs)
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
 
             if select_expert_subset is not None:
                 select_expert_subset(0)
-            hooks.h_d = hooks.h_s = None
-            hooks.h_d_history.clear()
+            hooks.residuals.clear()
             hooks.mode = "capture"
             first_logits, cache = step(token, cache)
             hooks.mode = "off"
             final_logits = first_logits
             hooks.record_adjacent_similarities()
 
-            similarity = (
-                hooks.activation_similarity()
-                if similarity_stats is not None or condition_threshold is not None
+            similarities = (
+                hooks.activation_similarities()
+                if similarity_stats is not None or condition_thresholds is not None
                 else None
             )
             if similarity_stats is not None:
-                assert similarity is not None
-                similarity_stats.values.append(similarity)
+                assert similarities is not None
+                similarity_stats.values.append(sum(similarities) / len(similarities))
 
-            should_recirculate = condition_threshold is None or (
-                similarity is not None and similarity >= condition_threshold
+            should_recirculate = condition_thresholds is None or all(
+                similarity >= threshold
+                for similarity, threshold in zip(similarities, condition_thresholds)
+            )
+            hooks.active_pairs = tuple(
+                should_recirculate for _pair in config.pairs
             )
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
                     select_expert_subset(pass_index)
+                hooks.injection_sources = {
+                    source: hooks.residuals[source] for source in hooks.sources
+                }
                 hooks.expected_embedding = (
                     expected_embedding(final_logits[:, -1:, :])
                     if expected_embedding is not None
                     else None
                 )
-                hooks.recirculation_index = pass_index - 1
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"

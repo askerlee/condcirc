@@ -277,16 +277,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="OpenAI API base URL, also usable with compatible APIs.",
     )
     parser.add_argument(
-        "--destination",
+        "--pair",
+        dest="pairs",
+        action="append",
         type=int,
-        default=4,
-        help="Destination block index; -n selects the nth-to-last block (default: 4).",
-    )
-    parser.add_argument(
-        "--source",
-        type=int,
-        default=-4,
-        help="Source block index; -n selects the nth-to-last block (default: -1).",
+        nargs=2,
+        metavar=("SOURCE", "DESTINATION"),
+        help=(
+            "Source/destination pair to recirculate. Repeat for multiple pairs "
+            "(default: -4 4)."
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -298,8 +298,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--override-to-global-attn",
         action="store_true",
         help=(
-            "Override --destination/--source with the nearest full/global-attention "
-            "layers, for models that interleave sliding and global attention."
+            "Snap every --pair layer to the nearest full/global-attention layer, "
+            "for models that interleave sliding and global attention."
         ),
     )
     # alpha: weight of the source residual stream in the convex combination. 
@@ -311,22 +311,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
         help="Defaults to 1 - alpha.",
-    )
-    parser.add_argument(
-        "--ortho-mix",
-        action="store_true",
-        help="Remove the source component parallel to the destination before mixing.",
-    )
-    parser.add_argument(
-        "--ortho-mix-coeffs",
-        type=float,
-        nargs="+",
-        default=[0.1],
-        metavar="COEFF",
-        help=(
-            "Projection-removal coefficients used by --ortho-mix. Provide one "
-            "value for all recirculations or one per recirculation (default: 0.1)."
-        ),
     )
     parser.add_argument(
         "--passes",
@@ -345,9 +329,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cond-recirculate-thres",
         type=float,
-        default=0.67,
+        nargs="+",
+        default=[0.67],
         metavar="THRESHOLD",
-        help="Conditional recirculation similarity threshold (default: 0.67).",
+        help=(
+            "Conditional similarity thresholds in --pair order. Provide one value "
+            "for all pairs or one per pair; all pairs must meet their thresholds "
+            "to recirculate (default: 0.67)."
+        ),
     )
     parser.add_argument(
         "--debug-layer-sim",
@@ -379,13 +368,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-new-tokens", type=int, default=300)
     parser.add_argument(
-        "--ablations",
+        "--ablation",
+        dest="ablations",
         action="store_true",
         help=(
-            "Arguments before this option form the baseline. Each argument after "
-            "it creates a separate run; comma-connected options are applied to "
-            "the same run (for example, --passes=2,--ortho-mix). With no following "
-            "arguments, run the baseline only."
+            "Arguments before the first --ablation form the baseline. Each "
+            "--ablation and its following arguments form one ablation run."
         ),
     )
     parser.add_argument(
@@ -446,88 +434,62 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=Path("ratings.md"),
         help="Save the evaluation table to this Markdown file.",
     )
-    if "--ablations" not in argv:
+    if "--ablation" not in argv:
         args = parser.parse_args(argv)
         args.ablations = False
         return args
 
-    ablations_index = argv.index("--ablations")
+    ablations_index = argv.index("--ablation")
     baseline_argv = argv[:ablations_index]
-    ablations_argv = argv[ablations_index + 1 :]
     args = parser.parse_args(baseline_argv)
-    if not ablations_argv:
+
+    ablation_groups: list[list[str]] = []
+    current_group: list[str] | None = None
+    for argument in argv[ablations_index:]:
+        if argument == "--ablation":
+            if current_group is not None:
+                ablation_groups.append(current_group)
+            current_group = []
+        else:
+            assert current_group is not None
+            current_group.append(argument)
+    assert current_group is not None
+    ablation_groups.append(current_group)
+
+    if len(ablation_groups) == 1 and not ablation_groups[0]:
         args.ablations = None
         return args
+    if any(not group for group in ablation_groups):
+        parser.error("each --ablation must be followed by at least one argument")
 
     ablations: list[tuple[tuple[str, Any], ...]] = []
-    index = 0
-    while index < len(ablations_argv):
-        option = ablations_argv[index]
-        connected_options = option.split(",")
-        if len(connected_options) > 1:
-            overrides: list[tuple[str, Any]] = []
-            for connected_option in connected_options:
-                option_name, separator, _value = connected_option.partition("=")
-                action = parser._option_string_actions.get(option_name)
-                if action is None or action.dest == "ablations":
-                    parser.error(f"invalid ablation argument: {option_name}")
-                if not separator and action.nargs != 0:
-                    parser.error(
-                        f"comma-connected argument {option_name} must use =VALUE"
+    for argument_group in ablation_groups:
+        option_names = [
+            argument.partition("=")[0]
+            for argument in argument_group
+            if argument.partition("=")[0] in parser._option_string_actions
+        ]
+        variation = parser.parse_args(argument_group)
+        if not option_names or variation.prompt is not None:
+            parser.error("ablation arguments must be options")
+        overrides = tuple(
+            (
+                parser._option_string_actions[option_name].dest,
+                (
+                    not getattr(args, parser._option_string_actions[option_name].dest)
+                    if parser._option_string_actions[option_name].nargs == 0
+                    and isinstance(
+                        parser._option_string_actions[option_name].const, bool
                     )
-
-                variation = parser.parse_args([*baseline_argv, connected_option])
-                is_boolean_option = action.nargs == 0 and isinstance(action.const, bool)
-                ablation_value = (
-                    not getattr(args, action.dest)
-                    if is_boolean_option
-                    else getattr(variation, action.dest)
-                )
-                overrides.append((action.dest, ablation_value))
-            ablations.append(tuple(overrides))
-            index += 1
-            continue
-
-        option_name, separator, _value = option.partition("=")
-        action = parser._option_string_actions.get(option_name)
-        if action is None or action.dest == "ablations":
-            parser.error(f"invalid ablation argument: {option_name}")
-
-        argument_group = [option]
-        if not separator and action.nargs != 0:
-            if action.nargs is None:
-                value_count = 1
-            elif isinstance(action.nargs, int):
-                value_count = action.nargs
-            elif action.nargs == "+":
-                value_count = 0
-                for value in ablations_argv[index + 1 :]:
-                    next_option = value.partition("=")[0]
-                    if next_option in parser._option_string_actions:
-                        break
-                    value_count += 1
-                if value_count == 0:
-                    parser.error(f"argument {option_name} expected at least one value")
-            else:
-                parser.error(
-                    f"ablation does not support variable-length argument {option_name}"
-                )
-            argument_group.extend(
-                ablations_argv[index + 1 : index + 1 + value_count]
+                    else getattr(
+                        variation, parser._option_string_actions[option_name].dest
+                    )
+                ),
             )
-            if len(argument_group) != value_count + 1:
-                parser.error(f"argument {option_name} expected {value_count} value(s)")
-            index += value_count
-
-        variation = parser.parse_args([*baseline_argv, *argument_group])
-        is_boolean_option = action.nargs == 0 and isinstance(action.const, bool)
-        ablation_value = (
-            not getattr(args, action.dest)
-            if is_boolean_option
-            else getattr(variation, action.dest)
+            for option_name in dict.fromkeys(option_names)
+            if parser._option_string_actions[option_name].dest != "ablations"
         )
-        ablations.append(((action.dest, ablation_value),))
-        index += 1
+        ablations.append(overrides)
 
     args.ablations = tuple(ablations)
     return args
@@ -545,6 +507,25 @@ def choose_device(requested: str) -> torch.device:
 
 def resolve_source(source: int, num_blocks: int) -> int:
     return num_blocks + source if source < 0 else source
+
+
+def resolve_recirculation_pairs(
+    args: argparse.Namespace, num_blocks: int, global_attention_layers: Sequence[int] | None
+) -> tuple[tuple[int, int], ...]:
+    requested_pairs = args.pairs or [(-4, 4)]
+    pairs = tuple(
+        (resolve_source(source, num_blocks), resolve_source(destination, num_blocks))
+        for source, destination in requested_pairs
+    )
+    if args.override_to_global_attn and global_attention_layers:
+        pairs = tuple(
+            (
+                nearest_global_layer(global_attention_layers, source),
+                nearest_global_layer(global_attention_layers, destination),
+            )
+            for source, destination in pairs
+        )
+    return pairs
 
 
 def find_global_attention_layer_indices(
@@ -793,12 +774,7 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
 
 
 def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> str:
-    values = {
-        option: args.ortho_mix and args.passes > 1
-        if option == "ortho_mix"
-        else getattr(args, option)
-        for option in options
-    }
+    values = {option: getattr(args, option) for option in options}
     return ", ".join(
         f"{option.replace('_', '-')}={value}" for option, value in values.items()
     )
@@ -817,17 +793,14 @@ def main() -> None:
         raise ValueError("--passes must be at least 1.")
     if args.exp_emb_K < 1:
         raise ValueError("--exp_emb_K must be at least 1.")
-    if args.exp_emb and (
-        args.mode != "source" or args.source != -1 or args.destination != 0
-    ):
+    if args.exp_emb and (args.mode != "source" or args.pairs != [[-1, 0]]):
         print(
             "--exp_emb overrides "
-            f"--mode {args.mode} --source {args.source} --destination {args.destination} "
-            "with --mode source --source -1 --destination 0."
+            f"--mode {args.mode} --pair {args.pairs} "
+            "with --mode source --pair -1 0."
         )
         args.mode = "source"
-        #args.source = -1
-        #args.destination = 0
+        args.pairs = [[-1, 0]]
 
     if args.temperature < 0:
         raise ValueError("--temperature must be nonnegative.")
@@ -950,13 +923,12 @@ def main() -> None:
     blocks = find_decoder_blocks(model)
     global_attention_layers = find_global_attention_layer_indices(model, len(blocks))
     if args.output is None:
-        source = resolve_source(args.source, len(blocks))
-        destination = resolve_source(args.destination, len(blocks))
-        if args.override_to_global_attn and global_attention_layers:
-            destination = nearest_global_layer(global_attention_layers, destination)
-            source = nearest_global_layer(global_attention_layers, source)
+        pairs = resolve_recirculation_pairs(
+            args, len(blocks), global_attention_layers
+        )
         model_slug = args.model.rsplit("/", 1)[-1]
-        args.output = Path(f"{model_slug}-{source}-{destination}.json")
+        pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
+        args.output = Path(f"{model_slug}-{pair_slug}.json")
 
     def model_step(
         active_model: nn.Module, token: Tensor, cache: DynamicCache
@@ -1053,7 +1025,7 @@ def main() -> None:
             AdjacentLayerSimilarityStats() if run_args.debug_adj_layer_sim else None
         )
         use_expert_shards = expert_shards is not None and run_args.tempshard
-        condition_threshold = (
+        condition_thresholds = (
             run_args.cond_recirculate_thres
             if run_args.cond_recirculate
             else None
@@ -1100,12 +1072,6 @@ def main() -> None:
         def report_stats() -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
                 print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
-            if use_recirculation and magnitude_diff_stats.projection_means:
-                projection_means = [
-                    round(mean, 3)
-                    for mean in magnitude_diff_stats.projection_means
-                ]
-                print(f"projection_means = {projection_means}")
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
                 formatted = ", ".join(
@@ -1113,8 +1079,7 @@ def main() -> None:
                     for name, value in summary.items()
                 )
                 print(
-                    f"src_dst_similarity {run_config.destination}-"
-                    f"{run_config.source}: {formatted}"
+                    f"src_dst_similarity {list(run_config.pairs)}: {formatted}"
                 )
             if adjacent_layer_stats is not None:
                 for layer_index, layer_summary in enumerate(
@@ -1149,7 +1114,7 @@ def main() -> None:
                     adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
-                    condition_threshold=condition_threshold,
+                    condition_thresholds=condition_thresholds,
                 )
                 next_logits = prompt_logits[:, -1, :]
             else:
@@ -1184,7 +1149,7 @@ def main() -> None:
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
-                        condition_threshold=condition_threshold,
+                        condition_thresholds=condition_thresholds,
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1210,9 +1175,9 @@ def main() -> None:
         teacher_cache = DynamicCache(config=teacher_model.config)
 
         teacher_blocks = find_decoder_blocks(teacher_model)
-        teacher_activations: dict[str, Tensor] = {}
+        teacher_activations: dict[int, Tensor] = {}
 
-        def capture_teacher_activation(name: str) -> Callable[..., None]:
+        def capture_teacher_activation(layer_index: int) -> Callable[..., None]:
             def capture(
                 _module: nn.Module, _inputs: tuple[Any, ...], output: Any
             ) -> None:
@@ -1222,33 +1187,37 @@ def main() -> None:
                         "A teacher transformer block must return its residual "
                         "stream first."
                     )
-                teacher_activations[name] = residual[:, -1, :].detach().clone()
+                teacher_activations[layer_index] = residual[:, -1, :].detach().clone()
 
             return capture
 
-        teacher_activation_handles = (
-            teacher_blocks[run_config.destination].register_forward_hook(
-                capture_teacher_activation("destination")
-            ),
-            teacher_blocks[run_config.source].register_forward_hook(
-                capture_teacher_activation("source")
-            ),
+        teacher_activation_handles = tuple(
+            teacher_blocks[layer_index].register_forward_hook(
+                capture_teacher_activation(layer_index)
+            )
+            for layer_index in {
+                layer_index for pair in run_config.pairs for layer_index in pair
+            }
         )
 
         def teacher_activation_similarity() -> float:
+            similarities = []
             try:
-                destination = teacher_activations["destination"].float()
-                source = teacher_activations["source"].to(
-                    destination.device, dtype=torch.float32
-                )
+                for source_index, destination_index in run_config.pairs:
+                    destination = teacher_activations[destination_index].float()
+                    source = teacher_activations[source_index].to(
+                        destination.device, dtype=torch.float32
+                    )
+                    similarities.append(
+                        torch.nn.functional.cosine_similarity(
+                            destination, source, dim=-1
+                        ).mean()
+                    )
             except KeyError as error:
                 raise RuntimeError(
                     "Teacher source/destination activations were not captured."
                 ) from error
-            cosine = torch.nn.functional.cosine_similarity(
-                destination, source, dim=-1
-            )
-            return round(float(cosine.mean().item()), 3)
+            return round(float(torch.stack(similarities).mean().item()), 3)
 
         def student_prefill() -> tuple[Tensor, DynamicCache]:
             if use_recirculation:
@@ -1268,7 +1237,7 @@ def main() -> None:
                     adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
-                    condition_threshold=condition_threshold,
+                    condition_thresholds=condition_thresholds,
                 )
             logits: Tensor | None = None
             cache = student_cache
@@ -1341,7 +1310,7 @@ def main() -> None:
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
-                        condition_threshold=condition_threshold,
+                        condition_thresholds=condition_thresholds,
                     )
                 else:
                     student_future = executor.submit(
@@ -1367,38 +1336,30 @@ def main() -> None:
     def timed_generate(
         use_recirculation: bool, run_args: argparse.Namespace
     ) -> tuple[Tensor, list[dict[str, float | int | str]], float]:
-        destination = resolve_source(run_args.destination, len(blocks))
-        source = resolve_source(run_args.source, len(blocks))
-        if run_args.override_to_global_attn and global_attention_layers:
-            snapped_destination = nearest_global_layer(global_attention_layers, destination)
-            snapped_source = nearest_global_layer(global_attention_layers, source)
-            if snapped_destination != destination or snapped_source != source:
-                print(
-                    f"Overriding destination={destination}, source={source} with "
-                    f"nearest global-attention layers destination={snapped_destination}, "
-                    f"source={snapped_source}."
-                )
-            destination = snapped_destination
-            source = snapped_source
+        pairs = resolve_recirculation_pairs(
+            run_args, len(blocks), global_attention_layers
+        )
         run_config = RecirculationConfig(
-            destination=destination,
-            source=source,
+            pairs=pairs,
             alpha=run_args.alpha,
             beta=run_args.beta,
-            ortho_mix=run_args.ortho_mix,
-            ortho_mix_coeffs=tuple(run_args.ortho_mix_coeffs),
             mode=run_args.mode,
         )
-        if not 0 <= run_config.destination < run_config.source < len(blocks):
+        if not run_config.pairs or any(
+            not 0 <= destination < source < len(blocks)
+            for source, destination in run_config.pairs
+        ):
             raise ValueError(
                 f"The model has {len(blocks)} decoder blocks, but the requested "
-                f"indices were destination={run_config.destination}, "
-                f"source={run_config.source}."
+                f"source/destination pairs were {run_config.pairs}."
             )
+        if run_config.mode == "layerwise" and len(run_config.pairs) != 1:
+            raise ValueError("--mode layerwise requires exactly one --pair.")
+        source, destination = run_config.pairs[0]
         sharded_blocks = (
-            blocks[run_config.destination : run_config.source + 1]
+            blocks[destination : source + 1]
             if run_config.mode == "layerwise"
-            else blocks[run_config.destination :]
+            else blocks[min(destination for _source, destination in run_config.pairs) :]
         )
         expert_shards = (
             TemporalExpertShards(

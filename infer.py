@@ -353,7 +353,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--act-sim-thres",
         type=float,
         nargs="+",
-        default=[0.67],
+        default=None,
         metavar="THRESHOLD",
         help=(
             "Conditional thresholds in --pair order. Provide one value for all "
@@ -381,6 +381,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Primary conditional gate: recirculate only when the top-1 versus "
             "top-2 probability margin is at most this value. Requires "
             "--cond-recirculate."
+        ),
+    )
+    parser.add_argument(
+        "--top1-prob-thres",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Conditional gate: recirculate only when the top-1 predicted "
+            "next-token probability is at most this value. Can be combined "
+            "with --margin-thres or used on its own."
         ),
     )
     parser.add_argument(
@@ -806,7 +817,7 @@ def main() -> None:
         args.output = Path(f"{model_slug}-{pair_slug}.json")
     if args.similarities_output is None:
         args.similarities_output = args.output.with_name(
-            f"{args.output.stem}-similarities{args.output.suffix}"
+            f"{args.output.stem}-debug{args.output.suffix}"
         )
 
     def model_step(
@@ -936,9 +947,14 @@ def main() -> None:
             else probe_step
         )
 
-        def report_stats() -> None:
+        def report_stats(recirculated_flags: list[bool] | None = None) -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
                 print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
+            if recirculated_flags is not None:
+                print(
+                    f"recirculated_tokens = {sum(recirculated_flags)}/"
+                    f"{len(recirculated_flags)}"
+                )
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
                 formatted = ", ".join(
@@ -980,6 +996,7 @@ def main() -> None:
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
                     margin_threshold=run_args.margin_thres,
+                    top1_prob_threshold=run_args.top1_prob_thres,
                     gating_pair_index=run_args.gating_pair_index,
                 )
                 next_logits = prompt_logits[:, -1, :]
@@ -1014,6 +1031,7 @@ def main() -> None:
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
                         margin_threshold=run_args.margin_thres,
+                        top1_prob_threshold=run_args.top1_prob_thres,
                         gating_pair_index=run_args.gating_pair_index,
                     )
                 else:
@@ -1030,6 +1048,8 @@ def main() -> None:
         first_pass_logits: list[Tensor] = []
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
+        actual_alphas: list[tuple[float, ...] | None] = []
+        recirculated_flags: list[bool] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1045,10 +1065,13 @@ def main() -> None:
             rewind_layer=rewind_dynamic_cache_layer,
             condition_thresholds=condition_thresholds,
             margin_threshold=run_args.margin_thres,
+            top1_prob_threshold=run_args.top1_prob_thres,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
             pass_probability_margins=pass_probability_margins,
+            actual_alphas=actual_alphas,
+            recirculated_flags=recirculated_flags,
         )
         teacher_logits = first_pass_logits[-1]
         teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
@@ -1057,8 +1080,21 @@ def main() -> None:
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
-            comparison["teacher_src_dst_sim"] = teacher_src_dst_sim
-            comparison["top1_top2_margin"] = pass_probability_margins[-1]
+            comparison["teacher_src_dst_sim"] = round(teacher_src_dst_sim, 3)
+            comparison["top1_top2_margin"] = [
+                round(margin, 3) for margin in pass_probability_margins[-1]
+            ]
+            comparison["top1_prob"] = round(
+                float(torch.softmax(teacher_next_logits.float(), dim=-1).max().item()), 3
+            )
+            comparison["recirculated"] = recirculated_flags[-1]
+            if run_args.act_sim_as_alpha:
+                actual_alpha = actual_alphas[-1]
+                comparison["actual_alpha"] = (
+                    tuple(round(alpha, 3) for alpha in actual_alpha)
+                    if actual_alpha is not None
+                    else None
+                )
             next_token = sample_token(student_next_logits, run_args.temperature)
             comparison.update(
                 token_index=token_index,
@@ -1085,10 +1121,13 @@ def main() -> None:
                 rewind_layer=rewind_dynamic_cache_layer,
                 condition_thresholds=condition_thresholds,
                 margin_threshold=run_args.margin_thres,
+                top1_prob_threshold=run_args.top1_prob_thres,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
                 pass_probability_margins=pass_probability_margins,
+                actual_alphas=actual_alphas,
+                recirculated_flags=recirculated_flags,
             )
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
@@ -1097,7 +1136,7 @@ def main() -> None:
             teacher_next_logits = teacher_logits[:, -1, :]
             student_next_logits = student_logits[:, -1, :]
 
-        report_stats()
+        report_stats(recirculated_flags)
 
         return generated_ids, similarities
 
@@ -1150,6 +1189,7 @@ def main() -> None:
             "cond_recirculate",
             "act_sim_thres",
             "margin_thres",
+            "top1_prob_thres",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]

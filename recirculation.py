@@ -42,6 +42,8 @@ class RecirculationConfig:
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
+    act_sim_as_alpha: bool = False
+    act_sim_min_max: tuple[float, float] | None = None
 
 
 @dataclass
@@ -132,6 +134,7 @@ class _Hooks:
         self.sources = {source for source, _destination in cfg.pairs}
         self.residuals: dict[int, Tensor] = {}
         self.injection_sources: dict[int, Tensor] = {}
+        self.injection_alphas: tuple[float, ...] | None = None
         self.expected_embedding: Tensor | None = None
         self.active_pairs = tuple(True for _pair in cfg.pairs)
         self.magnitude_diff_stats = magnitude_diff_stats
@@ -222,7 +225,12 @@ class _Hooks:
                 )
                 source -= projection * expected
 
-            beta = 1.0 - self.cfg.alpha if self.cfg.beta is None else self.cfg.beta
+            alpha = (
+                self.injection_alphas[pair_index]
+                if self.injection_alphas is not None
+                else self.cfg.alpha
+            )
+            beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
             if self.expected_embedding is not None:
                 source_norm_after = torch.linalg.vector_norm(
                     source, dim=-1, keepdim=True
@@ -235,7 +243,7 @@ class _Hooks:
                 )
                 self.magnitude_diff_stats.count += magnitude_diff_fraction.numel()
 
-            mixed = (beta * destination + self.cfg.alpha * source).to(inputs[0].dtype)
+            mixed = (beta * destination + alpha * source).to(inputs[0].dtype)
             return (mixed, *inputs[1:])
 
         return hook
@@ -440,13 +448,24 @@ def recirculate(
         )
     if condition_thresholds is not None and len(condition_thresholds) == 1:
         condition_thresholds = condition_thresholds * len(config.pairs)
+    if config.act_sim_as_alpha and config.act_sim_min_max is not None:
+        if len(config.act_sim_min_max) != 2:
+            raise ValueError(
+                "act_sim_min_max must contain exactly two values (MIN, MAX)."
+            )
+        if config.act_sim_min_max[0] >= config.act_sim_min_max[1]:
+            raise ValueError("act_sim_min_max must have MIN < MAX.")
     if not 0 <= gating_pair_index < len(config.pairs):
         raise ValueError(
             f"gating_pair_index must be in [0, {len(config.pairs)})."
         )
-    if margin_threshold is not None and condition_thresholds is None:
+    if (
+        margin_threshold is not None
+        and condition_thresholds is None
+        and not config.act_sim_as_alpha
+    ):
         raise ValueError(
-            "margin_threshold requires condition_thresholds."
+            "margin_threshold requires condition_thresholds or act_sim_as_alpha."
         )
     try:
         for position in range(input_ids.shape[1]):
@@ -479,6 +498,7 @@ def recirculate(
                     similarity_stats is not None
                     or condition_thresholds is not None
                     or first_pass_similarities is not None
+                    or config.act_sim_as_alpha
                 )
                 else None
             )
@@ -510,6 +530,23 @@ def recirculate(
                 hooks.injection_sources = {
                     source: hooks.residuals[source] for source in hooks.sources
                 }
+                if config.act_sim_as_alpha:
+                    min_val, max_val = (
+                        config.act_sim_min_max
+                        if config.act_sim_min_max is not None
+                        else (0.0, 1.0)
+                    )
+                    scale = max_val - min_val
+                    hooks.injection_alphas = tuple(
+                        min(
+                            max((similarity - min_val) / scale, 0.0),
+                            1.0,
+                            config.alpha,
+                        )
+                        for similarity in similarities
+                    )
+                else:
+                    hooks.injection_alphas = None
                 hooks.expected_embedding = (
                     expected_embedding(final_logits[:, -1:, :])
                     if expected_embedding is not None

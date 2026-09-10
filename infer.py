@@ -309,6 +309,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Defaults to 1 - alpha.",
     )
     parser.add_argument(
+        "--act-sim-as-alpha",
+        action="store_true",
+        help="Use source/destination activation similarity as alpha, capped at --alpha.",
+    )
+    parser.add_argument(
         "--passes",
         type=int,
         default=2,
@@ -329,9 +334,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=[0.67],
         metavar="THRESHOLD",
         help=(
-            "Conditional similarity thresholds in --pair order. Provide one value "
-            "for all pairs or one per pair; each pair must meet its own threshold "
-            "to inject (default: 0.67)."
+            "Conditional thresholds in --pair order. Provide one value for all "
+            "pairs or one per pair; each pair must meet its own threshold to "
+            "inject (default: 0.67)."
+        ),
+    )
+    parser.add_argument(
+        "--act-sim-min-max",
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=("MIN", "MAX"),
+        help=(
+            "Min and max activation similarity values used to normalize act sim "
+            "before using it as alpha."
         ),
     )
     parser.add_argument(
@@ -425,7 +441,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--similarities-output",
         type=Path,
-        default=Path("similarities.json"),
+        default=None,
         help="Write pretty-printed debug-run records with per-token similarities.",
     )
     parser.add_argument(
@@ -620,8 +636,17 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
-    if args.margin_thres is not None and not args.cond_recirculate:
-        raise ValueError("--margin-thres requires --cond-recirculate.")
+    if (
+        args.margin_thres is not None
+        and not args.cond_recirculate
+        and not args.act_sim_as_alpha
+    ):
+        raise ValueError(
+            "--margin-thres requires --cond-recirculate or --act-sim-as-alpha."
+        )
+    if args.act_sim_min_max is not None:
+        if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
+            raise ValueError("--act-sim-min-max requires MIN < MAX.")
 
 
 def main() -> None:
@@ -757,6 +782,10 @@ def main() -> None:
         model_slug = args.model.rsplit("/", 1)[-1]
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         args.output = Path(f"{model_slug}-{pair_slug}.json")
+    if args.similarities_output is None:
+        args.similarities_output = args.output.with_name(
+            f"{args.output.stem}-similarities{args.output.suffix}"
+        )
 
     def model_step(
         active_model: nn.Module, token: Tensor, cache: DynamicCache
@@ -1061,11 +1090,18 @@ def main() -> None:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
         )
+        act_sim_min_max = (
+            tuple(run_args.act_sim_min_max)
+            if run_args.act_sim_min_max is not None
+            else None
+        )
         run_config = RecirculationConfig(
             pairs=pairs,
             alpha=run_args.alpha,
             beta=run_args.beta,
             mode=run_args.mode,
+            act_sim_as_alpha=run_args.act_sim_as_alpha,
+            act_sim_min_max=act_sim_min_max,
         )
         if not run_config.pairs or any(
             not 0 <= destination < source < len(blocks)
@@ -1088,7 +1124,13 @@ def main() -> None:
         return generated_ids, similarities, time.perf_counter() - start
 
     if args.ablations is False or args.ablations is None:
-        runs = [(args, True, "Recirculation ON")]
+        baseline_options = (
+            "cond_recirculate",
+            "act_sim_thres",
+            "margin_thres",
+        )
+        baseline_arguments = format_run_arguments(args, baseline_options)
+        runs = [(args, True, f"Baseline: {baseline_arguments}")]
     else:
         ablated_options = tuple(
             dict.fromkeys(
@@ -1114,13 +1156,8 @@ def main() -> None:
         else tuple(EXAMPLE_QUERIES[index - 1] for index in args.query_indices)
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
-    model_slug = args.model.rstrip("/").rsplit("/", maxsplit=1)[-1]
-    similarities_path = args.similarities_output.with_name(
-        f"{args.similarities_output.stem}-{model_slug}"
-        f"{args.similarities_output.suffix}"
-    )
     similarities_file = (
-        similarities_path.open("w", encoding="utf-8")
+        args.similarities_output.open("w", encoding="utf-8")
         if args.debug and args.similarities_output
         else None
     )

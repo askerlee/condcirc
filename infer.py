@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
+import importlib.metadata
 import inspect
 import json
 import os
@@ -14,11 +16,31 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-import torch
-from torch import Tensor, nn
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 
-from recirculation import (
+def _cache_packages_distributions() -> None:
+    """Importing transformers calls packages_distributions(), which stats every file in
+    site-packages: seconds locally, many minutes on a network filesystem."""
+    key = hashlib.sha1(f"{sys.prefix}|{sys.version}".encode()).hexdigest()[:16]
+    path = Path.home() / ".cache" / "condcirc" / f"packages_distributions-{key}.json"
+    try:
+        mapping = json.loads(path.read_text())
+    except (OSError, ValueError):
+        mapping = importlib.metadata.packages_distributions()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(mapping))
+        except OSError:
+            pass
+    importlib.metadata.packages_distributions = lambda: mapping
+
+
+_cache_packages_distributions()
+
+import torch  # noqa: E402
+from torch import Tensor, nn  # noqa: E402
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # noqa: E402
+
+from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     MagnitudeDiffStats,
     RecirculationConfig,

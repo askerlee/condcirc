@@ -541,8 +541,8 @@ def recirculate(
                         min(
                             max((similarity - min_val) / scale, 0.0),
                             1.0,
-                            config.alpha,
                         )
+                        * config.alpha
                         for similarity in similarities
                     )
                 else:

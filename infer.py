@@ -311,7 +311,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--act-sim-as-alpha",
         action="store_true",
-        help="Use source/destination activation similarity as alpha, capped at --alpha.",
+        help="Scale --alpha by the normalized source/destination activation similarity.",
     )
     parser.add_argument(
         "--passes",

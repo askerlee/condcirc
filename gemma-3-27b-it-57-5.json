@@ -1,122 +1,12 @@
 [
   {
-    "index": 1,
-    "prompt": "Explain why the daytime sky is blue but sunsets often appear red. Connect the explanation to scattering, wavelength, and the distance sunlight travels through the atmosphere.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 27.28236158099753,
-        "output": "## Why the Sky is Blue and Sunsets are Red: A Story of Scattering\n\nThe beautiful colors of the sky – blue during the day and red/orange at sunset – are a result of a phenomenon called **Rayleigh scattering**. Here's a breakdown of how it works, connecting scattering, wavelength, and distance:\n\n**1. Sunlight and its Colors:**\n\nSunlight isn't white, but it's actually made up of *all* the colors of the rainbow. Each color corresponds to a different **wavelength** of light. \n* **Blue and violet light have shorter wavelengths.**\n* **Red and orange light have longer wavelengths.**\n\n**2. Rayleigh Scattering - The Key Player:**\n\nAs sunlight enters the Earth's atmosphere, it collides with tiny air molecules (mostly nitrogen and oxygen). This collision causes the light to be scattered in different directions.  **Rayleigh scattering** specifically refers to the scattering of electromagnetic radiation (like light) by particles of a much smaller wavelength. \n\n**Here's the crucial part:**  Rayleigh scattering is *much* more effective at scattering shorter wavelengths (blue and violet) than longer wavelengths (red and orange).  The amount of scattering is inversely proportional to the fourth power of the wavelength – meaning blue light is scattered about 10 times more than red light! (1/wavelength^4)\n\n**3. Why the Sky is Blue During the Day:**\n\n* When the sun is"
-      }
-    ]
-  },
-  {
-    "index": 2,
-    "prompt": "A city wants to reduce downtown traffic without making commuting harder for low-income workers. Compare congestion pricing, improved public transit, and parking restrictions, then recommend a phased policy with safeguards and measurable success criteria.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 28.920446456999343,
-        "output": "## Reducing Downtown Traffic While Protecting Low-Income Workers: A Policy Comparison & Phased Approach\n\nThis analysis compares congestion pricing, improved public transit, and parking restrictions as strategies to reduce downtown traffic, with a focus on equity for low-income workers. It concludes with a recommended phased policy incorporating safeguards and measurable success criteria.\n\n**I. Policy Comparison:**\n\nHere's a breakdown of each policy, its pros, cons, and equity implications:\n\n**A. Congestion Pricing:**\n\n* **How it works:** Charges drivers a fee to enter a designated zone (typically the downtown core) during peak hours.  The fee varies based on time of day and potentially vehicle type.\n* **Pros:**\n    * **Highly effective at reducing congestion:** Directly discourages driving during peak times.\n    * **Revenue generation:** Funds can be reinvested in transportation improvements.\n    * **Encourages mode shift:**  Incentivizes public transit, cycling, and walking.\n* **Cons:**\n    * **Regressive impact:** Disproportionately affects low-income drivers who may have limited alternatives.\n    * **Political opposition:** Often unpopular due to perceived unfairness.\n    * **Implementation complexity:** Requires technology (toll gantries, cameras) and enforcement.\n* **Equity Implications:**  Without mitigation, this is the *least* equitable option. Low-income workers are more likely to rely on older vehicles, have less flexibility in work hours,"
-      }
-    ]
-  },
-  {
-    "index": 3,
-    "prompt": "Maya manages a project originally due Friday. The client moves it to Wednesday, an engineer reports a two-day blocker, and a required reviewer is unavailable Tuesday. Develop a realistic recovery plan, identify assumptions, and explain what Maya should communicate to each stakeholder.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 32.361123760005285,
-        "output": "## Maya's Project Recovery Plan - Shifting Deadline & Roadblocks\n\nOkay, this is a classic project management scenario! Here's a realistic recovery plan, broken down into steps, assumptions, communication, and a timeline.\n\n**1. Situation Assessment & Impact Analysis (Immediate - within the hour)**\n\n* **The Problem:** Project deadline moved from Friday to Wednesday (a 2-day compression).  Engineer reports a 2-day blocker. Key reviewer unavailable Tuesday.\n* **Impact:**  Significant risk to the new Wednesday deadline.  The blocker and reviewer unavailability create a critical path issue.  Potential for scope creep if trying to fit everything in.\n* **Initial Questions for Clarification (Maya needs to ask *immediately*):**\n    * **Engineer:**** What *specifically* is the blocker? Is it a technical issue, dependency on another team, access issue?  Is there * workaround, even a temporary one? Can it be partially mitigated? What's the *absolute* earliest it can be resolved?\n    * **Reviewer:**** Why unavailable Tuesday? Is it a hard meeting, out of office? Is there *any* flexibility to review even a portion of the work on Monday evening or Wednesday morning? Can someone else provide a preliminary review?\n    * **Client:** What's the *reason* for the deadline move? Is it a hard requirement, or is there any wiggle room? Understanding the \"why\""
-      }
-    ]
-  },
-  {
-    "index": 4,
-    "prompt": "A company claims that productivity increased after employees returned to the office, so remote work must reduce productivity. Critique this inference, propose plausible confounders, and design a stronger evaluation that could support a causal conclusion.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 29.677560091004125,
-        "output": "## Critique of the Inference: \"Productivity increased after return to office, therefore remote work reduces productivity.\"\n\nThis inference is a classic example of **correlation not equaling causation**. Just because productivity *increased* after a change (return to office) doesn't mean the change *caused* the increase. It commits the **post hoc ergo propter hoc** fallacy (after this, therefore because of this).  There are numerous other factors that could explain the productivity increase, and attributing it solely to the change in work location is a leap in logic.  It's also a bit of a simplification to assume remote work *always* reduces productivity - it's likely more nuanced and depends on the role, individual, and implementation.\n\n**Why it's flawed:**\n\n* **Ignoring other changes:** The return to office likely wasn't the *only* thing happening at the company.  New initiatives, market shifts, seasonal effects, or even just the passage of time could contribute to productivity changes.\n* **Regression to the mean:** If productivity was unusually *low* during remote work (perhaps due to initial disruption), it's natural to expect it to rise towards a more typical level when things stabilize, even without a specific intervention.\n* **Hawthorne Effect:** Employees might be more productive simply *because* they are being observed or feel a change in management attention after returning to the office, regardless of the location itself.\n* **Selection Bias:**  "
-      }
-    ]
-  },
-  {
-    "index": 5,
-    "prompt": "Design a fair procedure for allocating five emergency shelter beds among twelve eligible people when needs differ and information is incomplete. Explain the values behind your procedure and how appeals or new evidence should be handled.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.655788828000368,
-        "output": "## Fair Allocation of 5 Emergency Shelter Beds: A Tiered Lottery System\n\nThis procedure aims to balance the urgent needs of 12 eligible individuals for 5 emergency shelter beds, acknowledging incomplete information and prioritizing those with the most pressing vulnerabilities. It's built on the values of **equity, transparency, dignity, and minimizing harm.**  Equity means recognizing different needs and allocating resources accordingly, not simply equal distribution. Transparency ensures everyone understands the process. Dignity respects the individuals involved. Minimizing harm prioritizes those facing the most immediate danger.\n\n**Phase 1: Initial Needs Assessment & Tiering (30-60 minutes)**\n\nThis phase isn't about exhaustive case management, but a focused, respectful conversation to categorize individuals.  A trained (ideally with social work experience) will ask a standardized set of questions.  The goal is *not* to determine absolute need, but to place people into tiers based on *immediately life-threatening* factors.  Questions should be phrased to encourage self-reporting and avoid judgment.  Examples:\n\n* **Current Housing Situation:** (Unsheltered, staying with friends/family, unsafe situation)\n* **Exposure to Elements:** (Sleeping outside, lack of adequate clothing)\n* **Medical Conditions:** (Physical disabilities, chronic illnesses exacerbated by homelessness, pregnancy) - *Focus on immediate impact, not diagnosis.*\n* **Mental Health Concerns:** (Active psychosis, suicidal ideation, severe anxiety impacting safety"
-      }
-    ]
-  },
-  {
-    "index": 6,
-    "prompt": "Fred took his fishing pole to the bank of a river. Later, a friend texted that she would meet him at the bank to discuss a loan. Analyze the ambiguity, explain which interpretation each person may hold, and propose a message that prevents a costly misunderstanding.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.874270601001626,
-        "output": "## The Ambiguity of \"The Bank\"\n\nThis situation is a classic example of lexical ambiguity – a single word (\"bank\") having multiple meanings. The ambiguity lies in the word \"bank.\" It can refer to:\n\n* **Riverbank:** The land alongside a river, where Fred is fishing.\n* **Financial Bank:** A financial institution where loans are discussed.\n\n**Here's a breakdown of each person's likely interpretation:**\n\n**Fred's Interpretation:**\n\n* **He's at the riverbank, fishing.**  When his friend says \"meet at the bank,\" he'll likely assume she means the *riverbank* where he already is. He's in a context of fishing and being near the water. He's probably thinking she wants to join him for some relaxing time by the river, and the loan discussion is secondary.\n* **He might not immediately connect the loan to a different \"bank.\"**  He might assume she wants to talk about the loan *while* they're both at the river.\n\n**Friend's Interpretation:**\n\n* **She's thinking about the loan.**  Since the purpose of the meeting is to discuss a loan, she's likely thinking of the *financial bank* as the neutral and appropriate location for such a discussion.  It's a private, professional setting.\n* **She assumes Fred knows the context is about the loan.** She might not realize Fred is *"
-      }
-    ]
-  },
-  {
     "index": 7,
     "prompt": "All roses are flowers, some flowers fade quickly, and no quickly fading plant survives a frost. Explain exactly what can and cannot be inferred about roses, then give two additional premises that would support different conclusions.",
     "runs": [
       {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 28.108988264997606,
-        "output": "Okay, let's break down the inferences we can make from the given premises, and then explore how adding premiseses could change those inferences.\n\n**Given Premises:**\n\n1. **All roses are flowers.** (R → F) - If something is a rose, then it is a flower.)\n2. **Some flowers fade quickly.** (∃x (F(x) ∧ Q(x)) - There exists something that is a flower and fades quickly.)\n3. **No quickly fading plant survives a frost.** (∀x (Q(x) → ¬S(x)) - For all things, if it fades quickly, then it does not survive a frost.)\n\n**What CAN be Inferred:**\n\n* **Some flowers do not survive a frost.** This is a direct consequence of premises 2 and 3.  Since some flowers fade quickly, and no quickly fading plant survives a frost, then some flowers do not survive a frost.\n* **It is *possible* that some roses fade quickly.** Because all roses are flowers, and *some* flowers fade quickly, it's logically possible that some of those quickly fading flowers are roses.  However, we *cannot* definitively say that *any* roses fade quickly.  The quickly fading flowers could be entirely different types of flowers.\n* **It is *possible* that some roses do not survive a frost.**** This follows from the previous point. If some roses *might"
-      }
-    ]
-  },
-  {
-    "index": 8,
-    "prompt": "A small software team must choose between shipping a fragile feature this week or delaying it for testing while a competitor is launching a similar product. Build a decision framework, evaluate the main risks, and recommend a course of action under clearly stated assumptions.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.35024350900494,
-        "output": "## Decision Framework: Ship Fragile Feature vs. Delay for Testing - Competitive Launch\n\nThis framework helps a small software team decide whether to ship a fragile feature this week with a competitor launching a similar product, or delay to allow for proper testing.\n\n**I. Core Principles:**\n\n* **Customer Value:** Prioritize delivering value to the customer, even if imperfect.\n* **Risk Mitigation:**  Understand and minimize potential negative impacts.\n* **Speed & Learning:**  Favor options that allow for faster learning and iteration.\n* **Transparency:**  Openly communicate the decision and its rationale to stakeholders.\n\n\n\n**II. Decision Matrix:**\n\n| **Criteria** | **Ship Fragile Feature (Option A)** | **Delay for Testing (Option B)** | **Weighting (1-5, 5=Highest)** |\n|---|---|---|---|\n| **Time to Market/Competitive Advantage** | High - Beat competitor to market. | Low - Competitor gains. | 5 |\n| **Customer Impact (Positive)** | Medium - Early access to desired functionality. | Low - No new functionality. | 4 |\n| **Customer Impact (Negative - Bugs)** | High - Potential for frustrating bugs & negative experience. | Low - Reduced risk of bugs impacting users. | 5 |\n| **Development Effort (Fixing Bugs Post-Launch)** | High - Reactive bug fixing, potentially disruptive. | Medium - Proactive bug fixing during testing."
-      }
-    ]
-  },
-  {
-    "index": 9,
-    "prompt": "Plan how to prepare tea for six guests when there is one kettle, four clean mugs, two dirty mugs, and one guest avoids caffeine. Include ordering, resource constraints, and a contingency if the kettle stops working.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 29.825711393001257,
-        "output": "## Tea for Six: A Plan\n\nHere's a plan to prepare tea for six guests, considering the constraints and a caffeine-free guest, with a contingency plan.\n\n**1. Understanding the Constraints & Guest Needs:**\n\n* **Kettle:** Only one kettle - multiple boils will be needed.\n* **Mugs:** 4 clean, 2 dirty.  Need to wash the dirty mugs.\n* **Guests:** 6 total.\n* **Caffeine:** 1 guest avoids caffeine.  Need a caffeine-free option.\n* **Tea Variety:** Assume we have a selection of teas (black, green, herbal/fruit).  We need to confirm what types guests prefer if possible.\n\n**2. Resources Needed (Beyond what's listed):**\n\n* **Dish Soap & Sponge/Cloth:** For washing mugs.\n* **Tea Selection:** Black tea (for caffeinated drinkers), Herbal/Fruit tea (for caffeine-free guest & others who might want it).  Ideally, a variety.\n* **Sugar/Sweetener:** (Optional)\n* **Milk/Lemon:** (Optional, based on guest preferences)\n* **Teaspoons:** For stirring.\n* **Timer:** Helpful for steeping.\n* **Small Pitcher/Jug (Optional): For milk/lemon.\n\n\n\n**3. Preparation Timeline & Steps (Prioritized for Efficiency):**\n\n**Phase 1: Pre-Boil ("
-      }
-    ]
-  },
-  {
-    "index": 10,
-    "prompt": "A store is considering a 25% discount followed by a loyalty reward, but margins are thin and customers respond differently to promotions. Explain how the store should evaluate profitability, customer behavior, and long-term effects before choosing a promotion design.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.952202839995152,
-        "output": "Okay, let's break down how this store should evaluate the profitability, customer behavior, and long-term effects of a 25% discount + loyalty reward versus other promotion designs.  It's smart to be cautious with promotions when margins are thin! Here's a comprehensive approach, broken down into sections:\n\n**I. Understanding the Core Issues**\n\n* **Thin Margins:** This is the biggest constraint.  Every percentage point of discount or added cost (like loyalty points) needs to be carefully justified.  The promotion *must* drive enough incremental volume to offset the reduced margin per unit.\n* **Customer Heterogeneity:** Not all customers are motivated by the same things. Some are highly price-sensitive, others value convenience, and others are driven by loyalty programs. A \"one-size-fits-all\" promotion can leave money on the table.\n* **Promotion Interaction:**  A 25% discount *followed* by a loyalty reward is a sequence. The order matters.  The discount might change how customers perceive and use the loyalty reward.\n* **Long-Term Brand Impact:**  Constant discounting can devalue the brand.  Customers might start expecting discounts and be unwilling to pay full price.\n\n\n\n**II. Evaluating Profitability (Short-Term)**\n\nThis is about the immediate financial impact.\n\n* **Cost Analysis:**\n    * **Cost of Goods Sold (COGS):**  Know this *precisely*."
-      }
-    ]
-  },
-  {
-    "index": 11,
-    "prompt": "A coastal town must decide whether to rebuild a storm-damaged seawall, restore wetlands, or relocate the most exposed homes. Compare the options across cost, resilience, fairness, and uncertainty, then propose a decision process that can adapt as conditions change.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 31.326778807000665,
-        "output": "## Coastal Town Resilience: Seawall, Wetlands, or Relocation? A Comparative Analysis & Adaptive Decision Process\n\nThis document the three options for a coastal town facing storm damage: rebuilding a seawall, restoring wetlands, or relocating exposed homes. It compares them across cost, resilience, fairness, and uncertainty, then proposes an adaptive decision process.\n\n**I. Option Comparison**\n\n| Feature | Rebuild Seawall | Restore Wetlands | Relocate Homes |\n|---|---|---|---|\n| **Cost (Initial)** | High. Significant construction costs, ongoing maintenance (repairs after storms, potential raising).  Potentially highest upfront cost. | Moderate.  Land acquisition (if needed), planting, monitoring. Can be phased. | Very High. Property acquisition, relocation assistance, infrastructure adjustments in new locations.  Potentially highest overall cost. |\n| **Cost (Long-Term)** | High.  Continual maintenance & potential for increasing costs with sea level rise.  May require repeated rebuilding. | Low-Moderate.  Wetlands are self-maintaining (with some monitoring).  May require periodic nourishment after major events. | Low. Once relocation is complete, costs are primarily associated with maintaining new infrastructure. |\n| **Resilience** | Moderate. Provides hard protection against waves, but can fail catastrophically (overtopping, scouring). Doesn't address root causes of erosion.  Can exacerbate erosion on adjacent properties. | High.  Absorb"
+        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.4, top1-prob-thres=0.6",
+        "seconds": 29.841696384995885,
+        "output": "Okay, let's break down the inferences we can make from the given premises, and then explore how adding premises can change the conclusions.\n\n**The Premises:**\n\n1. **All roses are flowers.** (R → F) - If something is a rose, then it is a flower.\n2. **Some flowers fade quickly.** (∃x (F(x) ∧ Q(x))) - There exists at least one thing that is a flower *and* fades quickly.\n3. **No quickly fading plant survives a frost.** (Q → ¬S) - If something fades quickly, then it does *not* survive a frost.\n\n**What CAN be Inferred:**\n\n* **Some flowers do not survive a frost.** This is the strongest, most certain inference.  Here's the logic:\n    * We know some flowers fade quickly (Premise 2).\n    * We know anything that fades quickly doesn't survive a frost (Premise 3).\n    * Therefore, some flowers don't survive a frost.\n* **It is *possible* that some roses do not survive a frost.****  This is a possibility, but *not* a certainty. Here's why:\n    * Roses are flowers (Premise 1).\n    * Some flowers fade quickly (Premise 2).\n    * *If* some roses are among the flowers that fade quickly, then those roses won"
       }
     ]
   },
@@ -125,97 +15,9 @@
     "prompt": "A hospital has fewer intensive-care beds than patients likely to need them during an outbreak. Design a transparent allocation policy, explain how it handles changing prognoses and ties, and identify safeguards against bias and avoidable harm.",
     "runs": [
       {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 29.682307916002173,
-        "output": "## Hospital Intensive Care Unit (ICU) Allocation Policy During Outbreak\n\n**Preamble:**\n\nThis policy is designed to guide the allocation of scarce ICU resources during a public health emergency (e.g., pandemic, mass casualty event) when demand exceeds capacity. It prioritizes maximizing overall lives saved while upholding ethical principles of fairness, transparency, and respect for all patients. This policy acknowledges the inherent tragedy of such situations and aims to minimize harm.  It is a dynamic document, subject to review and revision based on evolving data and ethical considerations.\n\n**I. Core Principles:**\n\n* **Maximizing Benefit:** Prioritizing patients with the highest probability of survival *with* ICU care, and the potential for a return to meaningful life.\n* **Fairness & Equity:**  Applying consistent criteria to all patients, regardless of age, race, ethnicity, socioeconomic status, disability, or other social factors.\n* **Transparency:**  Making the allocation process and criteria publicly available and understandable.\n* **Accountability:**  Documenting all decisions and providing a mechanism for review and appeal.\n* **Duty to Treat:**  All patients will receive the best possible care available, even if ICU admission is not possible.\n* **Least Restriction:**  Patients will be allocated the level of care they need, not necessarily the highest level available.\n\n\n\n**II. Allocation Criteria – The Sequential Assessment (SOFA-based with modifiers)**\n\nWe will utilize a modified Sequential Organ Failure"
-      }
-    ]
-  },
-  {
-    "index": 13,
-    "prompt": "Two departments report conflicting results from the same customer survey: one says satisfaction improved, while the other says complaints became more severe. Explain how both claims could be true and outline an analysis that would reconcile the evidence.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.803361146994575,
-        "output": "## How Conflicting Survey Results Can Be True: A Deep Dive\n\nIt's entirely possible for two departments to report conflicting results from the same customer survey. – satisfaction *improving* while complaints *become more severe*. This isn't necessarily a sign of error, but rather a sign of nuance in the data. Here's how it can happen:\n\n**1. Different Metrics & Focus:**\n\n* **Satisfaction (Department A):**  Might be measuring *overall* satisfaction – \"How satisfied are you with our company overall?\" This can improve due to positive changes in one area (e.g., faster shipping) even if other areas are deteriorating.  They might be looking at average scores on a scale.\n* **Complaints (Department B):****  Might be focusing on the *intensity* of issues.  While the *number* of satisfied customers increases, the problems experienced by the *dissatisfied* customers could be more serious.  Think: fewer people complaining about slow shipping, but more complaining about completely incorrect orders.  They might be analyzing the severity of complaints (e.g., using a scale of 1-5 for severity) or the types of issues reported.\n\n**2. Shifting Customer Expectations:**\n\n*  Improvements in one area might raise expectations in others.  For example, if shipping speed dramatically, customers might become less tolerant of minor issues with product quality.  The baseline for \"acceptable\" changes.\n\n"
-      }
-    ]
-  },
-  {
-    "index": 14,
-    "prompt": "A teacher discovers that students are using generative AI for homework, but the school has no clear policy. Develop a response that supports learning, treats students fairly, and distinguishes acceptable assistance from work that misrepresents understanding.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.04782138200244,
-        "output": "## Responding to Generative AI Use in Homework: A Balanced Approach\n\nThis response aims to address the use of generative AI in homework when a school lacks a clear policy, focusing on fostering learning, fairness, and academic integrity. It's broken down into phases: **Immediate Response, (1-2 weeks), Short-Term Adjustments (1-2 months), and Long-Term Policy Development (ongoing).**\n\n**Core Principles Guiding This Response:**\n\n* **Focus on Learning:** The goal isn't just to *catch* cheaters*, but to ensure students are actually the material.\n* **Fairness & Transparency:** Students need to understand expectations.  Punishment without clarity is unproductive.\n* **Distinguishing Assistance from Representation:**  AI can be a tool, but submitting AI-generated work *as your own* is a misrepresentation of understanding.\n* **Open Dialogue:**  Creating a space for honest conversation is crucial.\n* **Adaptability:** This is a rapidly evolving landscape.  The response needs to be flexible.\n\n\n\n---\n\n**Phase 1: Immediate Response (1-2 weeks) -  Information Gathering & Initial Communication**\n\n* **Acknowledge the Issue:**  Address the class directly.  \"I've noticed some work that seems unusually sophisticated, and I'm aware of the capabilities of tools like ChatGPT.  I want to talk about how we can use these tools responsibly and ensure everyone is demonstrating their"
-      }
-    ]
-  },
-  {
-    "index": 15,
-    "prompt": "An old bridge is still considered safe but requires increasingly frequent repairs. Compare continued maintenance, major rehabilitation, and replacement while accounting for disruption, uncertain future demand, public safety, and budget constraints.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.276371462001407,
-        "output": "## Old Bridge: Maintain, Rehab, or Replace? A Comprehensive Comparison\n\nThis is a classic infrastructure dilemma! Let's break down the options for an aging bridge, considering the factors you've outlined: disruption, uncertain future demand, public safety, and budget constraints.  We'll use a scoring system (Low, Medium, High) for each factor to help visualize the comparison.\n\n**Understanding the Context:**\n\nBefore diving in, we need some assumptions.  Let's assume:\n\n* **\"Increasingly frequent repairs\"** means repairs are happening every 1-3 years, and becoming more complex.\n* **\"Uncertain future demand\"** means traffic volume is hard to predict – could stay stable, increase moderately, or even decrease due to changing commuting patterns or economic shifts.\n* **Budget constraints** are significant – funding is limited and competing priorities exist.\n* **Public safety** is paramount.\n\n\n\n**1. Continued Maintenance (Patching & Repair)**\n\n* **Description:**  Focuses on addressing immediate problems as they arise.  This includes patching potholes, repairing minor corrosion, replacing small components, and painting.  It's reactive rather than proactive.\n* **Cost:**** Low (initially) -  $50k - $500k per year, depending on the bridge size and issues.\n* **Disruption:** Low - Typically short-term lane closures or overnight work.\n* **Public"
-      }
-    ]
-  },
-  {
-    "index": 16,
-    "prompt": "A neighborhood wants more housing but disagrees about building height, affordability requirements, parking, and preservation of local businesses. Propose a negotiation framework and a compromise plan, including who bears each cost and how outcomes should be measured.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 29.527708190995327,
-        "output": "## Neighborhood Housing Negotiation Framework & Compromise Plan\n\nThis plan addresses a neighborhood wanting more housing while navigating disagreements on height, affordability, parking, and business preservation. It's built around a collaborative negotiation framework aiming for a \"win-win\" (or at least \"least-lose\") outcome.\n\n**I. Negotiation Framework: \"Principled Negotiation & Interest-Based Bargaining**\n\nThis framework moves beyond positional bargaining (\"We want X!\") to understanding *why* people want what they want.\n\n* **Phase 1: Information Gathering & Shared Understanding (2-4 weeks)**\n    * **Community Workshops (3-4):** Facilitated sessions to openly discuss concerns, priorities, and potential impacts.  Focus on *interests* (e.g., \"maintaining neighborhood character,\" \"ensuring housing for all income levels,\" \"reducing traffic congestion\") rather than fixed *positions* (e.g., \"no buildings over 3 stories\").\n    * **Data Collection:**  Independent analysis of existing housing stock, affordability gaps, traffic patterns, parking utilization, and local business health.  Transparency is key.\n    * **Stakeholder Identification:**  Identify key groups: residents (renters & owners), business owners, developers, city planners, community organizations.\n* **Phase 2: Option Generation & Collaborative Problem Solving (3-6 weeks)**\n    * **Working Groups:** Form small groups focused on specific issues (Height, Affordability,"
-      }
-    ]
-  },
-  {
-    "index": 17,
-    "prompt": "A research team finds a statistically significant effect that is much smaller than expected and disappears under one reasonable analysis choice. Interpret the result, identify what should be reported, and recommend the next study without reducing the decision to a single p-value.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 31.478816513998026,
-        "output": "## Interpreting a Small, Fragile, and Unexpectedly Small Effect\n\nOkay, this is a *very* common and important scenario in research. Finding a statistically significant effect that's much smaller than anticipated and sensitive to analytical choices is a red flag, even with a \"significant\" p-value. Here's a breakdown of interpretation, reporting, and next steps, focusing on moving a p-value obsession:\n\n**1. Interpretation: What does this *really* mean?**\n\n* **The effect is likely not practically meaningful:** A statistically significant result simply means the observed effect is unlikely to have occurred by chance *given your assumptions*. It doesn't mean the effect is large, important, or useful. A tiny effect size, even if \"significant,\" might not be worth pursuing further.  Think about the real-world impact. Would this small change actually matter?\n* **The result is fragile and potentially a Type I error (false positive):** The fact that the effect disappears with a different reasonable analysis choice strongly suggests the finding is unstable. This raises concerns about a Type I error – concluding there's an effect when there isn't one.  The sensitivity to analysis choice indicates the initial \"significance\" might be a fluke of the specific analysis used.\n* **Possible issues with the original model/assumptions:** The sensitivity to analysis choice suggests the initial model might be misspecified or that key assumptions are violated.  Perhaps there'"
-      }
-    ]
-  },
-  {
-    "index": 18,
-    "prompt": "A family must choose between caring for an aging relative at home, hiring in-home support, or moving them to assisted living. Build a respectful decision process that considers autonomy, safety, finances, caregiver capacity, and how the plan should be revisited over time.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.203662729996722,
-        "output": "## Decision Process: Caring for an Aging Relative - A Respectful &Collaborative Approach\n\nThis process aims to help a family navigate the complex decision of how best to care for an aging relative, prioritizing their well-being, dignity, and autonomy while acknowledging the realities of family capacity and finances. It's designed to be collaborative, transparent, and revisited regularly.\n\n**Core Principles:**\n\n* **Person-Centered Care:** The aging relative's wishes, values, and preferences are paramount.\n* **Respect for Autonomy:**  Maximize their ability to make their own decisions for as long as possible.\n* **Safety & Well-being:**  Ensure a safe and supportive environment that meets their physical, emotional, and cognitive needs.\n* **Realistic Assessment:** Honest evaluation of family capabilities, financial resources, and the relative's changing needs.\n* **Open Communication:**  Transparent and honest conversations between all involved parties.\n* **Flexibility & Reassessment:**  Recognizing that needs change and the plan must be adaptable.\n\n\n\n**Phase 1: Understanding Needs & Preferences (The Foundation)**\n\n1. **Individual Conversation with the Relative:** (Ideally done by someone they trust)\n    * **Focus:**  Their wishes, fears, and values.  What's important to *them*?\n    * **Questions to ask (open-endedly):**\n        * \"What are your biggest concerns about the future?\"\n        * \"What"
-      }
-    ]
-  },
-  {
-    "index": 19,
-    "prompt": "A news platform wants to reduce misinformation without suppressing legitimate disagreement or breaking-news updates that later change. Design a moderation approach that combines labels, distribution rules, appeals, and evidence standards, then explain its likely failure modes.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 31.779157967001083,
-        "output": "## News Platform Moderation Approach: \"Context & Evolution\"\n\nThis approach aims to balance misinformation reduction with freedom of expression and the dynamic nature of news, focusing on providing *context* rather than outright removal, and acknowledging *evolution* of understanding.\n\n**I. Labeling System (Tiered & Granular)**\n\nInstead of binary \"true/false,\" we use a tiered labeling system applied by a combination of AI and human moderators:\n\n* **Verified:** (Green Checkmark) - Fact-checked by our in-house team *and* independent fact-checkers (IFCN certified). High confidence in accuracy.  Applies to core factual claims.\n* **Generally Accepted:** (Blue Info Icon) -  Widely reported by reputable sources, but may lack definitive proof.  Represents the current consensus, acknowledging potential for change. (e.g., early reports on a developing situation).\n* **Potentially Misleading:** (Yellow Warning) - Contains claims that are disputed, lack sufficient evidence, or rely on questionable sources.  Includes a link to a \"Context Panel\" (see below).\n* **Satire/Opinion:** (Purple Icon) - Clearly identified as satire, opinion, or commentary.  Not presented as factual reporting.\n* **Needs Context:** (Grey Question Mark) -  Claims are made that require additional background for proper understanding. Links to a \"Context Panel\" with background information, related reporting, and potential perspectives."
-      }
-    ]
-  },
-  {
-    "index": 20,
-    "prompt": "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
-    "runs": [
-      {
-        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=None, top1-prob-thres=0.5",
-        "seconds": 30.653165172996523,
-        "output": "## Staged Emissions Reduction Strategy for a Manufacturer\n\nThis strategy outlines a phased approach to reducing emissions, balancing immediate action with future possibilities. It considers cost, risk, and regulation, and includes trigger signals for adjusting the course.  It's built around a \"Now, Near, Later\" framework.\n\n**Assumptions:**\n\n* **Industry:**** We'll assume a moderately energy-intensive manufacturing industry (e.g., automotive parts, food processing, chemicals) – adaptable to others.\n* **Current Regulation:** Existing regulations are moderate, with a clear trend towards tightening.  Carbon pricing (tax or cap-and-trade) is a possibility within 5-10 years.\n* **Technology Development:**  \"Promising Technology\" is Carbon Capture, Utilization, and Storage (CCUS) for this example, but could be hydrogen, advanced materials, etc.  It's currently expensive and unproven at scale.\n* **Cost of Capital:**  Standard cost of capital for the manufacturer is 8%.\n* **Electricity Grid:**  Current grid mix is moderately carbon-intensive. (e.g., 50% fossil fuels, 30% nuclear, 20% renewables).\n\n\n\n**I. NOW (0-3 Years): Low-Hanging Fruit & Foundation Building (Focus: Cost Savings & Compliance)**\n\n* **Actions:**\n    * **Energy Efficiency Audit & Implementation:**  Comprehensive audit to identify and implement"
+        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.4, top1-prob-thres=0.6",
+        "seconds": 32.764724185995874,
+        "output": "## Transparent ICU Allocation Policy During Outbreak\n\nThis policy aims to allocate scarce ICU resources fairly and ethically during a surge in demand exceeding capacity. It prioritizes maximizing overall lives saved while acknowledging the inherent difficulty of these decisions.  Transparency is paramount to maintain public trust and minimize distress.\n\n**I. Core Principles:**\n\n* **Maximizing Benefit:** Prioritize patients with the highest probability of benefiting from ICU care (likelihood of survival *with* ICU care).\n* **Fairness & Equity:**  Ensure all patients are evaluated using the same criteria, regardless of age, socioeconomic status, race, ethnicity, disability, or pre-existing conditions *unrelated to the current illness*.\n* **Transparency:** The policy and allocation decisions (de-identified) will be publicly available. (See Section VI: Communication).\n* **Continuous Reassessment:**  Patient prognoses can change, requiring ongoing evaluation and potential reallocation.\n* **Duty to Treat:**  All patients will receive the best possible care available, even if they are not allocated an ICU bed.\n* **Least Restriction of Liberty:**  Allocation decisions should not unduly restrict a patient's autonomy or rights.\n\n\n\n**II. Scoring System: The \"Sequential Organ Failure Assessment - Modified (SOFA-m) + Clinical Judgment\"**\n\nWe will utilize a modified version of the Sequential Organ Failure Assessment (SOFA) score, adapted for rapid assessment in an outbreak setting (SOFA-m).  This is combined with"
       }
     ]
   }

@@ -243,6 +243,16 @@ def parse_query_indices(value: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(indices))
 
 
+def query_index_signature(argv: Sequence[str]) -> str:
+    signature = "all"
+    for index, argument in enumerate(argv):
+        if argument == "--query-index":
+            signature = argv[index + 1]
+        elif argument.startswith("--query-index="):
+            signature = argument.partition("=")[2]
+    return signature
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
@@ -350,6 +360,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--cache-avg-kv",
+        action="store_true",
+        help=(
+            "For conditionally recirculated tokens, average the KV pairs from "
+            "all executed passes before committing them to the cache."
+        ),
+    )
+    parser.add_argument(
         "--act-sim-thres",
         type=float,
         nargs="+",
@@ -379,8 +397,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="THRESHOLD",
         help=(
             "Primary conditional gate: recirculate only when the top-1 versus "
-            "top-2 probability margin is at most this value. Requires "
-            "--cond-recirculate."
+            "top-2 probability margin is at most this value."
         ),
     )
     parser.add_argument(
@@ -492,11 +509,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if "--ablation" not in argv:
         args = parser.parse_args(argv)
         args.ablations = False
+        args.query_index_signature = query_index_signature(argv)
         return args
 
     ablations_index = argv.index("--ablation")
     baseline_argv = argv[:ablations_index]
     args = parser.parse_args(baseline_argv)
+    args.query_index_signature = query_index_signature(baseline_argv)
 
     ablation_groups: list[list[str]] = []
     current_group: list[str] | None = None
@@ -654,6 +673,28 @@ def rewind_dynamic_cache_layer(
     return cache
 
 
+def capture_dynamic_cache_token(cache: DynamicCache) -> tuple[tuple[Tensor, Tensor], ...]:
+    return tuple(
+        (
+            layer.keys[..., -1:, :].detach().clone(),
+            layer.values[..., -1:, :].detach().clone(),
+        )
+        for layer in cache.layers
+    )
+
+
+def average_dynamic_cache_token(
+    cache: DynamicCache,
+    cached_tokens: Sequence[tuple[tuple[Tensor, Tensor], ...]],
+) -> None:
+    for layer_index, layer in enumerate(cache.layers):
+        keys, values = zip(
+            *(cached_token[layer_index] for cached_token in cached_tokens)
+        )
+        layer.keys[..., -1:, :].copy_(torch.stack(keys).mean(dim=0))
+        layer.values[..., -1:, :].copy_(torch.stack(values).mean(dim=0))
+
+
 def sample_token(logits: Tensor, temperature: float) -> Tensor:
     if temperature <= 0:
         return logits.argmax(dim=-1, keepdim=True)
@@ -669,17 +710,11 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
-    if (
-        args.margin_thres is not None
-        and not args.cond_recirculate
-        and not args.act_sim_as_alpha
-    ):
-        raise ValueError(
-            "--margin-thres requires --cond-recirculate or --act-sim-as-alpha."
-        )
     if args.act_sim_min_max is not None:
         if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
             raise ValueError("--act-sim-min-max requires MIN < MAX.")
+    if args.cache_avg_kv and not args.cond_recirculate:
+        raise ValueError("--cache-avg-kv requires --cond-recirculate.")
 
 
 def main() -> None:
@@ -808,16 +843,29 @@ def main() -> None:
 
     blocks = find_decoder_blocks(model)
     global_attention_layers = find_global_attention_layer_indices(model, len(blocks))
+    gate_signature = "".join(
+        signature
+        for threshold, signature in (
+            (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
+            (args.margin_thres, f"-m{args.margin_thres}"),
+        )
+        if threshold is not None
+    )
     if args.output is None:
         pairs = resolve_recirculation_pairs(
             args, len(blocks), global_attention_layers
         )
         model_slug = args.model.rsplit("/", 1)[-1]
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
-        args.output = Path(f"{model_slug}-{pair_slug}.json")
+        cache_signature = "-avgkv" if args.cache_avg_kv else ""
+        args.output = Path(
+            f"{model_slug}-{pair_slug}{gate_signature}{cache_signature}.json"
+        )
     if args.similarities_output is None:
+        query_signature = f"-{args.query_index_signature}"
+        cache_signature = "-avgkv" if args.debug and args.cache_avg_kv else ""
         args.similarities_output = args.output.with_name(
-            f"{args.output.stem}-debug{args.output.suffix}"
+            f"{args.output.stem}{query_signature}{cache_signature}-debug{args.output.suffix}"
         )
 
     def model_step(
@@ -998,16 +1046,14 @@ def main() -> None:
                     margin_threshold=run_args.margin_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
                     gating_pair_index=run_args.gating_pair_index,
+                    capture_cached_token=(
+                        capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                    ),
+                    average_cached_token=(
+                        average_dynamic_cache_token if run_args.cache_avg_kv else None
+                    ),
                 )
                 next_logits = prompt_logits[:, -1, :]
-            else:
-                token_logits: Tensor | None = None
-                for position in range(input_ids.shape[1]):
-                    token_logits, student_cache = plain_step(
-                        input_ids[:, position : position + 1], student_cache
-                    )
-                assert token_logits is not None
-                next_logits = token_logits[:, -1, :]
 
             generated_ids = input_ids.clone()
             for _ in range(run_args.max_new_tokens):
@@ -1033,6 +1079,12 @@ def main() -> None:
                         margin_threshold=run_args.margin_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
                         gating_pair_index=run_args.gating_pair_index,
+                        capture_cached_token=(
+                            capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                        ),
+                        average_cached_token=(
+                            average_dynamic_cache_token if run_args.cache_avg_kv else None
+                        ),
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1072,6 +1124,12 @@ def main() -> None:
             pass_probability_margins=pass_probability_margins,
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
+            capture_cached_token=(
+                capture_dynamic_cache_token if run_args.cache_avg_kv else None
+            ),
+            average_cached_token=(
+                average_dynamic_cache_token if run_args.cache_avg_kv else None
+            ),
         )
         teacher_logits = first_pass_logits[-1]
         teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
@@ -1128,6 +1186,12 @@ def main() -> None:
                 pass_probability_margins=pass_probability_margins,
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
+                capture_cached_token=(
+                    capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                ),
+                average_cached_token=(
+                    average_dynamic_cache_token if run_args.cache_avg_kv else None
+                ),
             )
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
@@ -1136,7 +1200,10 @@ def main() -> None:
             teacher_next_logits = teacher_logits[:, -1, :]
             student_next_logits = student_logits[:, -1, :]
 
-        report_stats(recirculated_flags)
+        # recirculated_flags also covers prompt positions and one trailing lookahead
+        # call, neither of which produce a comparison entry, so count from
+        # `similarities` instead to match the tokens actually reported.
+        report_stats([comparison["recirculated"] for comparison in similarities])
 
         return generated_ids, similarities
 
@@ -1213,9 +1280,11 @@ def main() -> None:
             runs.append((ablation_args, True, f"Ablation: {arguments}"))
 
     prompts = (
-        (args.prompt,)
+        ((1, args.prompt),)
         if args.prompt is not None
-        else tuple(EXAMPLE_QUERIES[index - 1] for index in args.query_indices)
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1]) for index in args.query_indices
+        )
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
     similarities_file = (
@@ -1238,7 +1307,7 @@ def main() -> None:
             output_file.flush()
 
     try:
-        for prompt_index, prompt in enumerate(prompts, start=1):
+        for prompt_index, prompt in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
                 "prompt": prompt,

@@ -387,11 +387,17 @@ def recirculate(
     pass_probability_margins: list[list[float]] | None = None,
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
+    capture_cached_token: Callable[[Any], Any] | None = None,
+    average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
+    if (capture_cached_token is None) != (average_cached_token is None):
+        raise ValueError(
+            "capture_cached_token and average_cached_token must be provided together."
+        )
 
     if config.mode == "layerwise":
         if condition_thresholds is not None:
@@ -471,14 +477,6 @@ def recirculate(
         raise ValueError(
             f"gating_pair_index must be in [0, {len(config.pairs)})."
         )
-    if (
-        margin_threshold is not None
-        and condition_thresholds is None
-        and not config.act_sim_as_alpha
-    ):
-        raise ValueError(
-            "margin_threshold requires condition_thresholds or act_sim_as_alpha."
-        )
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
@@ -544,6 +542,11 @@ def recirculate(
                     for similarity, threshold in zip(similarities, condition_thresholds)
                 )
             )
+            cached_token_passes = (
+                [capture_cached_token(cache)]
+                if should_recirculate and capture_cached_token is not None
+                else None
+            )
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
@@ -576,10 +579,15 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
+                if cached_token_passes is not None:
+                    cached_token_passes.append(capture_cached_token(cache))
                 if token_pass_probability_margins is not None:
                     token_pass_probability_margins.append(
                         _top1_top2_probability_margin(final_logits)
                     )
+            if cached_token_passes is not None:
+                assert average_cached_token is not None
+                average_cached_token(cache, cached_token_passes)
             if pass_probability_margins is not None:
                 assert token_pass_probability_margins is not None
                 pass_probability_margins.append(token_pass_probability_margins)

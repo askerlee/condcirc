@@ -404,13 +404,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--kl-reject",
+        "--cosine-reject",
         type=float,
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Discard P2 when D_KL(P1 || P2) for the next-token distributions "
-            "exceeds this threshold."
+            "Discard P2 when its next-token distribution has cosine similarity "
+            "below this threshold relative to P1."
+        ),
+    )
+    parser.add_argument(
+        "--cosine-top-k",
+        type=int,
+        default=100,
+        metavar="K",
+        help=(
+            "Compute P1/P2 cosine over the union of each distribution's top-K "
+            "tokens (default: 100)."
         ),
     )
     parser.add_argument(
@@ -711,13 +721,15 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.act_sim_min_max is not None:
         if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
             raise ValueError("--act-sim-min-max requires MIN < MAX.")
-    if args.kl_reject is not None:
-        if args.kl_reject < 0.0:
-            raise ValueError("--kl-reject must be nonnegative.")
+    if args.cosine_reject is not None:
+        if not 0.0 <= args.cosine_reject <= 1.0:
+            raise ValueError("--cosine-reject must be between 0 and 1.")
         if args.passes < 2:
-            raise ValueError("--kl-reject requires --passes of at least 2.")
+            raise ValueError("--cosine-reject requires --passes of at least 2.")
         if args.mode != "source":
-            raise ValueError("--kl-reject requires --mode source.")
+            raise ValueError("--cosine-reject requires --mode source.")
+    if args.cosine_top_k < 1:
+        raise ValueError("--cosine-top-k must be at least 1.")
 
 
 def main() -> None:
@@ -852,7 +864,10 @@ def main() -> None:
         for threshold, signature in (
             (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
             (args.margin_thres, f"-m{args.margin_thres}"),
-            (args.kl_reject, f"-kl{args.kl_reject}"),
+            (
+                args.cosine_reject,
+                f"-cos{args.cosine_reject}-k{args.cosine_top_k}",
+            ),
         )
         if threshold is not None
     )
@@ -1052,11 +1067,12 @@ def main() -> None:
                     condition_thresholds=condition_thresholds,
                     margin_threshold=run_args.margin_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
-                    kl_reject=run_args.kl_reject,
+                    cosine_reject=run_args.cosine_reject,
+                    cosine_top_k=run_args.cosine_top_k,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=(
                         capture_dynamic_cache_token
-                        if run_args.kl_reject is not None
+                        if run_args.cosine_reject is not None
                         else None
                     ),
                     restore_cached_token=restore_dynamic_cache_token,
@@ -1086,11 +1102,12 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         margin_threshold=run_args.margin_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
-                        kl_reject=run_args.kl_reject,
+                        cosine_reject=run_args.cosine_reject,
+                        cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=(
                             capture_dynamic_cache_token
-                            if run_args.kl_reject is not None
+                            if run_args.cosine_reject is not None
                             else None
                         ),
                         restore_cached_token=restore_dynamic_cache_token,
@@ -1112,7 +1129,7 @@ def main() -> None:
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
-        kl_divergences: list[float | None] = []
+        p2_cosine_similarities: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1129,7 +1146,8 @@ def main() -> None:
             condition_thresholds=condition_thresholds,
             margin_threshold=run_args.margin_thres,
             top1_prob_threshold=run_args.top1_prob_thres,
-            kl_reject=run_args.kl_reject,
+            cosine_reject=run_args.cosine_reject,
+            cosine_top_k=run_args.cosine_top_k,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
@@ -1137,10 +1155,10 @@ def main() -> None:
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
-            kl_divergences=kl_divergences,
+            p2_cosine_similarities=p2_cosine_similarities,
             capture_cached_token=(
                 capture_dynamic_cache_token
-                if run_args.kl_reject is not None
+                if run_args.cosine_reject is not None
                 else None
             ),
             restore_cached_token=restore_dynamic_cache_token,
@@ -1161,11 +1179,12 @@ def main() -> None:
             )
             comparison["recirculated"] = recirculated_flags[-1]
             comparison["rejected"] = rejected_flags[-1]
-            comparison["kl_divergence"] = (
-                round(kl_divergences[-1], 6)
-                if kl_divergences[-1] is not None
+            comparison["p2_top_k_cosine_similarity"] = (
+                round(p2_cosine_similarities[-1], 6)
+                if p2_cosine_similarities[-1] is not None
                 else None
             )
+            comparison["cosine_top_k"] = run_args.cosine_top_k
             if run_args.act_sim_as_alpha:
                 actual_alpha = actual_alphas[-1]
                 comparison["actual_alpha"] = (
@@ -1200,7 +1219,8 @@ def main() -> None:
                 condition_thresholds=condition_thresholds,
                 margin_threshold=run_args.margin_thres,
                 top1_prob_threshold=run_args.top1_prob_thres,
-                kl_reject=run_args.kl_reject,
+                cosine_reject=run_args.cosine_reject,
+                cosine_top_k=run_args.cosine_top_k,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
@@ -1208,10 +1228,10 @@ def main() -> None:
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
-                kl_divergences=kl_divergences,
+                p2_cosine_similarities=p2_cosine_similarities,
                 capture_cached_token=(
                     capture_dynamic_cache_token
-                    if run_args.kl_reject is not None
+                    if run_args.cosine_reject is not None
                     else None
                 ),
                 restore_cached_token=restore_dynamic_cache_token,
@@ -1283,7 +1303,8 @@ def main() -> None:
             "act_sim_thres",
             "margin_thres",
             "top1_prob_thres",
-            "kl_reject",
+            "cosine_reject",
+            "cosine_top_k",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]

@@ -408,7 +408,8 @@ def recirculate(
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
-    margin_threshold: float | None = None,
+    margin_threshold_p1: float | None = None,
+    margin_threshold_p2: float | None = None,
     top1_prob_threshold: float | None = None,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
@@ -428,17 +429,19 @@ def recirculate(
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
+    if passes < 2 and (margin_threshold_p2 is not None or cosine_reject is not None):
+        raise ValueError("Post-P2 gates require passes of at least 2.")
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
     if average_cached_token is not None and capture_cached_token is None:
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if cosine_reject is not None and (
+    if (margin_threshold_p2 is not None or cosine_reject is not None) and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
-            "cosine_reject requires capture_cached_token and restore_cached_token."
+            "Post-P2 gates require capture_cached_token and restore_cached_token."
         )
 
     if config.mode == "layerwise":
@@ -446,9 +449,13 @@ def recirculate(
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
             )
-        if margin_threshold is not None:
+        if margin_threshold_p1 is not None:
             raise ValueError(
                 "Margin-gated recirculation currently requires --mode source."
+            )
+        if margin_threshold_p2 is not None:
+            raise ValueError(
+                "Post-P2 margin-gated recirculation currently requires --mode source."
             )
         if top1_prob_threshold is not None:
             raise ValueError(
@@ -535,7 +542,7 @@ def recirculate(
                 first_pass_logits.append(first_logits)
             first_margin = (
                 _top1_top2_probability_margin(first_logits)
-                if margin_threshold is not None or pass_probability_margins is not None
+                if margin_threshold_p1 is not None or pass_probability_margins is not None
                 else None
             )
             first_top1_prob = (
@@ -568,7 +575,10 @@ def recirculate(
                 assert similarities is not None
                 similarity_stats.values.append(sum(similarities) / len(similarities))
 
-            margin_gate = margin_threshold is None or first_margin <= margin_threshold
+            margin_gate = (
+                margin_threshold_p1 is None
+                or first_margin <= margin_threshold_p1
+            )
             top1_prob_gate = (
                 top1_prob_threshold is None or first_top1_prob <= top1_prob_threshold
             )
@@ -625,24 +635,35 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
+                pass_margin = (
+                    _top1_top2_probability_margin(final_logits)
+                    if margin_threshold_p2 is not None
+                    or token_pass_probability_margins is not None
+                    else None
+                )
+                if token_pass_probability_margins is not None:
+                    assert pass_margin is not None
+                    token_pass_probability_margins.append(pass_margin)
                 if pass_index == 1:
                     p2_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
+                    if margin_threshold_p2 is not None:
+                        assert pass_margin is not None
+                        p2_accepted = pass_margin > margin_threshold_p2
                     if cosine_reject is not None:
-                        p2_accepted = p2_cosine_similarity >= cosine_reject
-                        if not p2_accepted:
-                            assert cached_token_passes is not None
-                            assert restore_cached_token is not None
-                            restore_cached_token(cache, cached_token_passes[0])
-                            final_logits = first_logits
-                            break
+                        p2_accepted = (
+                            p2_accepted
+                            and p2_cosine_similarity >= cosine_reject
+                        )
+                    if not p2_accepted:
+                        assert cached_token_passes is not None
+                        assert restore_cached_token is not None
+                        restore_cached_token(cache, cached_token_passes[0])
+                        final_logits = first_logits
+                        break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
-                if token_pass_probability_margins is not None:
-                    token_pass_probability_margins.append(
-                        _top1_top2_probability_margin(final_logits)
-                    )
             if (
                 cached_token_passes is not None
                 and average_cached_token is not None

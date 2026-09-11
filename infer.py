@@ -383,13 +383,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--margin-thres",
+        "--margin-thres-p1",
         type=float,
         default=None,
         metavar="THRESHOLD",
         help=(
             "Primary conditional gate: recirculate only when the top-1 versus "
             "top-2 probability margin is at most this value."
+        ),
+    )
+    parser.add_argument(
+        "--margin-thres-p2",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Post-P2 gate: accept recirculation only when the P2 top-1 versus "
+            "top-2 probability margin is greater than this value."
         ),
     )
     parser.add_argument(
@@ -400,7 +410,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Conditional gate: recirculate only when the top-1 predicted "
             "next-token probability is at most this value. Can be combined "
-            "with --margin-thres or used on its own."
+            "with --margin-thres-p1 or used on its own."
         ),
     )
     parser.add_argument(
@@ -728,6 +738,11 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--cosine-reject requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--cosine-reject requires --mode source.")
+    if args.margin_thres_p2 is not None:
+        if args.passes < 2:
+            raise ValueError("--margin-thres-p2 requires --passes of at least 2.")
+        if args.mode != "source":
+            raise ValueError("--margin-thres-p2 requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
 
@@ -863,11 +878,12 @@ def main() -> None:
         signature
         for threshold, signature in (
             (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
-            (args.margin_thres, f"-m{args.margin_thres}"),
+            (args.margin_thres_p1, f"-m1{args.margin_thres_p1}"),
             (
                 args.cosine_reject,
                 f"-cos{args.cosine_reject}-k{args.cosine_top_k}",
             ),
+            (args.margin_thres_p2, f"-m2{args.margin_thres_p2}"),
         )
         if threshold is not None
     )
@@ -1065,14 +1081,18 @@ def main() -> None:
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
-                    margin_threshold=run_args.margin_thres,
+                    margin_threshold_p1=run_args.margin_thres_p1,
+                    margin_threshold_p2=run_args.margin_thres_p2,
                     top1_prob_threshold=run_args.top1_prob_thres,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=(
                         capture_dynamic_cache_token
-                        if run_args.cosine_reject is not None
+                        if (
+                            run_args.margin_thres_p2 is not None
+                            or run_args.cosine_reject is not None
+                        )
                         else None
                     ),
                     restore_cached_token=restore_dynamic_cache_token,
@@ -1100,14 +1120,18 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
-                        margin_threshold=run_args.margin_thres,
+                        margin_threshold_p1=run_args.margin_thres_p1,
+                        margin_threshold_p2=run_args.margin_thres_p2,
                         top1_prob_threshold=run_args.top1_prob_thres,
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=(
                             capture_dynamic_cache_token
-                            if run_args.cosine_reject is not None
+                            if (
+                                run_args.margin_thres_p2 is not None
+                                or run_args.cosine_reject is not None
+                            )
                             else None
                         ),
                         restore_cached_token=restore_dynamic_cache_token,
@@ -1144,7 +1168,8 @@ def main() -> None:
             passes=run_args.passes if use_recirculation else 1,
             rewind_layer=rewind_dynamic_cache_layer,
             condition_thresholds=condition_thresholds,
-            margin_threshold=run_args.margin_thres,
+            margin_threshold_p1=run_args.margin_thres_p1,
+            margin_threshold_p2=run_args.margin_thres_p2,
             top1_prob_threshold=run_args.top1_prob_thres,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
@@ -1158,7 +1183,10 @@ def main() -> None:
             p2_cosine_similarities=p2_cosine_similarities,
             capture_cached_token=(
                 capture_dynamic_cache_token
-                if run_args.cosine_reject is not None
+                if (
+                    run_args.margin_thres_p2 is not None
+                    or run_args.cosine_reject is not None
+                )
                 else None
             ),
             restore_cached_token=restore_dynamic_cache_token,
@@ -1217,7 +1245,8 @@ def main() -> None:
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
                 condition_thresholds=condition_thresholds,
-                margin_threshold=run_args.margin_thres,
+                margin_threshold_p1=run_args.margin_thres_p1,
+                margin_threshold_p2=run_args.margin_thres_p2,
                 top1_prob_threshold=run_args.top1_prob_thres,
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
@@ -1231,7 +1260,10 @@ def main() -> None:
                 p2_cosine_similarities=p2_cosine_similarities,
                 capture_cached_token=(
                     capture_dynamic_cache_token
-                    if run_args.cosine_reject is not None
+                    if (
+                        run_args.margin_thres_p2 is not None
+                        or run_args.cosine_reject is not None
+                    )
                     else None
                 ),
                 restore_cached_token=restore_dynamic_cache_token,
@@ -1301,7 +1333,8 @@ def main() -> None:
         baseline_options = (
             "cond_recirculate",
             "act_sim_thres",
-            "margin_thres",
+            "margin_thres_p1",
+            "margin_thres_p2",
             "top1_prob_thres",
             "cosine_reject",
             "cosine_top_k",

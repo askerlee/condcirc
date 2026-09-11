@@ -116,13 +116,21 @@ def _top1_probability(logits: Tensor) -> float:
     return float(probabilities.max(dim=-1).values.item())
 
 
-def _probability_cosine_similarity(left_logits: Tensor, right_logits: Tensor) -> float:
-    left_probabilities = torch.softmax(left_logits[:, -1, :].float(), dim=-1)
-    right_probabilities = torch.softmax(right_logits[:, -1, :].float(), dim=-1)
-    similarity = torch.nn.functional.cosine_similarity(
-        left_probabilities, right_probabilities, dim=-1
+def _distribution_kl_divergence(
+    teacher_logits: Tensor, student_logits: Tensor
+) -> float:
+    teacher_log_probabilities = torch.log_softmax(
+        teacher_logits[:, -1, :].float(), dim=-1
     )
-    return float(similarity.item())
+    student_log_probabilities = torch.log_softmax(
+        student_logits[:, -1, :].float(), dim=-1
+    )
+    teacher_probabilities = teacher_log_probabilities.exp()
+    divergence = (
+        teacher_probabilities
+        * (teacher_log_probabilities - student_log_probabilities)
+    ).sum(dim=-1)
+    return float(divergence.mean().item())
 
 
 class _Hooks:
@@ -392,7 +400,7 @@ def recirculate(
     condition_thresholds: Sequence[float] | None = None,
     margin_threshold: float | None = None,
     top1_prob_threshold: float | None = None,
-    tau_reject: float | None = None,
+    kl_reject: float | None = None,
     gating_pair_index: int = 0,
     first_pass_logits: list[Tensor] | None = None,
     first_pass_similarities: list[tuple[float, ...]] | None = None,
@@ -400,6 +408,7 @@ def recirculate(
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
+    kl_divergences: list[float | None] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -412,11 +421,11 @@ def recirculate(
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if tau_reject is not None and (
+    if kl_reject is not None and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
-            "tau_reject requires capture_cached_token and restore_cached_token."
+            "kl_reject requires capture_cached_token and restore_cached_token."
         )
 
     if config.mode == "layerwise":
@@ -432,7 +441,7 @@ def recirculate(
             raise ValueError(
                 "Top1-probability-gated recirculation currently requires --mode source."
             )
-        if tau_reject is not None:
+        if kl_reject is not None:
             raise ValueError("P2 trust rejection currently requires --mode source.")
         if similarity_stats is not None:
             raise ValueError(
@@ -570,6 +579,7 @@ def recirculate(
                 else None
             )
             p2_accepted = True
+            p2_kl_divergence = None
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
@@ -602,17 +612,18 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
-                if pass_index == 1 and tau_reject is not None:
-                    p2_accepted = (
-                        _probability_cosine_similarity(first_logits, final_logits)
-                        >= tau_reject
+                if pass_index == 1:
+                    p2_kl_divergence = _distribution_kl_divergence(
+                        first_logits, final_logits
                     )
-                    if not p2_accepted:
-                        assert cached_token_passes is not None
-                        assert restore_cached_token is not None
-                        restore_cached_token(cache, cached_token_passes[0])
-                        final_logits = first_logits
-                        break
+                    if kl_reject is not None:
+                        p2_accepted = p2_kl_divergence <= kl_reject
+                        if not p2_accepted:
+                            assert cached_token_passes is not None
+                            assert restore_cached_token is not None
+                            restore_cached_token(cache, cached_token_passes[0])
+                            final_logits = first_logits
+                            break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
                 if token_pass_probability_margins is not None:
@@ -638,6 +649,8 @@ def recirculate(
                 recirculated_flags.append(should_recirculate and p2_accepted)
             if rejected_flags is not None:
                 rejected_flags.append(should_recirculate and not p2_accepted)
+            if kl_divergences is not None:
+                kl_divergences.append(p2_kl_divergence)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

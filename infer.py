@@ -360,14 +360,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--cache-avg-kv",
-        action="store_true",
-        help=(
-            "For conditionally recirculated tokens, average the KV pairs from "
-            "all executed passes before committing them to the cache."
-        ),
-    )
-    parser.add_argument(
         "--act-sim-thres",
         type=float,
         nargs="+",
@@ -412,13 +404,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--tau-reject",
+        "--kl-reject",
         type=float,
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Discard P2 when its next-token probability distribution has cosine "
-            "similarity below this threshold relative to P1."
+            "Discard P2 when D_KL(P1 || P2) for the next-token distributions "
+            "exceeds this threshold."
         ),
     )
     parser.add_argument(
@@ -693,18 +685,6 @@ def capture_dynamic_cache_token(cache: DynamicCache) -> tuple[tuple[Tensor, Tens
     )
 
 
-def average_dynamic_cache_token(
-    cache: DynamicCache,
-    cached_tokens: Sequence[tuple[tuple[Tensor, Tensor], ...]],
-) -> None:
-    for layer_index, layer in enumerate(cache.layers):
-        keys, values = zip(
-            *(cached_token[layer_index] for cached_token in cached_tokens)
-        )
-        layer.keys[..., -1:, :].copy_(torch.stack(keys).mean(dim=0))
-        layer.values[..., -1:, :].copy_(torch.stack(values).mean(dim=0))
-
-
 def restore_dynamic_cache_token(
     cache: DynamicCache, cached_token: tuple[tuple[Tensor, Tensor], ...]
 ) -> None:
@@ -731,15 +711,13 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.act_sim_min_max is not None:
         if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
             raise ValueError("--act-sim-min-max requires MIN < MAX.")
-    if args.cache_avg_kv and not args.cond_recirculate:
-        raise ValueError("--cache-avg-kv requires --cond-recirculate.")
-    if args.tau_reject is not None:
-        if not 0.0 <= args.tau_reject <= 1.0:
-            raise ValueError("--tau-reject must be between 0 and 1.")
+    if args.kl_reject is not None:
+        if args.kl_reject < 0.0:
+            raise ValueError("--kl-reject must be nonnegative.")
         if args.passes < 2:
-            raise ValueError("--tau-reject requires --passes of at least 2.")
+            raise ValueError("--kl-reject requires --passes of at least 2.")
         if args.mode != "source":
-            raise ValueError("--tau-reject requires --mode source.")
+            raise ValueError("--kl-reject requires --mode source.")
 
 
 def main() -> None:
@@ -874,7 +852,7 @@ def main() -> None:
         for threshold, signature in (
             (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
             (args.margin_thres, f"-m{args.margin_thres}"),
-            (args.tau_reject, f"-tr{args.tau_reject}"),
+            (args.kl_reject, f"-kl{args.kl_reject}"),
         )
         if threshold is not None
     )
@@ -885,15 +863,12 @@ def main() -> None:
         model_slug = args.model.rsplit("/", 1)[-1]
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
-        cache_signature = "-avgkv" if args.cache_avg_kv else ""
         args.output = Path(
-            f"{model_slug}-{pair_slug}{gate_signature}{query_signature}{cache_signature}.json"
+            f"{model_slug}-{pair_slug}{gate_signature}{query_signature}.json"
         )
     if args.similarities_output is None:
-        query_signature = f"-{args.query_index_signature}"
-        cache_signature = "-avgkv" if args.debug and args.cache_avg_kv else ""
         args.similarities_output = args.output.with_name(
-            f"{args.output.stem}{query_signature}{cache_signature}-debug{args.output.suffix}"
+            f"{args.output.stem}-debug{args.output.suffix}"
         )
 
     def model_step(
@@ -1077,15 +1052,12 @@ def main() -> None:
                     condition_thresholds=condition_thresholds,
                     margin_threshold=run_args.margin_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
-                    tau_reject=run_args.tau_reject,
+                    kl_reject=run_args.kl_reject,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=(
                         capture_dynamic_cache_token
-                        if run_args.cache_avg_kv or run_args.tau_reject is not None
+                        if run_args.kl_reject is not None
                         else None
-                    ),
-                    average_cached_token=(
-                        average_dynamic_cache_token if run_args.cache_avg_kv else None
                     ),
                     restore_cached_token=restore_dynamic_cache_token,
                 )
@@ -1114,15 +1086,12 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         margin_threshold=run_args.margin_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
-                        tau_reject=run_args.tau_reject,
+                        kl_reject=run_args.kl_reject,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=(
                             capture_dynamic_cache_token
-                            if run_args.cache_avg_kv or run_args.tau_reject is not None
+                            if run_args.kl_reject is not None
                             else None
-                        ),
-                        average_cached_token=(
-                            average_dynamic_cache_token if run_args.cache_avg_kv else None
                         ),
                         restore_cached_token=restore_dynamic_cache_token,
                     )
@@ -1143,6 +1112,7 @@ def main() -> None:
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
+        kl_divergences: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1159,7 +1129,7 @@ def main() -> None:
             condition_thresholds=condition_thresholds,
             margin_threshold=run_args.margin_thres,
             top1_prob_threshold=run_args.top1_prob_thres,
-            tau_reject=run_args.tau_reject,
+            kl_reject=run_args.kl_reject,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
@@ -1167,13 +1137,11 @@ def main() -> None:
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
+            kl_divergences=kl_divergences,
             capture_cached_token=(
                 capture_dynamic_cache_token
-                if run_args.cache_avg_kv or run_args.tau_reject is not None
+                if run_args.kl_reject is not None
                 else None
-            ),
-            average_cached_token=(
-                average_dynamic_cache_token if run_args.cache_avg_kv else None
             ),
             restore_cached_token=restore_dynamic_cache_token,
         )
@@ -1193,6 +1161,11 @@ def main() -> None:
             )
             comparison["recirculated"] = recirculated_flags[-1]
             comparison["rejected"] = rejected_flags[-1]
+            comparison["kl_divergence"] = (
+                round(kl_divergences[-1], 6)
+                if kl_divergences[-1] is not None
+                else None
+            )
             if run_args.act_sim_as_alpha:
                 actual_alpha = actual_alphas[-1]
                 comparison["actual_alpha"] = (
@@ -1227,7 +1200,7 @@ def main() -> None:
                 condition_thresholds=condition_thresholds,
                 margin_threshold=run_args.margin_thres,
                 top1_prob_threshold=run_args.top1_prob_thres,
-                tau_reject=run_args.tau_reject,
+                kl_reject=run_args.kl_reject,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
@@ -1235,13 +1208,11 @@ def main() -> None:
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
+                kl_divergences=kl_divergences,
                 capture_cached_token=(
                     capture_dynamic_cache_token
-                    if run_args.cache_avg_kv or run_args.tau_reject is not None
+                    if run_args.kl_reject is not None
                     else None
-                ),
-                average_cached_token=(
-                    average_dynamic_cache_token if run_args.cache_avg_kv else None
                 ),
                 restore_cached_token=restore_dynamic_cache_token,
             )
@@ -1312,8 +1283,7 @@ def main() -> None:
             "act_sim_thres",
             "margin_thres",
             "top1_prob_thres",
-            "tau_reject",
-            "cache_avg_kv",
+            "kl_reject",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]

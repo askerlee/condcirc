@@ -1,0 +1,35 @@
+[
+  {
+    "index": 1,
+    "prompt": "Explain why the daytime sky is blue but sunsets often appear red. Connect the explanation to scattering, wavelength, and the distance sunlight travels through the atmosphere.",
+    "runs": [
+      {
+        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.3, top1-prob-thres=None",
+        "seconds": 28.37,
+        "output": "## Why the Sky is Blue and Sunsets are Red: A Story of Scattering\n\nThe beautiful colors of the sky – blue during the day and red/orange at sunset – are a result of a phenomenon called **Rayleigh scattering**. Here's a breakdown of how it works, connecting scattering, wavelength, and atmospheric distance:\n\n**1. Sunlight and its Colors:**\n\nSunlight isn't white, but it's actually made up of *all* the colors of the rainbow.  Each color corresponds to a different **wavelength** of light. \n* **Blue and Violet light have short wavelengths.**\n* **Red and Orange light have long wavelengths.**\n\n**2. Rayleigh Scattering - The Key Player:**\n\nAs sunlight enters the Earth's atmosphere, it collides with tiny air molecules (mostly nitrogen and oxygen). This collision causes the light to scatter in different directions.  **Rayleigh scattering** specifically refers to the scattering of electromagnetic radiation (like light) by particles of a much smaller wavelength. \n\n**Here's the crucial part:**  Rayleigh scattering is *much effective at scattering shorter wavelengths* (blue and violet) than longer wavelengths (red and orange).  Think of it like trying to bounce different sized balls off small pebbles - the smaller balls (blue light) are more easily deflected in all directions.\n\n**3. Why the Sky is Blue During the Day:**\n\n* When the sun is high in the sky, sunlight travels through"
+      }
+    ]
+  },
+  {
+    "index": 2,
+    "prompt": "A city wants to reduce downtown traffic without making commuting harder for low-income workers. Compare congestion pricing, improved public transit, and parking restrictions, then recommend a phased policy with safeguards and measurable success criteria.",
+    "runs": [
+      {
+        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.3, top1-prob-thres=None",
+        "seconds": 31.27,
+        "output": "## Reducing Downtown Traffic While Protecting Low-Income Workers: A Comparative Analysis & Phased Policy Recommendation\n\nThis document analyzes three strategies for reducing downtown traffic congestion – congestion pricing, improved public transit, and parking restrictions – with a focus on equity for low-income workers. It then proposes a phased implementation plan with safeguards and measurable success criteria.\n\n**I. Strategy Comparison:**\n\nHere's a breakdown of each strategy, considering effectiveness, equity, cost, and political feasibility:\n\n| Feature | Congestion Pricing | Improved Public Transit | Parking Restrictions |\n|---|---|---|---|\n| **Effectiveness** | High. Directly demand by making driving more expensive during peak hours. Can significantly reduce congestion. | Moderate to High. Depends on quality, frequency, coverage, and accessibility. Can shift commuters, but requires significant investment. | Moderate. Can discourage driving, but impact is limited if alternatives are.  May just shift congestion. |\n| **Equity (Impact on Low-Income)** | **Low - Negative.** Disproportionately impacts low-income workers who may have limited transportation alternatives. Requires robust mitigation. | **High - Positive.** Provides affordable, accessible transportation options, improving access to jobs. | **Mixed.** Can be negative if it removes affordable parking options. Positive if coupled with transit improvements. |\n| **Cost** | High (Implementation & Maintenance). Requires technology (sensors, tolling systems), enforcement, and ongoing operation. | Very High (Capital & Operating). Requires"
+      }
+    ]
+  },
+  {
+    "index": 3,
+    "prompt": "Maya manages a project originally due Friday. The client moves it to Wednesday, an engineer reports a two-day blocker, and a required reviewer is unavailable Tuesday. Develop a realistic recovery plan, identify assumptions, and explain what Maya should communicate to each stakeholder.",
+    "runs": [
+      {
+        "label": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.3, top1-prob-thres=None",
+        "seconds": 33.82,
+        "output": "## Maya's Project Recovery Plan - Shifting Deadline & Roadblocks\n\nOkay, this is a classic project management scenario! Here's a realistic recovery plan, broken down into steps, assumptions, communication, and a timeline.\n\n**1. Situation Assessment & Impact Analysis (Immediate - within 1 hour)**\n\n* **New Deadline:** Wednesday (originally Friday) - a 2-day shift.\n* **Blocker:** Engineer reports a 2-day blocker.\n* **Reviewer:** Unavailable Tuesday.\n* **Impact:** This is *significant*. The 2-day deadline shift is immediately offset by the 2-day blocker. The reviewer unavailability adds further risk.  We're potentially looking at a delay *beyond* Wednesday if we don't act decisively.  The original plan is likely viable.\n\n**2. Recovery Plan - Options & Prioritization (Within 2-3 hours)**\n\nMaya needs to explore options. Here's a prioritized list, considering the constraints:\n\n* **Option 1: (Most Likely - Focus)** **Parallelize & Re--scope:**  This is the most realistic.\n    * **Engineer Block:**  What *exactly is the blocker? Can *any* part of the work be done *around* it?  Can another engineer assist (even if they need to get up to speed)?  Can the blocker be temporarily worked around with a less-ideal solution, to be revisited"
+      }
+    ]
+  }
+]

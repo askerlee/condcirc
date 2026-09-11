@@ -719,6 +719,7 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    print(f"GPUs used: {torch.cuda.device_count()}", flush=True)
     if args.list_queries:
         for index, query in enumerate(EXAMPLE_QUERIES, start=1):
             print(f"{index:2}. {query}")
@@ -857,9 +858,10 @@ def main() -> None:
         )
         model_slug = args.model.rsplit("/", 1)[-1]
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
+        query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         cache_signature = "-avgkv" if args.cache_avg_kv else ""
         args.output = Path(
-            f"{model_slug}-{pair_slug}{gate_signature}{cache_signature}.json"
+            f"{model_slug}-{pair_slug}{gate_signature}{query_signature}{cache_signature}.json"
         )
     if args.similarities_output is None:
         query_signature = f"-{args.query_index_signature}"
@@ -1257,6 +1259,7 @@ def main() -> None:
             "act_sim_thres",
             "margin_thres",
             "top1_prob_thres",
+            "cache_avg_kv",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]
@@ -1333,14 +1336,14 @@ def main() -> None:
                 if run_index == 0:
                     emit(f"\n=== Query {prompt_index} ===")
                     emit(prompt)
-                emit(f"\n=== {label} ({run_seconds:.3f} s) ===")
+                emit(f"\n=== {label} ({run_seconds:.2f} s) ===")
                 output = tokenizer.decode(
                     run_ids[0, prompt_length:], skip_special_tokens=True
                 )
                 emit(output)
                 query_record["runs"].append({
                     "label": label,
-                    "seconds": run_seconds,
+                    "seconds": round(run_seconds, 2),
                     "output": output,
                 })
                 save_output()

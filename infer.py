@@ -403,6 +403,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--top1-boost-thres",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Post-P2 gate: accept recirculation only when the P2-selected "
+            "token's probability boost over P1 is at most this value."
+        ),
+    )
+    parser.add_argument(
         "--top1-prob-thres",
         type=float,
         default=None,
@@ -743,6 +753,11 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--margin-thres-p2 requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--margin-thres-p2 requires --mode source.")
+    if args.top1_boost_thres is not None:
+        if args.passes < 2:
+            raise ValueError("--top1-boost-thres requires --passes of at least 2.")
+        if args.mode != "source":
+            raise ValueError("--top1-boost-thres requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
 
@@ -884,6 +899,7 @@ def main() -> None:
                 f"-cos{args.cosine_reject}-k{args.cosine_top_k}",
             ),
             (args.margin_thres_p2, f"-m2{args.margin_thres_p2}"),
+            (args.top1_boost_thres, f"-tb{args.top1_boost_thres}"),
         )
         if threshold is not None
     )
@@ -1083,6 +1099,7 @@ def main() -> None:
                     condition_thresholds=condition_thresholds,
                     margin_threshold_p1=run_args.margin_thres_p1,
                     margin_threshold_p2=run_args.margin_thres_p2,
+                    top1_boost_threshold=run_args.top1_boost_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
@@ -1091,6 +1108,7 @@ def main() -> None:
                         capture_dynamic_cache_token
                         if (
                             run_args.margin_thres_p2 is not None
+                            or run_args.top1_boost_thres is not None
                             or run_args.cosine_reject is not None
                         )
                         else None
@@ -1122,6 +1140,7 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         margin_threshold_p1=run_args.margin_thres_p1,
                         margin_threshold_p2=run_args.margin_thres_p2,
+                        top1_boost_threshold=run_args.top1_boost_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
@@ -1130,6 +1149,7 @@ def main() -> None:
                             capture_dynamic_cache_token
                             if (
                                 run_args.margin_thres_p2 is not None
+                                or run_args.top1_boost_thres is not None
                                 or run_args.cosine_reject is not None
                             )
                             else None
@@ -1154,6 +1174,7 @@ def main() -> None:
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
         p2_cosine_similarities: list[float | None] = []
+        p2_top1_boosts: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1170,6 +1191,7 @@ def main() -> None:
             condition_thresholds=condition_thresholds,
             margin_threshold_p1=run_args.margin_thres_p1,
             margin_threshold_p2=run_args.margin_thres_p2,
+            top1_boost_threshold=run_args.top1_boost_thres,
             top1_prob_threshold=run_args.top1_prob_thres,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
@@ -1181,10 +1203,12 @@ def main() -> None:
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
             p2_cosine_similarities=p2_cosine_similarities,
+            p2_top1_boosts=p2_top1_boosts,
             capture_cached_token=(
                 capture_dynamic_cache_token
                 if (
                     run_args.margin_thres_p2 is not None
+                    or run_args.top1_boost_thres is not None
                     or run_args.cosine_reject is not None
                 )
                 else None
@@ -1210,6 +1234,11 @@ def main() -> None:
             comparison["p2_top_k_cosine_similarity"] = (
                 round(p2_cosine_similarities[-1], 6)
                 if p2_cosine_similarities[-1] is not None
+                else None
+            )
+            comparison["p2_top1_boost"] = (
+                round(p2_top1_boosts[-1], 6)
+                if p2_top1_boosts[-1] is not None
                 else None
             )
             comparison["cosine_top_k"] = run_args.cosine_top_k
@@ -1247,6 +1276,7 @@ def main() -> None:
                 condition_thresholds=condition_thresholds,
                 margin_threshold_p1=run_args.margin_thres_p1,
                 margin_threshold_p2=run_args.margin_thres_p2,
+                top1_boost_threshold=run_args.top1_boost_thres,
                 top1_prob_threshold=run_args.top1_prob_thres,
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
@@ -1258,10 +1288,12 @@ def main() -> None:
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
                 p2_cosine_similarities=p2_cosine_similarities,
+                p2_top1_boosts=p2_top1_boosts,
                 capture_cached_token=(
                     capture_dynamic_cache_token
                     if (
                         run_args.margin_thres_p2 is not None
+                        or run_args.top1_boost_thres is not None
                         or run_args.cosine_reject is not None
                     )
                     else None
@@ -1335,6 +1367,7 @@ def main() -> None:
             "act_sim_thres",
             "margin_thres_p1",
             "margin_thres_p2",
+            "top1_boost_thres",
             "top1_prob_thres",
             "cosine_reject",
             "cosine_top_k",

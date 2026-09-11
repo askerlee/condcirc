@@ -116,6 +116,18 @@ def _top1_probability(logits: Tensor) -> float:
     return float(probabilities.max(dim=-1).values.item())
 
 
+def _top1_probability_boost(p1_logits: Tensor, p2_logits: Tensor) -> float:
+    p1_probabilities = torch.softmax(p1_logits[:, -1, :].float(), dim=-1)
+    p2_probabilities = torch.softmax(p2_logits[:, -1, :].float(), dim=-1)
+    p2_token = p2_probabilities.argmax(dim=-1, keepdim=True)
+    return float(
+        (
+            p2_probabilities.gather(-1, p2_token)
+            - p1_probabilities.gather(-1, p2_token)
+        ).item()
+    )
+
+
 def _distribution_cosine_similarity(
     teacher_logits: Tensor, student_logits: Tensor, top_k: int
 ) -> float:
@@ -410,6 +422,7 @@ def recirculate(
     condition_thresholds: Sequence[float] | None = None,
     margin_threshold_p1: float | None = None,
     margin_threshold_p2: float | None = None,
+    top1_boost_threshold: float | None = None,
     top1_prob_threshold: float | None = None,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
@@ -421,6 +434,7 @@ def recirculate(
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
     p2_cosine_similarities: list[float | None] | None = None,
+    p2_top1_boosts: list[float | None] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -429,7 +443,11 @@ def recirculate(
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
-    if passes < 2 and (margin_threshold_p2 is not None or cosine_reject is not None):
+    if passes < 2 and (
+        margin_threshold_p2 is not None
+        or top1_boost_threshold is not None
+        or cosine_reject is not None
+    ):
         raise ValueError("Post-P2 gates require passes of at least 2.")
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
@@ -437,7 +455,11 @@ def recirculate(
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if (margin_threshold_p2 is not None or cosine_reject is not None) and (
+    if (
+        margin_threshold_p2 is not None
+        or top1_boost_threshold is not None
+        or cosine_reject is not None
+    ) and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
@@ -456,6 +478,10 @@ def recirculate(
         if margin_threshold_p2 is not None:
             raise ValueError(
                 "Post-P2 margin-gated recirculation currently requires --mode source."
+            )
+        if top1_boost_threshold is not None:
+            raise ValueError(
+                "Post-P2 top-1 boost gating currently requires --mode source."
             )
         if top1_prob_threshold is not None:
             raise ValueError(
@@ -603,6 +629,7 @@ def recirculate(
             )
             p2_accepted = True
             p2_cosine_similarity = None
+            p2_top1_boost = None
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
@@ -645,12 +672,19 @@ def recirculate(
                     assert pass_margin is not None
                     token_pass_probability_margins.append(pass_margin)
                 if pass_index == 1:
+                    p2_top1_boost = _top1_probability_boost(
+                        first_logits, final_logits
+                    )
                     p2_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
                     if margin_threshold_p2 is not None:
                         assert pass_margin is not None
                         p2_accepted = pass_margin > margin_threshold_p2
+                    if top1_boost_threshold is not None:
+                        p2_accepted = (
+                            p2_accepted and p2_top1_boost <= top1_boost_threshold
+                        )
                     if cosine_reject is not None:
                         p2_accepted = (
                             p2_accepted
@@ -685,6 +719,8 @@ def recirculate(
                 rejected_flags.append(should_recirculate and not p2_accepted)
             if p2_cosine_similarities is not None:
                 p2_cosine_similarities.append(p2_cosine_similarity)
+            if p2_top1_boosts is not None:
+                p2_top1_boosts.append(p2_top1_boost)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

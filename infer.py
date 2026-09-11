@@ -412,6 +412,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tau-reject",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Discard P2 when its next-token probability distribution has cosine "
+            "similarity below this threshold relative to P1."
+        ),
+    )
+    parser.add_argument(
         "--gating-pair-index",
         type=int,
         default=0,
@@ -695,6 +705,14 @@ def average_dynamic_cache_token(
         layer.values[..., -1:, :].copy_(torch.stack(values).mean(dim=0))
 
 
+def restore_dynamic_cache_token(
+    cache: DynamicCache, cached_token: tuple[tuple[Tensor, Tensor], ...]
+) -> None:
+    for layer, (keys, values) in zip(cache.layers, cached_token):
+        layer.keys[..., -1:, :].copy_(keys)
+        layer.values[..., -1:, :].copy_(values)
+
+
 def sample_token(logits: Tensor, temperature: float) -> Tensor:
     if temperature <= 0:
         return logits.argmax(dim=-1, keepdim=True)
@@ -715,6 +733,13 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--act-sim-min-max requires MIN < MAX.")
     if args.cache_avg_kv and not args.cond_recirculate:
         raise ValueError("--cache-avg-kv requires --cond-recirculate.")
+    if args.tau_reject is not None:
+        if not 0.0 <= args.tau_reject <= 1.0:
+            raise ValueError("--tau-reject must be between 0 and 1.")
+        if args.passes < 2:
+            raise ValueError("--tau-reject requires --passes of at least 2.")
+        if args.mode != "source":
+            raise ValueError("--tau-reject requires --mode source.")
 
 
 def main() -> None:
@@ -849,6 +874,7 @@ def main() -> None:
         for threshold, signature in (
             (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
             (args.margin_thres, f"-m{args.margin_thres}"),
+            (args.tau_reject, f"-tr{args.tau_reject}"),
         )
         if threshold is not None
     )
@@ -997,13 +1023,17 @@ def main() -> None:
             else probe_step
         )
 
-        def report_stats(recirculated_flags: list[bool] | None = None) -> None:
+        def report_stats(
+            recirculated_flags: list[bool] | None = None,
+            rejected_flags: list[bool] | None = None,
+        ) -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
                 print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
             if recirculated_flags is not None:
                 print(
                     f"recirculated_tokens = {sum(recirculated_flags)}/"
-                    f"{len(recirculated_flags)}"
+                    f"{len(recirculated_flags)}, rejected = "
+                    f"{sum(rejected_flags or [])}"
                 )
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
@@ -1047,13 +1077,17 @@ def main() -> None:
                     condition_thresholds=condition_thresholds,
                     margin_threshold=run_args.margin_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
+                    tau_reject=run_args.tau_reject,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=(
-                        capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                        capture_dynamic_cache_token
+                        if run_args.cache_avg_kv or run_args.tau_reject is not None
+                        else None
                     ),
                     average_cached_token=(
                         average_dynamic_cache_token if run_args.cache_avg_kv else None
                     ),
+                    restore_cached_token=restore_dynamic_cache_token,
                 )
                 next_logits = prompt_logits[:, -1, :]
 
@@ -1080,13 +1114,17 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         margin_threshold=run_args.margin_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
+                        tau_reject=run_args.tau_reject,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=(
-                            capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                            capture_dynamic_cache_token
+                            if run_args.cache_avg_kv or run_args.tau_reject is not None
+                            else None
                         ),
                         average_cached_token=(
                             average_dynamic_cache_token if run_args.cache_avg_kv else None
                         ),
+                        restore_cached_token=restore_dynamic_cache_token,
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1104,6 +1142,7 @@ def main() -> None:
         pass_probability_margins: list[list[float]] = []
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
+        rejected_flags: list[bool] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1120,18 +1159,23 @@ def main() -> None:
             condition_thresholds=condition_thresholds,
             margin_threshold=run_args.margin_thres,
             top1_prob_threshold=run_args.top1_prob_thres,
+            tau_reject=run_args.tau_reject,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
             pass_probability_margins=pass_probability_margins,
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
+            rejected_flags=rejected_flags,
             capture_cached_token=(
-                capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                capture_dynamic_cache_token
+                if run_args.cache_avg_kv or run_args.tau_reject is not None
+                else None
             ),
             average_cached_token=(
                 average_dynamic_cache_token if run_args.cache_avg_kv else None
             ),
+            restore_cached_token=restore_dynamic_cache_token,
         )
         teacher_logits = first_pass_logits[-1]
         teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
@@ -1148,6 +1192,7 @@ def main() -> None:
                 float(torch.softmax(teacher_next_logits.float(), dim=-1).max().item()), 3
             )
             comparison["recirculated"] = recirculated_flags[-1]
+            comparison["rejected"] = rejected_flags[-1]
             if run_args.act_sim_as_alpha:
                 actual_alpha = actual_alphas[-1]
                 comparison["actual_alpha"] = (
@@ -1182,18 +1227,23 @@ def main() -> None:
                 condition_thresholds=condition_thresholds,
                 margin_threshold=run_args.margin_thres,
                 top1_prob_threshold=run_args.top1_prob_thres,
+                tau_reject=run_args.tau_reject,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
                 pass_probability_margins=pass_probability_margins,
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
+                rejected_flags=rejected_flags,
                 capture_cached_token=(
-                    capture_dynamic_cache_token if run_args.cache_avg_kv else None
+                    capture_dynamic_cache_token
+                    if run_args.cache_avg_kv or run_args.tau_reject is not None
+                    else None
                 ),
                 average_cached_token=(
                     average_dynamic_cache_token if run_args.cache_avg_kv else None
                 ),
+                restore_cached_token=restore_dynamic_cache_token,
             )
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
@@ -1205,7 +1255,10 @@ def main() -> None:
         # recirculated_flags also covers prompt positions and one trailing lookahead
         # call, neither of which produce a comparison entry, so count from
         # `similarities` instead to match the tokens actually reported.
-        report_stats([comparison["recirculated"] for comparison in similarities])
+        report_stats(
+            [comparison["recirculated"] for comparison in similarities],
+            [comparison["rejected"] for comparison in similarities],
+        )
 
         return generated_ids, similarities
 
@@ -1259,6 +1312,7 @@ def main() -> None:
             "act_sim_thres",
             "margin_thres",
             "top1_prob_thres",
+            "tau_reject",
             "cache_avg_kv",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)

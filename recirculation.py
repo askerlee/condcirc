@@ -9,7 +9,9 @@ is recirculated for every token (with three passes):
   3. Run the token again, replacing the output of destination block d with
      beta * h_d + alpha * (||h_d|| / ||h_s||) * h_s.
     4. Capture the new residuals, rewind, and repeat the recirculation once more.
-    5. Return the final-pass logits and commit its KV cache.
+     5. Optionally reject P2 when its next-token distribution is insufficiently
+         similar to P1, restoring P1 logits and KV cache; otherwise continue and
+         commit the final pass.
 
 When expected-embedding subtraction is enabled, each replay subtracts the
 top-K expected next-token embedding from h_s before norm matching and mixing.
@@ -112,6 +114,15 @@ def _top1_top2_probability_margin(logits: Tensor) -> float:
 def _top1_probability(logits: Tensor) -> float:
     probabilities = torch.softmax(logits[:, -1, :].float(), dim=-1)
     return float(probabilities.max(dim=-1).values.item())
+
+
+def _probability_cosine_similarity(left_logits: Tensor, right_logits: Tensor) -> float:
+    left_probabilities = torch.softmax(left_logits[:, -1, :].float(), dim=-1)
+    right_probabilities = torch.softmax(right_logits[:, -1, :].float(), dim=-1)
+    similarity = torch.nn.functional.cosine_similarity(
+        left_probabilities, right_probabilities, dim=-1
+    )
+    return float(similarity.item())
 
 
 class _Hooks:
@@ -381,22 +392,31 @@ def recirculate(
     condition_thresholds: Sequence[float] | None = None,
     margin_threshold: float | None = None,
     top1_prob_threshold: float | None = None,
+    tau_reject: float | None = None,
     gating_pair_index: int = 0,
     first_pass_logits: list[Tensor] | None = None,
     first_pass_similarities: list[tuple[float, ...]] | None = None,
     pass_probability_margins: list[list[float]] | None = None,
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
+    rejected_flags: list[bool] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
+    restore_cached_token: Callable[[Any, Any], None] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
-    if (capture_cached_token is None) != (average_cached_token is None):
+    if average_cached_token is not None and capture_cached_token is None:
         raise ValueError(
-            "capture_cached_token and average_cached_token must be provided together."
+            "average_cached_token requires capture_cached_token."
+        )
+    if tau_reject is not None and (
+        capture_cached_token is None or restore_cached_token is None
+    ):
+        raise ValueError(
+            "tau_reject requires capture_cached_token and restore_cached_token."
         )
 
     if config.mode == "layerwise":
@@ -412,6 +432,8 @@ def recirculate(
             raise ValueError(
                 "Top1-probability-gated recirculation currently requires --mode source."
             )
+        if tau_reject is not None:
+            raise ValueError("P2 trust rejection currently requires --mode source.")
         if similarity_stats is not None:
             raise ValueError(
                 "Source/destination similarity stats require --mode source."
@@ -547,6 +569,7 @@ def recirculate(
                 if should_recirculate and capture_cached_token is not None
                 else None
             )
+            p2_accepted = True
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
@@ -579,14 +602,28 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
+                if pass_index == 1 and tau_reject is not None:
+                    p2_accepted = (
+                        _probability_cosine_similarity(first_logits, final_logits)
+                        >= tau_reject
+                    )
+                    if not p2_accepted:
+                        assert cached_token_passes is not None
+                        assert restore_cached_token is not None
+                        restore_cached_token(cache, cached_token_passes[0])
+                        final_logits = first_logits
+                        break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
                 if token_pass_probability_margins is not None:
                     token_pass_probability_margins.append(
                         _top1_top2_probability_margin(final_logits)
                     )
-            if cached_token_passes is not None:
-                assert average_cached_token is not None
+            if (
+                cached_token_passes is not None
+                and average_cached_token is not None
+                and p2_accepted
+            ):
                 average_cached_token(cache, cached_token_passes)
             if pass_probability_margins is not None:
                 assert token_pass_probability_margins is not None
@@ -594,11 +631,13 @@ def recirculate(
             if actual_alphas is not None:
                 actual_alphas.append(
                     hooks.injection_alphas
-                    if should_recirculate and config.act_sim_as_alpha
+                    if should_recirculate and p2_accepted and config.act_sim_as_alpha
                     else None
                 )
             if recirculated_flags is not None:
-                recirculated_flags.append(should_recirculate)
+                recirculated_flags.append(should_recirculate and p2_accepted)
+            if rejected_flags is not None:
+                rejected_flags.append(should_recirculate and not p2_accepted)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

@@ -1,0 +1,4536 @@
+[
+  {
+    "prompt": "All roses are flowers, some flowers fade quickly, and no quickly fading plant survives a frost. Explain exactly what can and cannot be inferred about roses, then give two additional premises that would support different conclusions.",
+    "run": "Baseline: cond-recirculate=True, act-sim-thres=None, margin-thres=0.3, top1-prob-thres=0.6, cache-avg-kv=False",
+    "similarities": [
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Okay",
+        "student_top_token": "Okay",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.439,
+        "top1_top2_margin": [
+          0.954
+        ],
+        "top1_prob": 0.977,
+        "recirculated": false,
+        "token_index": 0,
+        "selected_token": "Okay"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.379,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 1,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " let",
+        "student_top_token": " let",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.406,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 2,
+        "selected_token": " let"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "'",
+        "student_top_token": "'",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.497,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 3,
+        "selected_token": "'"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "s",
+        "student_top_token": "s",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.497,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 4,
+        "selected_token": "s"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " break",
+        "student_top_token": " break",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.495,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 5,
+        "selected_token": " break"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " down",
+        "student_top_token": " down",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.716,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 6,
+        "selected_token": " down"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " the",
+        "student_top_token": " the",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.571,
+        "top1_top2_margin": [
+          0.924
+        ],
+        "top1_prob": 0.961,
+        "recirculated": false,
+        "token_index": 7,
+        "selected_token": " the"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " inferences",
+        "student_top_token": " inferences",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.538,
+        "top1_top2_margin": [
+          0.24
+        ],
+        "top1_prob": 0.609,
+        "recirculated": false,
+        "token_index": 8,
+        "selected_token": " inferences"
+      },
+      {
+        "cosine_similarity": 0.654,
+        "js_similarity": 0.794,
+        "teacher_top_token": " possible",
+        "student_top_token": " from",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.583,
+        "top1_top2_margin": [
+          0.188,
+          0.204
+        ],
+        "top1_prob": 0.479,
+        "recirculated": true,
+        "token_index": 9,
+        "selected_token": " from"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " the",
+        "student_top_token": " the",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.636,
+        "top1_top2_margin": [
+          0.721
+        ],
+        "top1_prob": 0.834,
+        "recirculated": false,
+        "token_index": 10,
+        "selected_token": " the"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " given",
+        "student_top_token": " given",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.58,
+        "top1_top2_margin": [
+          0.957
+        ],
+        "top1_prob": 0.974,
+        "recirculated": false,
+        "token_index": 11,
+        "selected_token": " given"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " premises",
+        "student_top_token": " premises",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.627,
+        "top1_top2_margin": [
+          0.992
+        ],
+        "top1_prob": 0.996,
+        "recirculated": false,
+        "token_index": 12,
+        "selected_token": " premises"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.531,
+        "top1_top2_margin": [
+          0.45
+        ],
+        "top1_prob": 0.713,
+        "recirculated": false,
+        "token_index": 13,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 0.992,
+        "js_similarity": 0.997,
+        "teacher_top_token": " and",
+        "student_top_token": " and",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.556,
+        "top1_top2_margin": [
+          0.0,
+          0.124
+        ],
+        "top1_prob": 0.499,
+        "recirculated": true,
+        "token_index": 14,
+        "selected_token": " and"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " then",
+        "student_top_token": " then",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.584,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 15,
+        "selected_token": " then"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " explore",
+        "student_top_token": " explore",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.469,
+        "top1_top2_margin": [
+          0.898
+        ],
+        "top1_prob": 0.926,
+        "recirculated": false,
+        "token_index": 16,
+        "selected_token": " explore"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " how",
+        "student_top_token": " how",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.67,
+        "top1_top2_margin": [
+          0.811
+        ],
+        "top1_prob": 0.884,
+        "recirculated": false,
+        "token_index": 17,
+        "selected_token": " how"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " adding",
+        "student_top_token": " adding",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.613,
+        "top1_top2_margin": [
+          0.599
+        ],
+        "top1_prob": 0.771,
+        "recirculated": false,
+        "token_index": 18,
+        "selected_token": " adding"
+      },
+      {
+        "cosine_similarity": 0.78,
+        "js_similarity": 0.681,
+        "teacher_top_token": " premises",
+        "student_top_token": " premises",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.586,
+        "top1_top2_margin": [
+          0.106,
+          0.987
+        ],
+        "top1_prob": 0.479,
+        "recirculated": true,
+        "token_index": 19,
+        "selected_token": " premises"
+      },
+      {
+        "cosine_similarity": 0.003,
+        "js_similarity": 0.035,
+        "teacher_top_token": " change",
+        "student_top_token": "es",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.533,
+        "top1_top2_margin": [
+          0.202,
+          0.984
+        ],
+        "top1_prob": 0.513,
+        "recirculated": true,
+        "token_index": 20,
+        "selected_token": "es"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " change",
+        "student_top_token": " change",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.54,
+        "top1_top2_margin": [
+          0.368
+        ],
+        "top1_prob": 0.582,
+        "recirculated": false,
+        "token_index": 21,
+        "selected_token": " change"
+      },
+      {
+        "cosine_similarity": 0.995,
+        "js_similarity": 0.997,
+        "teacher_top_token": " things",
+        "student_top_token": " things",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.562,
+        "top1_top2_margin": [
+          0.235,
+          0.345
+        ],
+        "top1_prob": 0.597,
+        "recirculated": true,
+        "token_index": 22,
+        "selected_token": " things"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.618,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 23,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.581,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 24,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.373,
+        "top1_top2_margin": [
+          0.88
+        ],
+        "top1_prob": 0.94,
+        "recirculated": false,
+        "token_index": 25,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 0.135,
+        "js_similarity": 0.393,
+        "teacher_top_token": "Analyzing",
+        "student_top_token": "The",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.37,
+        "top1_top2_margin": [
+          0.275,
+          0.63
+        ],
+        "top1_prob": 0.521,
+        "recirculated": true,
+        "token_index": 26,
+        "selected_token": "The"
+      },
+      {
+        "cosine_similarity": 0.94,
+        "js_similarity": 0.964,
+        "teacher_top_token": " Original",
+        "student_top_token": " Premises",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.494,
+        "top1_top2_margin": [
+          0.0,
+          0.337
+        ],
+        "top1_prob": 0.466,
+        "recirculated": true,
+        "token_index": 27,
+        "selected_token": " Premises"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.397,
+        "top1_top2_margin": [
+          0.996
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 28,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.422,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 29,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "1",
+        "student_top_token": "1",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.395,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 30,
+        "selected_token": "1"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.195,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 31,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.992,
+        "js_similarity": 0.997,
+        "teacher_top_token": " **",
+        "student_top_token": "  ",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.399,
+        "top1_top2_margin": [
+          0.098,
+          0.0
+        ],
+        "top1_prob": 0.444,
+        "recirculated": true,
+        "token_index": 32,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "All",
+        "student_top_token": "All",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.045,
+        "top1_top2_margin": [
+          0.635
+        ],
+        "top1_prob": 0.818,
+        "recirculated": false,
+        "token_index": 33,
+        "selected_token": "All"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.391,
+        "top1_top2_margin": [
+          0.995
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 34,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.493,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 35,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.625,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 36,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.531,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 37,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.588,
+        "top1_top2_margin": [
+          0.904
+        ],
+        "top1_prob": 0.952,
+        "recirculated": false,
+        "token_index": 38,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "2",
+        "student_top_token": "2",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.398,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 39,
+        "selected_token": "2"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.214,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 40,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.357,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 41,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Some",
+        "student_top_token": "Some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.275,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 42,
+        "selected_token": "Some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.437,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 43,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.547,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 44,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.421,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 45,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.538,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 46,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.585,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 47,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "3",
+        "student_top_token": "3",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.437,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 48,
+        "selected_token": "3"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.35,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 49,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.338,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 50,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "No",
+        "student_top_token": "No",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.286,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 51,
+        "selected_token": "No"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.51,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 52,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fading",
+        "student_top_token": " fading",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.577,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 53,
+        "selected_token": " fading"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " plant",
+        "student_top_token": " plant",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.51,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 54,
+        "selected_token": " plant"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survives",
+        "student_top_token": " survives",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.607,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 55,
+        "selected_token": " survives"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.529,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 56,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.479,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 57,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.549,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 58,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.592,
+        "top1_top2_margin": [
+          0.991
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 59,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.495,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 60,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "What",
+        "student_top_token": "What",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.373,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 61,
+        "selected_token": "What"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " CAN",
+        "student_top_token": " CAN",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.548,
+        "top1_top2_margin": [
+          0.546
+        ],
+        "top1_prob": 0.765,
+        "recirculated": false,
+        "token_index": 62,
+        "selected_token": " CAN"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " be",
+        "student_top_token": " be",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.452,
+        "top1_top2_margin": [
+          0.996
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 63,
+        "selected_token": " be"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " In",
+        "student_top_token": " In",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.606,
+        "top1_top2_margin": [
+          0.848
+        ],
+        "top1_prob": 0.924,
+        "recirculated": false,
+        "token_index": 64,
+        "selected_token": " In"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "ferred",
+        "student_top_token": "ferred",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.489,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 65,
+        "selected_token": "ferred"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.491,
+        "top1_top2_margin": [
+          0.633
+        ],
+        "top1_prob": 0.815,
+        "recirculated": false,
+        "token_index": 66,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.449,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 67,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.443,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 68,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.253,
+        "top1_top2_margin": [
+          0.99
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 69,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.373,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 70,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Some",
+        "student_top_token": "Some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.396,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 71,
+        "selected_token": "Some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.48,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 72,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.516,
+        "top1_top2_margin": [
+          0.578
+        ],
+        "top1_prob": 0.744,
+        "recirculated": false,
+        "token_index": 73,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.398,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 74,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.554,
+        "top1_top2_margin": [
+          0.462
+        ],
+        "top1_prob": 0.731,
+        "recirculated": false,
+        "token_index": 75,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 0.0,
+        "js_similarity": 0.001,
+        "teacher_top_token": "  ",
+        "student_top_token": "**",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.574,
+        "top1_top2_margin": [
+          0.0,
+          1.0
+        ],
+        "top1_prob": 0.393,
+        "recirculated": true,
+        "token_index": 76,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 0.963,
+        "js_similarity": 0.977,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.477,
+        "top1_top2_margin": [
+          0.189,
+          0.085
+        ],
+        "top1_prob": 0.48,
+        "recirculated": true,
+        "token_index": 77,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Since",
+        "student_top_token": "Since",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.399,
+        "top1_top2_margin": [
+          0.629
+        ],
+        "top1_prob": 0.809,
+        "recirculated": false,
+        "token_index": 78,
+        "selected_token": "Since"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " all",
+        "student_top_token": " all",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.579,
+        "top1_top2_margin": [
+          0.925
+        ],
+        "top1_prob": 0.962,
+        "recirculated": false,
+        "token_index": 79,
+        "selected_token": " all"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.53,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 80,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.551,
+        "top1_top2_margin": [
+          0.941
+        ],
+        "top1_prob": 0.971,
+        "recirculated": false,
+        "token_index": 81,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.681,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 82,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.559,
+        "top1_top2_margin": [
+          0.542
+        ],
+        "top1_prob": 0.76,
+        "recirculated": false,
+        "token_index": 83,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " and",
+        "student_top_token": " and",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.55,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 84,
+        "selected_token": " and"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.571,
+        "top1_top2_margin": [
+          0.879
+        ],
+        "top1_prob": 0.939,
+        "recirculated": false,
+        "token_index": 85,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "some",
+        "student_top_token": "some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.423,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 86,
+        "selected_token": "some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.527,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 87,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.537,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 88,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.601,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 89,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.469,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 90,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.611,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 91,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " it",
+        "student_top_token": " it",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.583,
+        "top1_top2_margin": [
+          0.955
+        ],
+        "top1_prob": 0.967,
+        "recirculated": false,
+        "token_index": 92,
+        "selected_token": " it"
+      },
+      {
+        "cosine_similarity": 0.831,
+        "js_similarity": 0.852,
+        "teacher_top_token": " logically",
+        "student_top_token": " logically",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.603,
+        "top1_top2_margin": [
+          0.116,
+          0.849
+        ],
+        "top1_prob": 0.526,
+        "recirculated": true,
+        "token_index": 93,
+        "selected_token": " logically"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " follows",
+        "student_top_token": " follows",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.508,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 94,
+        "selected_token": " follows"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " that",
+        "student_top_token": " that",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.587,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 95,
+        "selected_token": " that"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.595,
+        "top1_top2_margin": [
+          0.627
+        ],
+        "top1_prob": 0.759,
+        "recirculated": false,
+        "token_index": 96,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "some",
+        "student_top_token": "some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.406,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 97,
+        "selected_token": "some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.536,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 98,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.513,
+        "top1_top2_margin": [
+          0.989
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 99,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " must",
+        "student_top_token": " must",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.572,
+        "top1_top2_margin": [
+          0.749
+        ],
+        "top1_prob": 0.867,
+        "recirculated": false,
+        "token_index": 100,
+        "selected_token": " must"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " be",
+        "student_top_token": " be",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.615,
+        "top1_top2_margin": [
+          0.331
+        ],
+        "top1_prob": 0.627,
+        "recirculated": false,
+        "token_index": 101,
+        "selected_token": " be"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " among",
+        "student_top_token": " among",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.649,
+        "top1_top2_margin": [
+          0.993
+        ],
+        "top1_prob": 0.996,
+        "recirculated": false,
+        "token_index": 102,
+        "selected_token": " among"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " those",
+        "student_top_token": " those",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.612,
+        "top1_top2_margin": [
+          0.971
+        ],
+        "top1_prob": 0.985,
+        "recirculated": false,
+        "token_index": 103,
+        "selected_token": " those"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.567,
+        "top1_top2_margin": [
+          0.452
+        ],
+        "top1_prob": 0.716,
+        "recirculated": false,
+        "token_index": 104,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fading",
+        "student_top_token": " fading",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.533,
+        "top1_top2_margin": [
+          0.987
+        ],
+        "top1_prob": 0.993,
+        "recirculated": false,
+        "token_index": 105,
+        "selected_token": " fading"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.536,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 106,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.531,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 107,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " This",
+        "student_top_token": " This",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.697,
+        "top1_top2_margin": [
+          0.281
+        ],
+        "top1_prob": 0.605,
+        "recirculated": false,
+        "token_index": 108,
+        "selected_token": " This"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " is",
+        "student_top_token": " is",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.516,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 109,
+        "selected_token": " is"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.652,
+        "top1_top2_margin": [
+          0.592
+        ],
+        "top1_prob": 0.793,
+        "recirculated": false,
+        "token_index": 110,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " valid",
+        "student_top_token": " valid",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.598,
+        "top1_top2_margin": [
+          0.428
+        ],
+        "top1_prob": 0.677,
+        "recirculated": false,
+        "token_index": 111,
+        "selected_token": " valid"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " deduction",
+        "student_top_token": " deduction",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.538,
+        "top1_top2_margin": [
+          0.67
+        ],
+        "top1_prob": 0.81,
+        "recirculated": false,
+        "token_index": 112,
+        "selected_token": " deduction"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.556,
+        "top1_top2_margin": [
+          0.851
+        ],
+        "top1_prob": 0.895,
+        "recirculated": false,
+        "token_index": 113,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.662,
+        "top1_top2_margin": [
+          0.981
+        ],
+        "top1_prob": 0.987,
+        "recirculated": false,
+        "token_index": 114,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.471,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 115,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.321,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 116,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.379,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 117,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Some",
+        "student_top_token": "Some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.436,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 118,
+        "selected_token": "Some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.494,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 119,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " do",
+        "student_top_token": " do",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.539,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 120,
+        "selected_token": " do"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " not",
+        "student_top_token": " not",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.544,
+        "top1_top2_margin": [
+          0.788
+        ],
+        "top1_prob": 0.881,
+        "recirculated": false,
+        "token_index": 121,
+        "selected_token": " not"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survive",
+        "student_top_token": " survive",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.633,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 122,
+        "selected_token": " survive"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.539,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 123,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.546,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 124,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.567,
+        "top1_top2_margin": [
+          0.992
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 125,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " Because",
+        "student_top_token": " Because",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.584,
+        "top1_top2_margin": [
+          0.581
+        ],
+        "top1_prob": 0.704,
+        "recirculated": false,
+        "token_index": 126,
+        "selected_token": " Because"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " some",
+        "student_top_token": " some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.588,
+        "top1_top2_margin": [
+          0.949
+        ],
+        "top1_prob": 0.969,
+        "recirculated": false,
+        "token_index": 127,
+        "selected_token": " some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.523,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 128,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.525,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 129,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.446,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 130,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " (",
+        "student_top_token": " (",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.598,
+        "top1_top2_margin": [
+          0.443
+        ],
+        "top1_prob": 0.7,
+        "recirculated": false,
+        "token_index": 131,
+        "selected_token": " ("
+      },
+      {
+        "cosine_similarity": 0.92,
+        "js_similarity": 0.936,
+        "teacher_top_token": "as",
+        "student_top_token": "as",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.554,
+        "top1_top2_margin": [
+          0.184,
+          0.571
+        ],
+        "top1_prob": 0.469,
+        "recirculated": true,
+        "token_index": 132,
+        "selected_token": "as"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " established",
+        "student_top_token": " established",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.578,
+        "top1_top2_margin": [
+          0.792
+        ],
+        "top1_prob": 0.847,
+        "recirculated": false,
+        "token_index": 133,
+        "selected_token": " established"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " above",
+        "student_top_token": " above",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.576,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 134,
+        "selected_token": " above"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "),",
+        "student_top_token": "),",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.483,
+        "top1_top2_margin": [
+          0.554
+        ],
+        "top1_prob": 0.777,
+        "recirculated": false,
+        "token_index": 135,
+        "selected_token": "),"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " and",
+        "student_top_token": " and",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.606,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 136,
+        "selected_token": " and"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " no",
+        "student_top_token": " no",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.578,
+        "top1_top2_margin": [
+          0.509
+        ],
+        "top1_prob": 0.753,
+        "recirculated": false,
+        "token_index": 137,
+        "selected_token": " no"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.583,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 138,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fading",
+        "student_top_token": " fading",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.628,
+        "top1_top2_margin": [
+          0.994
+        ],
+        "top1_prob": 0.997,
+        "recirculated": false,
+        "token_index": 139,
+        "selected_token": " fading"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " plant",
+        "student_top_token": " plant",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.568,
+        "top1_top2_margin": [
+          0.933
+        ],
+        "top1_prob": 0.966,
+        "recirculated": false,
+        "token_index": 140,
+        "selected_token": " plant"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survives",
+        "student_top_token": " survives",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.672,
+        "top1_top2_margin": [
+          0.996
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 141,
+        "selected_token": " survives"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.568,
+        "top1_top2_margin": [
+          0.996
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 142,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.515,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 143,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.595,
+        "top1_top2_margin": [
+          0.99
+        ],
+        "top1_prob": 0.994,
+        "recirculated": false,
+        "token_index": 144,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " it",
+        "student_top_token": " it",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.563,
+        "top1_top2_margin": [
+          0.354
+        ],
+        "top1_prob": 0.607,
+        "recirculated": false,
+        "token_index": 145,
+        "selected_token": " it"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " follows",
+        "student_top_token": " follows",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.601,
+        "top1_top2_margin": [
+          0.696
+        ],
+        "top1_prob": 0.805,
+        "recirculated": false,
+        "token_index": 146,
+        "selected_token": " follows"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " that",
+        "student_top_token": " that",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.555,
+        "top1_top2_margin": [
+          0.976
+        ],
+        "top1_prob": 0.985,
+        "recirculated": false,
+        "token_index": 147,
+        "selected_token": " that"
+      },
+      {
+        "cosine_similarity": 0.987,
+        "js_similarity": 0.992,
+        "teacher_top_token": " some",
+        "student_top_token": " some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.666,
+        "top1_top2_margin": [
+          0.051,
+          0.162
+        ],
+        "top1_prob": 0.432,
+        "recirculated": true,
+        "token_index": 148,
+        "selected_token": " some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.543,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 149,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " do",
+        "student_top_token": " do",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.561,
+        "top1_top2_margin": [
+          0.799
+        ],
+        "top1_prob": 0.87,
+        "recirculated": false,
+        "token_index": 150,
+        "selected_token": " do"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " not",
+        "student_top_token": " not",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.604,
+        "top1_top2_margin": [
+          0.968
+        ],
+        "top1_prob": 0.984,
+        "recirculated": false,
+        "token_index": 151,
+        "selected_token": " not"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survive",
+        "student_top_token": " survive",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.658,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 152,
+        "selected_token": " survive"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.551,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 153,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.479,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 154,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.591,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 155,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.949,
+        "js_similarity": 0.977,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.715,
+        "top1_top2_margin": [
+          0.0,
+          0.233
+        ],
+        "top1_prob": 0.363,
+        "recirculated": true,
+        "token_index": 156,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.596,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 157,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.379,
+        "top1_top2_margin": [
+          0.954
+        ],
+        "top1_prob": 0.974,
+        "recirculated": false,
+        "token_index": 158,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.423,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 159,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Roses",
+        "student_top_token": "Roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.462,
+        "top1_top2_margin": [
+          0.917
+        ],
+        "top1_prob": 0.939,
+        "recirculated": false,
+        "token_index": 160,
+        "selected_token": "Roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.471,
+        "top1_top2_margin": [
+          0.94
+        ],
+        "top1_prob": 0.957,
+        "recirculated": false,
+        "token_index": 161,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " plants",
+        "student_top_token": " plants",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.678,
+        "top1_top2_margin": [
+          0.987
+        ],
+        "top1_prob": 0.991,
+        "recirculated": false,
+        "token_index": 162,
+        "selected_token": " plants"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.519,
+        "top1_top2_margin": [
+          0.959
+        ],
+        "top1_prob": 0.977,
+        "recirculated": false,
+        "token_index": 163,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " This",
+        "student_top_token": " This",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.588,
+        "top1_top2_margin": [
+          0.366
+        ],
+        "top1_prob": 0.58,
+        "recirculated": false,
+        "token_index": 164,
+        "selected_token": " This"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " is",
+        "student_top_token": " is",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.512,
+        "top1_top2_margin": [
+          0.799
+        ],
+        "top1_prob": 0.893,
+        "recirculated": false,
+        "token_index": 165,
+        "selected_token": " is"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " implicit",
+        "student_top_token": " implicit",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.639,
+        "top1_top2_margin": [
+          0.429
+        ],
+        "top1_prob": 0.679,
+        "recirculated": false,
+        "token_index": 166,
+        "selected_token": " implicit"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.548,
+        "top1_top2_margin": [
+          0.317
+        ],
+        "top1_prob": 0.502,
+        "recirculated": false,
+        "token_index": 167,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.578,
+        "js_similarity": 0.798,
+        "teacher_top_token": "  ",
+        "student_top_token": " Flowers",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.688,
+        "top1_top2_margin": [
+          0.238,
+          0.422
+        ],
+        "top1_prob": 0.377,
+        "recirculated": true,
+        "token_index": 168,
+        "selected_token": " Flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.52,
+        "top1_top2_margin": [
+          0.928
+        ],
+        "top1_prob": 0.961,
+        "recirculated": false,
+        "token_index": 169,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.666,
+        "top1_top2_margin": [
+          0.501
+        ],
+        "top1_prob": 0.645,
+        "recirculated": false,
+        "token_index": 170,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 0.693,
+        "js_similarity": 0.794,
+        "teacher_top_token": " *",
+        "student_top_token": " type",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.587,
+        "top1_top2_margin": [
+          0.119,
+          0.523
+        ],
+        "top1_prob": 0.537,
+        "recirculated": true,
+        "token_index": 171,
+        "selected_token": " type"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " of",
+        "student_top_token": " of",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.566,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 172,
+        "selected_token": " of"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " plant",
+        "student_top_token": " plant",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.558,
+        "top1_top2_margin": [
+          0.997
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 173,
+        "selected_token": " plant"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.595,
+        "top1_top2_margin": [
+          0.441
+        ],
+        "top1_prob": 0.698,
+        "recirculated": false,
+        "token_index": 174,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " and",
+        "student_top_token": " and",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.565,
+        "top1_top2_margin": [
+          0.912
+        ],
+        "top1_prob": 0.941,
+        "recirculated": false,
+        "token_index": 175,
+        "selected_token": " and"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.628,
+        "top1_top2_margin": [
+          0.892
+        ],
+        "top1_prob": 0.938,
+        "recirculated": false,
+        "token_index": 176,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.554,
+        "top1_top2_margin": [
+          0.975
+        ],
+        "top1_prob": 0.986,
+        "recirculated": false,
+        "token_index": 177,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.698,
+        "top1_top2_margin": [
+          0.879
+        ],
+        "top1_prob": 0.938,
+        "recirculated": false,
+        "token_index": 178,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ",",
+        "student_top_token": ",",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.603,
+        "top1_top2_margin": [
+          0.53
+        ],
+        "top1_prob": 0.743,
+        "recirculated": false,
+        "token_index": 179,
+        "selected_token": ","
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " therefore",
+        "student_top_token": " therefore",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.607,
+        "top1_top2_margin": [
+          0.564
+        ],
+        "top1_prob": 0.754,
+        "recirculated": false,
+        "token_index": 180,
+        "selected_token": " therefore"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.598,
+        "top1_top2_margin": [
+          0.934
+        ],
+        "top1_prob": 0.954,
+        "recirculated": false,
+        "token_index": 181,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " are",
+        "student_top_token": " are",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.537,
+        "top1_top2_margin": [
+          0.922
+        ],
+        "top1_prob": 0.959,
+        "recirculated": false,
+        "token_index": 182,
+        "selected_token": " are"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " plants",
+        "student_top_token": " plants",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.702,
+        "top1_top2_margin": [
+          0.977
+        ],
+        "top1_prob": 0.987,
+        "recirculated": false,
+        "token_index": 183,
+        "selected_token": " plants"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.59,
+        "top1_top2_margin": [
+          0.988
+        ],
+        "top1_prob": 0.992,
+        "recirculated": false,
+        "token_index": 184,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.68,
+        "top1_top2_margin": [
+          0.697
+        ],
+        "top1_prob": 0.759,
+        "recirculated": false,
+        "token_index": 185,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.505,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 186,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "What",
+        "student_top_token": "What",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.361,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 187,
+        "selected_token": "What"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " CAN",
+        "student_top_token": " CAN",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.515,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 188,
+        "selected_token": " CAN"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "NOT",
+        "student_top_token": "NOT",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.432,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 189,
+        "selected_token": "NOT"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " be",
+        "student_top_token": " be",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.402,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 190,
+        "selected_token": " be"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " In",
+        "student_top_token": " In",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.588,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 191,
+        "selected_token": " In"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "ferred",
+        "student_top_token": "ferred",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.437,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 192,
+        "selected_token": "ferred"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.484,
+        "top1_top2_margin": [
+          0.879
+        ],
+        "top1_prob": 0.939,
+        "recirculated": false,
+        "token_index": 193,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n\n",
+        "student_top_token": "\n\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.447,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 194,
+        "selected_token": "\n\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.464,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 195,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.329,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 196,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.414,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 197,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "All",
+        "student_top_token": "All",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.439,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 198,
+        "selected_token": "All"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.478,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 199,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.561,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 200,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.437,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 201,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.558,
+        "top1_top2_margin": [
+          0.991
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 202,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " The",
+        "student_top_token": " The",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.568,
+        "top1_top2_margin": [
+          0.75
+        ],
+        "top1_prob": 0.867,
+        "recirculated": false,
+        "token_index": 203,
+        "selected_token": " The"
+      },
+      {
+        "cosine_similarity": 0.731,
+        "js_similarity": 0.872,
+        "teacher_top_token": " premise",
+        "student_top_token": " premises",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.488,
+        "top1_top2_margin": [
+          0.186,
+          0.324
+        ],
+        "top1_prob": 0.472,
+        "recirculated": true,
+        "token_index": 204,
+        "selected_token": " premises"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " only",
+        "student_top_token": " only",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.52,
+        "top1_top2_margin": [
+          0.82
+        ],
+        "top1_prob": 0.904,
+        "recirculated": false,
+        "token_index": 205,
+        "selected_token": " only"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " state",
+        "student_top_token": " state",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.543,
+        "top1_top2_margin": [
+          0.961
+        ],
+        "top1_prob": 0.979,
+        "recirculated": false,
+        "token_index": 206,
+        "selected_token": " state"
+      },
+      {
+        "cosine_similarity": 0.849,
+        "js_similarity": 0.885,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.57,
+        "top1_top2_margin": [
+          0.124,
+          0.807
+        ],
+        "top1_prob": 0.56,
+        "recirculated": true,
+        "token_index": 207,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "some",
+        "student_top_token": "some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.464,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 208,
+        "selected_token": "some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.498,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 209,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " flowers",
+        "student_top_token": " flowers",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.521,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 210,
+        "selected_token": " flowers"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " fade",
+        "student_top_token": " fade",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.586,
+        "top1_top2_margin": [
+          0.588
+        ],
+        "top1_prob": 0.787,
+        "recirculated": false,
+        "token_index": 211,
+        "selected_token": " fade"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " quickly",
+        "student_top_token": " quickly",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.466,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 212,
+        "selected_token": " quickly"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.621,
+        "top1_top2_margin": [
+          0.537
+        ],
+        "top1_prob": 0.753,
+        "recirculated": false,
+        "token_index": 213,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.997,
+        "js_similarity": 0.998,
+        "teacher_top_token": "  ",
+        "student_top_token": " It",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.712,
+        "top1_top2_margin": [
+          0.0,
+          0.044
+        ],
+        "top1_prob": 0.353,
+        "recirculated": true,
+        "token_index": 214,
+        "selected_token": " It"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " doesn",
+        "student_top_token": " doesn",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.558,
+        "top1_top2_margin": [
+          0.428
+        ],
+        "top1_prob": 0.676,
+        "recirculated": false,
+        "token_index": 215,
+        "selected_token": " doesn"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "'",
+        "student_top_token": "'",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.285,
+        "top1_top2_margin": [
+          0.671
+        ],
+        "top1_prob": 0.835,
+        "recirculated": false,
+        "token_index": 216,
+        "selected_token": "'"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "t",
+        "student_top_token": "t",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.949,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 217,
+        "selected_token": "t"
+      },
+      {
+        "cosine_similarity": 0.945,
+        "js_similarity": 0.946,
+        "teacher_top_token": " say",
+        "student_top_token": " say",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.436,
+        "top1_top2_margin": [
+          0.247,
+          0.471
+        ],
+        "top1_prob": 0.469,
+        "recirculated": true,
+        "token_index": 218,
+        "selected_token": " say"
+      },
+      {
+        "cosine_similarity": 0.958,
+        "js_similarity": 0.965,
+        "teacher_top_token": " anything",
+        "student_top_token": " anything",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.574,
+        "top1_top2_margin": [
+          0.199,
+          0.08
+        ],
+        "top1_prob": 0.506,
+        "recirculated": true,
+        "token_index": 219,
+        "selected_token": " anything"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " about",
+        "student_top_token": " about",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.628,
+        "top1_top2_margin": [
+          0.992
+        ],
+        "top1_prob": 0.995,
+        "recirculated": false,
+        "token_index": 220,
+        "selected_token": " about"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.667,
+        "top1_top2_margin": [
+          0.825
+        ],
+        "top1_prob": 0.89,
+        "recirculated": false,
+        "token_index": 221,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "all",
+        "student_top_token": "all",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.418,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 222,
+        "selected_token": "all"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.52,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 223,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.514,
+        "top1_top2_margin": [
+          0.408
+        ],
+        "top1_prob": 0.7,
+        "recirculated": false,
+        "token_index": 224,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.591,
+        "top1_top2_margin": [
+          0.925
+        ],
+        "top1_prob": 0.947,
+        "recirculated": false,
+        "token_index": 225,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.682,
+        "top1_top2_margin": [
+          0.397
+        ],
+        "top1_prob": 0.588,
+        "recirculated": false,
+        "token_index": 226,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "Many",
+        "student_top_token": "Many",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.485,
+        "top1_top2_margin": [
+          0.558
+        ],
+        "top1_prob": 0.675,
+        "recirculated": false,
+        "token_index": 227,
+        "selected_token": "Many"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.588,
+        "top1_top2_margin": [
+          0.951
+        ],
+        "top1_prob": 0.963,
+        "recirculated": false,
+        "token_index": 228,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " might",
+        "student_top_token": " might",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.558,
+        "top1_top2_margin": [
+          0.563
+        ],
+        "top1_prob": 0.725,
+        "recirculated": false,
+        "token_index": 229,
+        "selected_token": " might"
+      },
+      {
+        "cosine_similarity": 0.951,
+        "js_similarity": 0.977,
+        "teacher_top_token": " be",
+        "student_top_token": " be",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.59,
+        "top1_top2_margin": [
+          0.16,
+          0.0
+        ],
+        "top1_prob": 0.407,
+        "recirculated": true,
+        "token_index": 230,
+        "selected_token": " be"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " long",
+        "student_top_token": " long",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.688,
+        "top1_top2_margin": [
+          0.866
+        ],
+        "top1_prob": 0.925,
+        "recirculated": false,
+        "token_index": 231,
+        "selected_token": " long"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "-",
+        "student_top_token": "-",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.673,
+        "top1_top2_margin": [
+          0.996
+        ],
+        "top1_prob": 0.998,
+        "recirculated": false,
+        "token_index": 232,
+        "selected_token": "-"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "lasting",
+        "student_top_token": "lasting",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.576,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 233,
+        "selected_token": "lasting"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.618,
+        "top1_top2_margin": [
+          0.935
+        ],
+        "top1_prob": 0.957,
+        "recirculated": false,
+        "token_index": 234,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.677,
+        "top1_top2_margin": [
+          0.991
+        ],
+        "top1_prob": 0.994,
+        "recirculated": false,
+        "token_index": 235,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.494,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 236,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.285,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 237,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.351,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 238,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "All",
+        "student_top_token": "All",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.424,
+        "top1_top2_margin": [
+          0.245
+        ],
+        "top1_prob": 0.622,
+        "recirculated": false,
+        "token_index": 239,
+        "selected_token": "All"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.483,
+        "top1_top2_margin": [
+          0.971
+        ],
+        "top1_prob": 0.985,
+        "recirculated": false,
+        "token_index": 240,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " do",
+        "student_top_token": " do",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.572,
+        "top1_top2_margin": [
+          0.582
+        ],
+        "top1_prob": 0.749,
+        "recirculated": false,
+        "token_index": 241,
+        "selected_token": " do"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " not",
+        "student_top_token": " not",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.595,
+        "top1_top2_margin": [
+          0.973
+        ],
+        "top1_prob": 0.985,
+        "recirculated": false,
+        "token_index": 242,
+        "selected_token": " not"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survive",
+        "student_top_token": " survive",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.63,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 243,
+        "selected_token": " survive"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.541,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 244,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.468,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 245,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.568,
+        "top1_top2_margin": [
+          0.99
+        ],
+        "top1_prob": 0.994,
+        "recirculated": false,
+        "token_index": 246,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.574,
+        "top1_top2_margin": [
+          0.334
+        ],
+        "top1_prob": 0.494,
+        "recirculated": false,
+        "token_index": 247,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "We",
+        "student_top_token": "We",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.41,
+        "top1_top2_margin": [
+          0.406
+        ],
+        "top1_prob": 0.544,
+        "recirculated": false,
+        "token_index": 248,
+        "selected_token": "We"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " only",
+        "student_top_token": " only",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.544,
+        "top1_top2_margin": [
+          0.881
+        ],
+        "top1_prob": 0.934,
+        "recirculated": false,
+        "token_index": 249,
+        "selected_token": " only"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " know",
+        "student_top_token": " know",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.5,
+        "top1_top2_margin": [
+          0.998
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 250,
+        "selected_token": " know"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.6,
+        "top1_top2_margin": [
+          0.603
+        ],
+        "top1_prob": 0.776,
+        "recirculated": false,
+        "token_index": 251,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "some",
+        "student_top_token": "some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.435,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 252,
+        "selected_token": "some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.482,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 253,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.547,
+        "top1_top2_margin": [
+          0.517
+        ],
+        "top1_prob": 0.724,
+        "recirculated": false,
+        "token_index": 254,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " don",
+        "student_top_token": " don",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.579,
+        "top1_top2_margin": [
+          0.967
+        ],
+        "top1_prob": 0.977,
+        "recirculated": false,
+        "token_index": 255,
+        "selected_token": " don"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "'",
+        "student_top_token": "'",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.398,
+        "top1_top2_margin": [
+          0.809
+        ],
+        "top1_prob": 0.905,
+        "recirculated": false,
+        "token_index": 256,
+        "selected_token": "'"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "t",
+        "student_top_token": "t",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.927,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 257,
+        "selected_token": "t"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survive",
+        "student_top_token": " survive",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.581,
+        "top1_top2_margin": [
+          0.894
+        ],
+        "top1_prob": 0.941,
+        "recirculated": false,
+        "token_index": 258,
+        "selected_token": " survive"
+      },
+      {
+        "cosine_similarity": 0.956,
+        "js_similarity": 0.976,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.563,
+        "top1_top2_margin": [
+          0.21,
+          0.508
+        ],
+        "top1_prob": 0.533,
+        "recirculated": true,
+        "token_index": 259,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.539,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 260,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.605,
+        "top1_top2_margin": [
+          0.609
+        ],
+        "top1_prob": 0.737,
+        "recirculated": false,
+        "token_index": 261,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.997,
+        "js_similarity": 0.998,
+        "teacher_top_token": "  ",
+        "student_top_token": "  ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.713,
+        "top1_top2_margin": [
+          0.042,
+          0.0
+        ],
+        "top1_prob": 0.361,
+        "recirculated": true,
+        "token_index": 262,
+        "selected_token": "  "
+      },
+      {
+        "cosine_similarity": 0.995,
+        "js_similarity": 0.998,
+        "teacher_top_token": "Others",
+        "student_top_token": "Others",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.496,
+        "top1_top2_margin": [
+          0.028,
+          0.056
+        ],
+        "top1_prob": 0.241,
+        "recirculated": true,
+        "token_index": 263,
+        "selected_token": "Others"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " might",
+        "student_top_token": " might",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.583,
+        "top1_top2_margin": [
+          0.803
+        ],
+        "top1_prob": 0.875,
+        "recirculated": false,
+        "token_index": 264,
+        "selected_token": " might"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " be",
+        "student_top_token": " be",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.595,
+        "top1_top2_margin": [
+          0.926
+        ],
+        "top1_prob": 0.959,
+        "recirculated": false,
+        "token_index": 265,
+        "selected_token": " be"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " hardy",
+        "student_top_token": " hardy",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.669,
+        "top1_top2_margin": [
+          0.311
+        ],
+        "top1_prob": 0.492,
+        "recirculated": false,
+        "token_index": 266,
+        "selected_token": " hardy"
+      },
+      {
+        "cosine_similarity": 0.834,
+        "js_similarity": 0.931,
+        "teacher_top_token": " varieties",
+        "student_top_token": " enough",
+        "top1_agreement": 0,
+        "teacher_src_dst_sim": 0.565,
+        "top1_top2_margin": [
+          0.227,
+          0.345
+        ],
+        "top1_prob": 0.576,
+        "recirculated": true,
+        "token_index": 267,
+        "selected_token": " enough"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " to",
+        "student_top_token": " to",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.598,
+        "top1_top2_margin": [
+          0.978
+        ],
+        "top1_prob": 0.984,
+        "recirculated": false,
+        "token_index": 268,
+        "selected_token": " to"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " withstand",
+        "student_top_token": " withstand",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.642,
+        "top1_top2_margin": [
+          0.821
+        ],
+        "top1_prob": 0.87,
+        "recirculated": false,
+        "token_index": 269,
+        "selected_token": " withstand"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " it",
+        "student_top_token": " it",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.561,
+        "top1_top2_margin": [
+          0.969
+        ],
+        "top1_prob": 0.979,
+        "recirculated": false,
+        "token_index": 270,
+        "selected_token": " it"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.651,
+        "top1_top2_margin": [
+          0.898
+        ],
+        "top1_prob": 0.929,
+        "recirculated": false,
+        "token_index": 271,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "\n",
+        "student_top_token": "\n",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.661,
+        "top1_top2_margin": [
+          0.948
+        ],
+        "top1_prob": 0.963,
+        "recirculated": false,
+        "token_index": 272,
+        "selected_token": "\n"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.467,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 273,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "   ",
+        "student_top_token": "   ",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.317,
+        "top1_top2_margin": [
+          0.991
+        ],
+        "top1_prob": 0.994,
+        "recirculated": false,
+        "token_index": 274,
+        "selected_token": "   "
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "**",
+        "student_top_token": "**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.368,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 275,
+        "selected_token": "**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "No",
+        "student_top_token": "No",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.431,
+        "top1_top2_margin": [
+          0.552
+        ],
+        "top1_prob": 0.773,
+        "recirculated": false,
+        "token_index": 276,
+        "selected_token": "No"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " roses",
+        "student_top_token": " roses",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.531,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 0.999,
+        "recirculated": false,
+        "token_index": 277,
+        "selected_token": " roses"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " survive",
+        "student_top_token": " survive",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.528,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 278,
+        "selected_token": " survive"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " a",
+        "student_top_token": " a",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.484,
+        "top1_top2_margin": [
+          0.999
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 279,
+        "selected_token": " a"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " frost",
+        "student_top_token": " frost",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.501,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 280,
+        "selected_token": " frost"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ":**",
+        "student_top_token": ":**",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.553,
+        "top1_top2_margin": [
+          0.982
+        ],
+        "top1_prob": 0.989,
+        "recirculated": false,
+        "token_index": 281,
+        "selected_token": ":**"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " This",
+        "student_top_token": " This",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.575,
+        "top1_top2_margin": [
+          0.32
+        ],
+        "top1_prob": 0.548,
+        "recirculated": false,
+        "token_index": 282,
+        "selected_token": " This"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " is",
+        "student_top_token": " is",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.509,
+        "top1_top2_margin": [
+          0.911
+        ],
+        "top1_prob": 0.953,
+        "recirculated": false,
+        "token_index": 283,
+        "selected_token": " is"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " the",
+        "student_top_token": " the",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.636,
+        "top1_top2_margin": [
+          0.917
+        ],
+        "top1_prob": 0.932,
+        "recirculated": false,
+        "token_index": 284,
+        "selected_token": " the"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " opposite",
+        "student_top_token": " opposite",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.538,
+        "top1_top2_margin": [
+          0.863
+        ],
+        "top1_prob": 0.915,
+        "recirculated": false,
+        "token_index": 285,
+        "selected_token": " opposite"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " of",
+        "student_top_token": " of",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.581,
+        "top1_top2_margin": [
+          0.971
+        ],
+        "top1_prob": 0.981,
+        "recirculated": false,
+        "token_index": 286,
+        "selected_token": " of"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " what",
+        "student_top_token": " what",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.592,
+        "top1_top2_margin": [
+          0.875
+        ],
+        "top1_prob": 0.91,
+        "recirculated": false,
+        "token_index": 287,
+        "selected_token": " what"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " we",
+        "student_top_token": " we",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.626,
+        "top1_top2_margin": [
+          0.794
+        ],
+        "top1_prob": 0.875,
+        "recirculated": false,
+        "token_index": 288,
+        "selected_token": " we"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " can",
+        "student_top_token": " can",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.641,
+        "top1_top2_margin": [
+          0.792
+        ],
+        "top1_prob": 0.863,
+        "recirculated": false,
+        "token_index": 289,
+        "selected_token": " can"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " infer",
+        "student_top_token": " infer",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.579,
+        "top1_top2_margin": [
+          0.378
+        ],
+        "top1_prob": 0.56,
+        "recirculated": false,
+        "token_index": 290,
+        "selected_token": " infer"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": ".",
+        "student_top_token": ".",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.616,
+        "top1_top2_margin": [
+          0.801
+        ],
+        "top1_prob": 0.855,
+        "recirculated": false,
+        "token_index": 291,
+        "selected_token": "."
+      },
+      {
+        "cosine_similarity": 0.947,
+        "js_similarity": 0.969,
+        "teacher_top_token": " We",
+        "student_top_token": " We",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.695,
+        "top1_top2_margin": [
+          0.103,
+          0.314
+        ],
+        "top1_prob": 0.33,
+        "recirculated": true,
+        "token_index": 292,
+        "selected_token": " We"
+      },
+      {
+        "cosine_similarity": 0.99,
+        "js_similarity": 0.986,
+        "teacher_top_token": " know",
+        "student_top_token": " know",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.583,
+        "top1_top2_margin": [
+          0.16,
+          0.049
+        ],
+        "top1_prob": 0.513,
+        "recirculated": true,
+        "token_index": 293,
+        "selected_token": " know"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " *",
+        "student_top_token": " *",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.556,
+        "top1_top2_margin": [
+          0.539
+        ],
+        "top1_prob": 0.694,
+        "recirculated": false,
+        "token_index": 294,
+        "selected_token": " *"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "some",
+        "student_top_token": "some",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.476,
+        "top1_top2_margin": [
+          0.954
+        ],
+        "top1_prob": 0.977,
+        "recirculated": false,
+        "token_index": 295,
+        "selected_token": "some"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "*",
+        "student_top_token": "*",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.505,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 296,
+        "selected_token": "*"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": " don",
+        "student_top_token": " don",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.552,
+        "top1_top2_margin": [
+          0.718
+        ],
+        "top1_prob": 0.816,
+        "recirculated": false,
+        "token_index": 297,
+        "selected_token": " don"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "'",
+        "student_top_token": "'",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.483,
+        "top1_top2_margin": [
+          0.704
+        ],
+        "top1_prob": 0.852,
+        "recirculated": false,
+        "token_index": 298,
+        "selected_token": "'"
+      },
+      {
+        "cosine_similarity": 1.0,
+        "js_similarity": 1.0,
+        "teacher_top_token": "t",
+        "student_top_token": "t",
+        "top1_agreement": 1,
+        "teacher_src_dst_sim": 0.954,
+        "top1_top2_margin": [
+          1.0
+        ],
+        "top1_prob": 1.0,
+        "recirculated": false,
+        "token_index": 299,
+        "selected_token": "t"
+      }
+    ]
+  }
+]

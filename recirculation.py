@@ -433,6 +433,7 @@ def recirculate(
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
+    rejection_reasons: list[tuple[str, ...]] | None = None,
     p2_cosine_similarities: list[float | None] | None = None,
     p2_top1_boosts: list[float | None] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
@@ -628,6 +629,7 @@ def recirculate(
                 else None
             )
             p2_accepted = True
+            p2_rejection_reasons: list[str] = []
             p2_cosine_similarity = None
             p2_top1_boost = None
             for pass_index in range(1, passes if should_recirculate else 1):
@@ -680,16 +682,19 @@ def recirculate(
                     )
                     if margin_threshold_p2 is not None:
                         assert pass_margin is not None
-                        p2_accepted = pass_margin > margin_threshold_p2
-                    if top1_boost_threshold is not None:
-                        p2_accepted = (
-                            p2_accepted and p2_top1_boost <= top1_boost_threshold
-                        )
-                    if cosine_reject is not None:
-                        p2_accepted = (
-                            p2_accepted
-                            and p2_cosine_similarity >= cosine_reject
-                        )
+                        if pass_margin <= margin_threshold_p2:
+                            p2_rejection_reasons.append("margin-p2")
+                    if (
+                        top1_boost_threshold is not None
+                        and p2_top1_boost > top1_boost_threshold
+                    ):
+                        p2_rejection_reasons.append("top1-boost")
+                    if (
+                        cosine_reject is not None
+                        and p2_cosine_similarity < cosine_reject
+                    ):
+                        p2_rejection_reasons.append("cosine")
+                    p2_accepted = not p2_rejection_reasons
                     if not p2_accepted:
                         assert cached_token_passes is not None
                         assert restore_cached_token is not None
@@ -717,6 +722,10 @@ def recirculate(
                 recirculated_flags.append(should_recirculate and p2_accepted)
             if rejected_flags is not None:
                 rejected_flags.append(should_recirculate and not p2_accepted)
+            if rejection_reasons is not None:
+                rejection_reasons.append(
+                    tuple(p2_rejection_reasons) if should_recirculate else ()
+                )
             if p2_cosine_similarities is not None:
                 p2_cosine_similarities.append(p2_cosine_similarity)
             if p2_top1_boosts is not None:

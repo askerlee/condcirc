@@ -398,7 +398,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Post-P2 gate: accept recirculation only when the P2 top-1 versus "
+            "Final-pass gate: accept recirculation only when its top-1 versus "
             "top-2 probability margin is greater than this value."
         ),
     )
@@ -408,7 +408,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Post-P2 gate: accept recirculation only when the P2-selected "
+            "Final-pass gate: accept recirculation only when its selected "
             "token's probability boost over P1 is at most this value."
         ),
     )
@@ -429,7 +429,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Discard P2 when its next-token distribution has cosine similarity "
+            "Discard the final pass when its distribution has cosine similarity "
             "below this threshold relative to P1."
         ),
     )
@@ -439,7 +439,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=5,
         metavar="K",
         help=(
-            "Compute P1/P2 cosine over the union of each distribution's top-K "
+            "Compute P1/final-pass cosine over the union of their top-K "
             "tokens (default: 5)."
         ),
     )
@@ -449,7 +449,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="K",
         help=(
-            "Post-P2 gate: accept recirculation only when P2's top-1 token "
+            "Final-pass gate: accept recirculation only when its top-1 token "
             "is among P1's top-K tokens."
         ),
     )
@@ -748,6 +748,8 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
+    if args.passes == 1:
+        return
     if args.act_sim_min_max is not None:
         if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
             raise ValueError("--act-sim-min-max requires MIN < MAX.")
@@ -1066,7 +1068,7 @@ def main() -> None:
         def report_stats(
             recirculated_flags: list[bool] | None = None,
             rejected_flags: list[bool] | None = None,
-            p2_same_top1_flags: list[bool] | None = None,
+            final_pass_same_top1_flags: list[bool] | None = None,
             rejection_reasons: list[tuple[str, ...]] | None = None,
         ) -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
@@ -1077,7 +1079,7 @@ def main() -> None:
                     enabled_reasons = tuple(
                         reason
                         for threshold, reason in (
-                            (run_args.margin_thres_p2, "margin-p2"),
+                            (run_args.margin_thres_p2, "margin-final"),
                             (run_args.top1_boost_thres, "top1-boost"),
                             (run_args.cosine_reject, "cosine"),
                             (run_args.rank_top_k, "rank"),
@@ -1092,7 +1094,7 @@ def main() -> None:
                 print(
                     f"recirculated_tokens = {sum(recirculated_flags)}/"
                     f"{len(recirculated_flags)}, same_top1 = "
-                    f"{sum(p2_same_top1_flags or [])}, rejected = "
+                    f"{sum(final_pass_same_top1_flags or [])}, rejected = "
                     f"{sum(rejected_flags or [])}{rejection_breakdown}"
                 )
             summary = similarity_stats.summary() if similarity_stats else None
@@ -1197,10 +1199,10 @@ def main() -> None:
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
-        p2_same_top1_flags: list[bool] = []
+        final_pass_same_top1_flags: list[bool] = []
         rejection_reasons: list[tuple[str, ...]] = []
-        p2_cosine_similarities: list[float | None] = []
-        p2_top1_boosts: list[float | None] = []
+        final_pass_cosine_similarities: list[float | None] = []
+        final_pass_top1_boosts: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1229,10 +1231,10 @@ def main() -> None:
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
-            p2_same_top1_flags=p2_same_top1_flags,
+            final_pass_same_top1_flags=final_pass_same_top1_flags,
             rejection_reasons=rejection_reasons,
-            p2_cosine_similarities=p2_cosine_similarities,
-            p2_top1_boosts=p2_top1_boosts,
+            final_pass_cosine_similarities=final_pass_cosine_similarities,
+            final_pass_top1_boosts=final_pass_top1_boosts,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
         )
@@ -1252,16 +1254,16 @@ def main() -> None:
             )
             comparison["recirculated"] = recirculated_flags[-1]
             comparison["rejected"] = rejected_flags[-1]
-            comparison["p2_same_top1"] = p2_same_top1_flags[-1]
+            comparison["final_pass_same_top1"] = final_pass_same_top1_flags[-1]
             comparison["rejection_reasons"] = rejection_reasons[-1]
-            comparison["p2_top_k_cosine_similarity"] = (
-                round(p2_cosine_similarities[-1], 6)
-                if p2_cosine_similarities[-1] is not None
+            comparison["final_pass_top_k_cosine_similarity"] = (
+                round(final_pass_cosine_similarities[-1], 6)
+                if final_pass_cosine_similarities[-1] is not None
                 else None
             )
-            comparison["p2_top1_boost"] = (
-                round(p2_top1_boosts[-1], 6)
-                if p2_top1_boosts[-1] is not None
+            comparison["final_pass_top1_boost"] = (
+                round(final_pass_top1_boosts[-1], 6)
+                if final_pass_top1_boosts[-1] is not None
                 else None
             )
             comparison["cosine_top_k"] = run_args.cosine_top_k
@@ -1312,10 +1314,10 @@ def main() -> None:
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
-                p2_same_top1_flags=p2_same_top1_flags,
+                final_pass_same_top1_flags=final_pass_same_top1_flags,
                 rejection_reasons=rejection_reasons,
-                p2_cosine_similarities=p2_cosine_similarities,
-                p2_top1_boosts=p2_top1_boosts,
+                final_pass_cosine_similarities=final_pass_cosine_similarities,
+                final_pass_top1_boosts=final_pass_top1_boosts,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
             )
@@ -1332,7 +1334,7 @@ def main() -> None:
         report_stats(
             [comparison["recirculated"] for comparison in similarities],
             [comparison["rejected"] for comparison in similarities],
-            [comparison["p2_same_top1"] for comparison in similarities],
+            [comparison["final_pass_same_top1"] for comparison in similarities],
             [comparison["rejection_reasons"] for comparison in similarities],
         )
 

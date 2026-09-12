@@ -9,10 +9,9 @@ is recirculated for every token (with three passes):
   3. Run the token again, replacing the output of destination block d with
      beta * h_d + alpha * (||h_d|| / ||h_s||) * h_s.
     4. Capture the new residuals, rewind, and repeat the recirculation once more.
-      5. Keep P1's KV cache when P2 has the same top-1 token. Optionally reject P2
-          when its next-token distribution is insufficiently similar to P1,
-          restoring both P1 logits and KV cache; otherwise continue and commit the
-          final pass.
+      5. Evaluate the rejection gates on the final pass. Keep P1's KV cache when
+          that pass has the same top-1 token, or restore both P1 logits and KV cache
+          when a rejection gate fails; otherwise commit the final pass.
 
 When expected-embedding subtraction is enabled, each replay subtracts the
 top-K expected next-token embedding from h_s before norm matching and mixing.
@@ -117,14 +116,14 @@ def _top1_probability(logits: Tensor) -> float:
     return float(probabilities.max(dim=-1).values.item())
 
 
-def _top1_probability_boost(p1_logits: Tensor, p2_logits: Tensor) -> float:
+def _top1_probability_boost(p1_logits: Tensor, final_logits: Tensor) -> float:
     p1_probabilities = torch.softmax(p1_logits[:, -1, :].float(), dim=-1)
-    p2_probabilities = torch.softmax(p2_logits[:, -1, :].float(), dim=-1)
-    p2_token = p2_probabilities.argmax(dim=-1, keepdim=True)
+    final_probabilities = torch.softmax(final_logits[:, -1, :].float(), dim=-1)
+    final_token = final_probabilities.argmax(dim=-1, keepdim=True)
     return float(
         (
-            p2_probabilities.gather(-1, p2_token)
-            - p1_probabilities.gather(-1, p2_token)
+            final_probabilities.gather(-1, final_token)
+            - p1_probabilities.gather(-1, final_token)
         ).item()
     )
 
@@ -135,13 +134,15 @@ def _top1_tokens_match(p1_logits: Tensor, p2_logits: Tensor) -> bool:
     return bool((p1_top_token == p2_top_token).all().item())
 
 
-def _p2_top1_in_p1_top_k(p1_logits: Tensor, p2_logits: Tensor, top_k: int) -> bool:
+def _final_top1_in_p1_top_k(
+    p1_logits: Tensor, final_logits: Tensor, top_k: int
+) -> bool:
     selected_count = min(top_k, p1_logits.shape[-1])
     p1_top_tokens = torch.topk(
         p1_logits[:, -1, :], selected_count, dim=-1
     ).indices
-    p2_top_token = p2_logits[:, -1, :].argmax(dim=-1, keepdim=True)
-    return bool((p1_top_tokens == p2_top_token).any(dim=-1).all().item())
+    final_top_token = final_logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    return bool((p1_top_tokens == final_top_token).any(dim=-1).all().item())
 
 
 def _distribution_cosine_similarity(
@@ -450,10 +451,10 @@ def recirculate(
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
-    p2_same_top1_flags: list[bool] | None = None,
+    final_pass_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
-    p2_cosine_similarities: list[float | None] | None = None,
-    p2_top1_boosts: list[float | None] | None = None,
+    final_pass_cosine_similarities: list[float | None] | None = None,
+    final_pass_top1_boosts: list[float | None] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -462,13 +463,14 @@ def recirculate(
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
-    if passes < 2 and (
-        margin_threshold_p2 is not None
-        or top1_boost_threshold is not None
-        or cosine_reject is not None
-        or rank_top_k is not None
-    ):
-        raise ValueError("Post-P2 gates require passes of at least 2.")
+    if passes == 1:
+        condition_thresholds = None
+        margin_threshold_p1 = None
+        margin_threshold_p2 = None
+        top1_boost_threshold = None
+        top1_prob_threshold = None
+        cosine_reject = None
+        rank_top_k = None
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
     if rank_top_k is not None and rank_top_k < 1:
@@ -496,20 +498,20 @@ def recirculate(
             )
         if margin_threshold_p2 is not None:
             raise ValueError(
-                "Post-P2 margin-gated recirculation currently requires --mode source."
+                "Final-pass margin-gated recirculation requires --mode source."
             )
         if top1_boost_threshold is not None:
             raise ValueError(
-                "Post-P2 top-1 boost gating currently requires --mode source."
+                "Final-pass top-1 boost gating requires --mode source."
             )
         if top1_prob_threshold is not None:
             raise ValueError(
                 "Top1-probability-gated recirculation currently requires --mode source."
             )
         if cosine_reject is not None:
-            raise ValueError("P2 trust rejection currently requires --mode source.")
+            raise ValueError("Final-pass trust rejection requires --mode source.")
         if rank_top_k is not None:
-            raise ValueError("P2 rank gating currently requires --mode source.")
+            raise ValueError("Final-pass rank gating requires --mode source.")
         if similarity_stats is not None:
             raise ValueError(
                 "Source/destination similarity stats require --mode source."
@@ -648,12 +650,12 @@ def recirculate(
                 if should_recirculate and capture_cached_token is not None
                 else None
             )
-            p2_accepted = True
-            p2_cache_restored = False
-            p2_same_top1 = False
-            p2_rejection_reasons: list[str] = []
-            p2_cosine_similarity = None
-            p2_top1_boost = None
+            final_pass_accepted = True
+            cache_restored = False
+            final_pass_same_top1 = False
+            final_pass_rejection_reasons: list[str] = []
+            final_pass_cosine_similarity = None
+            final_pass_top1_boost = None
             for pass_index in range(1, passes if should_recirculate else 1):
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
@@ -695,56 +697,57 @@ def recirculate(
                 if token_pass_probability_margins is not None:
                     assert pass_margin is not None
                     token_pass_probability_margins.append(pass_margin)
-                if pass_index == 1:
-                    p2_same_top1 = _top1_tokens_match(first_logits, final_logits)
-                    p2_top1_boost = _top1_probability_boost(
+                if pass_index == passes - 1:
+                    final_pass_top1_boost = _top1_probability_boost(
                         first_logits, final_logits
                     )
-                    p2_cosine_similarity = _distribution_cosine_similarity(
+                    final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
                     if margin_threshold_p2 is not None:
                         assert pass_margin is not None
                         if pass_margin <= margin_threshold_p2:
-                            p2_rejection_reasons.append("margin-p2")
+                            final_pass_rejection_reasons.append("margin-final")
                     if (
                         top1_boost_threshold is not None
-                        and p2_top1_boost > top1_boost_threshold
+                        and final_pass_top1_boost > top1_boost_threshold
                     ):
-                        p2_rejection_reasons.append("top1-boost")
+                        final_pass_rejection_reasons.append("top1-boost")
                     if (
                         cosine_reject is not None
-                        and p2_cosine_similarity < cosine_reject
+                        and final_pass_cosine_similarity < cosine_reject
                     ):
-                        p2_rejection_reasons.append("cosine")
+                        final_pass_rejection_reasons.append("cosine")
                     if (
                         rank_top_k is not None
-                        and not _p2_top1_in_p1_top_k(
+                        and not _final_top1_in_p1_top_k(
                             first_logits, final_logits, rank_top_k
                         )
                     ):
-                        p2_rejection_reasons.append("rank")
-                    p2_accepted = not p2_rejection_reasons
-                    if not p2_accepted:
+                        final_pass_rejection_reasons.append("rank")
+                    final_pass_accepted = not final_pass_rejection_reasons
+                    if not final_pass_accepted:
                         assert cached_token_passes is not None
                         assert restore_cached_token is not None
                         restore_cached_token(cache, cached_token_passes[0])
-                        p2_cache_restored = True
+                        cache_restored = True
                         final_logits = first_logits
                         break
-                    if p2_same_top1:
+                    final_pass_same_top1 = _top1_tokens_match(
+                        first_logits, final_logits
+                    )
+                    if final_pass_same_top1:
                         assert cached_token_passes is not None
                         assert restore_cached_token is not None
                         restore_cached_token(cache, cached_token_passes[0])
-                        p2_cache_restored = True
-                        break
+                        cache_restored = True
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
             if (
                 cached_token_passes is not None
                 and average_cached_token is not None
-                and p2_accepted
-                and not p2_cache_restored
+                and final_pass_accepted
+                and not cache_restored
             ):
                 average_cached_token(cache, cached_token_passes)
             if pass_probability_margins is not None:
@@ -753,23 +756,35 @@ def recirculate(
             if actual_alphas is not None:
                 actual_alphas.append(
                     hooks.injection_alphas
-                    if should_recirculate and p2_accepted and config.act_sim_as_alpha
+                    if should_recirculate
+                    and final_pass_accepted
+                    and config.act_sim_as_alpha
                     else None
                 )
             if recirculated_flags is not None:
-                recirculated_flags.append(should_recirculate and p2_accepted)
+                recirculated_flags.append(
+                    passes >= 2 and should_recirculate and final_pass_accepted
+                )
             if rejected_flags is not None:
-                rejected_flags.append(should_recirculate and not p2_accepted)
-            if p2_same_top1_flags is not None:
-                p2_same_top1_flags.append(should_recirculate and p2_same_top1)
+                rejected_flags.append(
+                    should_recirculate and not final_pass_accepted
+                )
+            if final_pass_same_top1_flags is not None:
+                final_pass_same_top1_flags.append(
+                    should_recirculate and final_pass_same_top1
+                )
             if rejection_reasons is not None:
                 rejection_reasons.append(
-                    tuple(p2_rejection_reasons) if should_recirculate else ()
+                    tuple(final_pass_rejection_reasons)
+                    if should_recirculate
+                    else ()
                 )
-            if p2_cosine_similarities is not None:
-                p2_cosine_similarities.append(p2_cosine_similarity)
-            if p2_top1_boosts is not None:
-                p2_top1_boosts.append(p2_top1_boost)
+            if final_pass_cosine_similarities is not None:
+                final_pass_cosine_similarities.append(
+                    final_pass_cosine_similarity
+                )
+            if final_pass_top1_boosts is not None:
+                final_pass_top1_boosts.append(final_pass_top1_boost)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

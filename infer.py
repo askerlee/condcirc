@@ -436,11 +436,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cosine-top-k",
         type=int,
-        default=100,
+        default=5,
         metavar="K",
         help=(
             "Compute P1/P2 cosine over the union of each distribution's top-K "
-            "tokens (default: 100)."
+            "tokens (default: 5)."
+        ),
+    )
+    parser.add_argument(
+        "--rank-top-k",
+        type=int,
+        default=None,
+        metavar="K",
+        help=(
+            "Post-P2 gate: accept recirculation only when P2's top-1 token "
+            "is among P1's top-K tokens."
         ),
     )
     parser.add_argument(
@@ -760,6 +770,13 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--top1-boost-thres requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
+    if args.rank_top_k is not None:
+        if args.rank_top_k < 1:
+            raise ValueError("--rank-top-k must be at least 1.")
+        if args.passes < 2:
+            raise ValueError("--rank-top-k requires --passes of at least 2.")
+        if args.mode != "source":
+            raise ValueError("--rank-top-k requires --mode source.")
 
 
 def main() -> None:
@@ -900,6 +917,7 @@ def main() -> None:
             ),
             (args.margin_thres_p2, f"-m2{args.margin_thres_p2}"),
             (args.top1_boost_thres, f"-tb{args.top1_boost_thres}"),
+            (args.rank_top_k, f"-rank{args.rank_top_k}"),
         )
         if threshold is not None
     )
@@ -1061,6 +1079,7 @@ def main() -> None:
                             (run_args.margin_thres_p2, "margin-p2"),
                             (run_args.top1_boost_thres, "top1-boost"),
                             (run_args.cosine_reject, "cosine"),
+                            (run_args.rank_top_k, "rank"),
                         )
                         if threshold is not None
                     )
@@ -1120,6 +1139,7 @@ def main() -> None:
                     top1_prob_threshold=run_args.top1_prob_thres,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
+                    rank_top_k=run_args.rank_top_k,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=(
                         capture_dynamic_cache_token
@@ -1127,6 +1147,7 @@ def main() -> None:
                             run_args.margin_thres_p2 is not None
                             or run_args.top1_boost_thres is not None
                             or run_args.cosine_reject is not None
+                            or run_args.rank_top_k is not None
                         )
                         else None
                     ),
@@ -1161,6 +1182,7 @@ def main() -> None:
                         top1_prob_threshold=run_args.top1_prob_thres,
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
+                        rank_top_k=run_args.rank_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=(
                             capture_dynamic_cache_token
@@ -1168,6 +1190,7 @@ def main() -> None:
                                 run_args.margin_thres_p2 is not None
                                 or run_args.top1_boost_thres is not None
                                 or run_args.cosine_reject is not None
+                                or run_args.rank_top_k is not None
                             )
                             else None
                         ),
@@ -1213,6 +1236,7 @@ def main() -> None:
             top1_prob_threshold=run_args.top1_prob_thres,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
+            rank_top_k=run_args.rank_top_k,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
@@ -1229,6 +1253,7 @@ def main() -> None:
                     run_args.margin_thres_p2 is not None
                     or run_args.top1_boost_thres is not None
                     or run_args.cosine_reject is not None
+                    or run_args.rank_top_k is not None
                 )
                 else None
             ),
@@ -1262,6 +1287,7 @@ def main() -> None:
                 else None
             )
             comparison["cosine_top_k"] = run_args.cosine_top_k
+            comparison["rank_top_k"] = run_args.rank_top_k
             if run_args.act_sim_as_alpha:
                 actual_alpha = actual_alphas[-1]
                 comparison["actual_alpha"] = (
@@ -1300,6 +1326,7 @@ def main() -> None:
                 top1_prob_threshold=run_args.top1_prob_thres,
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
+                rank_top_k=run_args.rank_top_k,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
@@ -1316,6 +1343,7 @@ def main() -> None:
                         run_args.margin_thres_p2 is not None
                         or run_args.top1_boost_thres is not None
                         or run_args.cosine_reject is not None
+                        or run_args.rank_top_k is not None
                     )
                     else None
                 ),
@@ -1393,6 +1421,7 @@ def main() -> None:
             "top1_prob_thres",
             "cosine_reject",
             "cosine_top_k",
+            "rank_top_k",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]

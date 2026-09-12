@@ -128,6 +128,15 @@ def _top1_probability_boost(p1_logits: Tensor, p2_logits: Tensor) -> float:
     )
 
 
+def _p2_top1_in_p1_top_k(p1_logits: Tensor, p2_logits: Tensor, top_k: int) -> bool:
+    selected_count = min(top_k, p1_logits.shape[-1])
+    p1_top_tokens = torch.topk(
+        p1_logits[:, -1, :], selected_count, dim=-1
+    ).indices
+    p2_top_token = p2_logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    return bool((p1_top_tokens == p2_top_token).any(dim=-1).all().item())
+
+
 def _distribution_cosine_similarity(
     teacher_logits: Tensor, student_logits: Tensor, top_k: int
 ) -> float:
@@ -426,6 +435,7 @@ def recirculate(
     top1_prob_threshold: float | None = None,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
+    rank_top_k: int | None = None,
     gating_pair_index: int = 0,
     first_pass_logits: list[Tensor] | None = None,
     first_pass_similarities: list[tuple[float, ...]] | None = None,
@@ -448,10 +458,13 @@ def recirculate(
         margin_threshold_p2 is not None
         or top1_boost_threshold is not None
         or cosine_reject is not None
+        or rank_top_k is not None
     ):
         raise ValueError("Post-P2 gates require passes of at least 2.")
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
+    if rank_top_k is not None and rank_top_k < 1:
+        raise ValueError("rank_top_k must be at least 1.")
     if average_cached_token is not None and capture_cached_token is None:
         raise ValueError(
             "average_cached_token requires capture_cached_token."
@@ -460,6 +473,7 @@ def recirculate(
         margin_threshold_p2 is not None
         or top1_boost_threshold is not None
         or cosine_reject is not None
+        or rank_top_k is not None
     ) and (
         capture_cached_token is None or restore_cached_token is None
     ):
@@ -490,6 +504,8 @@ def recirculate(
             )
         if cosine_reject is not None:
             raise ValueError("P2 trust rejection currently requires --mode source.")
+        if rank_top_k is not None:
+            raise ValueError("P2 rank gating currently requires --mode source.")
         if similarity_stats is not None:
             raise ValueError(
                 "Source/destination similarity stats require --mode source."
@@ -694,6 +710,13 @@ def recirculate(
                         and p2_cosine_similarity < cosine_reject
                     ):
                         p2_rejection_reasons.append("cosine")
+                    if (
+                        rank_top_k is not None
+                        and not _p2_top1_in_p1_top_k(
+                            first_logits, final_logits, rank_top_k
+                        )
+                    ):
+                        p2_rejection_reasons.append("rank")
                     p2_accepted = not p2_rejection_reasons
                     if not p2_accepted:
                         assert cached_token_passes is not None

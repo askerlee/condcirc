@@ -1066,6 +1066,7 @@ def main() -> None:
         def report_stats(
             recirculated_flags: list[bool] | None = None,
             rejected_flags: list[bool] | None = None,
+            p2_same_top1_flags: list[bool] | None = None,
             rejection_reasons: list[tuple[str, ...]] | None = None,
         ) -> None:
             if use_recirculation and magnitude_diff_stats.mean is not None:
@@ -1090,7 +1091,8 @@ def main() -> None:
                         )
                 print(
                     f"recirculated_tokens = {sum(recirculated_flags)}/"
-                    f"{len(recirculated_flags)}, rejected = "
+                    f"{len(recirculated_flags)}, same_top1 = "
+                    f"{sum(p2_same_top1_flags or [])}, rejected = "
                     f"{sum(rejected_flags or [])}{rejection_breakdown}"
                 )
             summary = similarity_stats.summary() if similarity_stats else None
@@ -1195,6 +1197,7 @@ def main() -> None:
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
+        p2_same_top1_flags: list[bool] = []
         rejection_reasons: list[tuple[str, ...]] = []
         p2_cosine_similarities: list[float | None] = []
         p2_top1_boosts: list[float | None] = []
@@ -1226,6 +1229,7 @@ def main() -> None:
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
+            p2_same_top1_flags=p2_same_top1_flags,
             rejection_reasons=rejection_reasons,
             p2_cosine_similarities=p2_cosine_similarities,
             p2_top1_boosts=p2_top1_boosts,
@@ -1248,6 +1252,7 @@ def main() -> None:
             )
             comparison["recirculated"] = recirculated_flags[-1]
             comparison["rejected"] = rejected_flags[-1]
+            comparison["p2_same_top1"] = p2_same_top1_flags[-1]
             comparison["rejection_reasons"] = rejection_reasons[-1]
             comparison["p2_top_k_cosine_similarity"] = (
                 round(p2_cosine_similarities[-1], 6)
@@ -1307,6 +1312,7 @@ def main() -> None:
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
+                p2_same_top1_flags=p2_same_top1_flags,
                 rejection_reasons=rejection_reasons,
                 p2_cosine_similarities=p2_cosine_similarities,
                 p2_top1_boosts=p2_top1_boosts,
@@ -1326,6 +1332,7 @@ def main() -> None:
         report_stats(
             [comparison["recirculated"] for comparison in similarities],
             [comparison["rejected"] for comparison in similarities],
+            [comparison["p2_same_top1"] for comparison in similarities],
             [comparison["rejection_reasons"] for comparison in similarities],
         )
 

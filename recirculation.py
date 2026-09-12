@@ -450,6 +450,7 @@ def recirculate(
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
+    p2_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
     p2_cosine_similarities: list[float | None] | None = None,
     p2_top1_boosts: list[float | None] | None = None,
@@ -649,6 +650,7 @@ def recirculate(
             )
             p2_accepted = True
             p2_cache_restored = False
+            p2_same_top1 = False
             p2_rejection_reasons: list[str] = []
             p2_cosine_similarity = None
             p2_top1_boost = None
@@ -694,6 +696,7 @@ def recirculate(
                     assert pass_margin is not None
                     token_pass_probability_margins.append(pass_margin)
                 if pass_index == 1:
+                    p2_same_top1 = _top1_tokens_match(first_logits, final_logits)
                     p2_top1_boost = _top1_probability_boost(
                         first_logits, final_logits
                     )
@@ -729,7 +732,7 @@ def recirculate(
                         p2_cache_restored = True
                         final_logits = first_logits
                         break
-                    if _top1_tokens_match(first_logits, final_logits):
+                    if p2_same_top1:
                         assert cached_token_passes is not None
                         assert restore_cached_token is not None
                         restore_cached_token(cache, cached_token_passes[0])
@@ -757,6 +760,8 @@ def recirculate(
                 recirculated_flags.append(should_recirculate and p2_accepted)
             if rejected_flags is not None:
                 rejected_flags.append(should_recirculate and not p2_accepted)
+            if p2_same_top1_flags is not None:
+                p2_same_top1_flags.append(should_recirculate and p2_same_top1)
             if rejection_reasons is not None:
                 rejection_reasons.append(
                     tuple(p2_rejection_reasons) if should_recirculate else ()

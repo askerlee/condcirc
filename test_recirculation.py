@@ -16,6 +16,7 @@ class RecirculationCacheTest(unittest.TestCase):
             torch.tensor([[[5.0, 0.0, 1.0]]]),
         )
         call_count = 0
+        p2_same_top1_flags: list[bool] = []
 
         def step(token: torch.Tensor, current_cache: list[int]):
             nonlocal call_count
@@ -44,6 +45,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=3,
+            p2_same_top1_flags=p2_same_top1_flags,
             capture_cached_token=lambda current_cache: current_cache[-1],
             restore_cached_token=restore_cached_token,
         )
@@ -51,6 +53,7 @@ class RecirculationCacheTest(unittest.TestCase):
         torch.testing.assert_close(logits, pass_logits[1])
         self.assertEqual(final_cache, [1])
         self.assertEqual(call_count, 2)
+        self.assertEqual(p2_same_top1_flags, [True])
 
 
 if __name__ == "__main__":

@@ -9,9 +9,10 @@ is recirculated for every token (with three passes):
   3. Run the token again, replacing the output of destination block d with
      beta * h_d + alpha * (||h_d|| / ||h_s||) * h_s.
     4. Capture the new residuals, rewind, and repeat the recirculation once more.
-     5. Optionally reject P2 when its next-token distribution is insufficiently
-         similar to P1, restoring P1 logits and KV cache; otherwise continue and
-         commit the final pass.
+      5. Keep P1's KV cache when P2 has the same top-1 token. Optionally reject P2
+          when its next-token distribution is insufficiently similar to P1,
+          restoring both P1 logits and KV cache; otherwise continue and commit the
+          final pass.
 
 When expected-embedding subtraction is enabled, each replay subtracts the
 top-K expected next-token embedding from h_s before norm matching and mixing.
@@ -126,6 +127,12 @@ def _top1_probability_boost(p1_logits: Tensor, p2_logits: Tensor) -> float:
             - p1_probabilities.gather(-1, p2_token)
         ).item()
     )
+
+
+def _top1_tokens_match(p1_logits: Tensor, p2_logits: Tensor) -> bool:
+    p1_top_token = p1_logits[:, -1, :].argmax(dim=-1)
+    p2_top_token = p2_logits[:, -1, :].argmax(dim=-1)
+    return bool((p1_top_token == p2_top_token).all().item())
 
 
 def _p2_top1_in_p1_top_k(p1_logits: Tensor, p2_logits: Tensor, top_k: int) -> bool:
@@ -469,16 +476,12 @@ def recirculate(
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if (
-        margin_threshold_p2 is not None
-        or top1_boost_threshold is not None
-        or cosine_reject is not None
-        or rank_top_k is not None
-    ) and (
+    if passes >= 2 and config.mode == "source" and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
-            "Post-P2 gates require capture_cached_token and restore_cached_token."
+            "Multi-pass source recirculation requires capture_cached_token and "
+            "restore_cached_token."
         )
 
     if config.mode == "layerwise":
@@ -645,6 +648,7 @@ def recirculate(
                 else None
             )
             p2_accepted = True
+            p2_cache_restored = False
             p2_rejection_reasons: list[str] = []
             p2_cosine_similarity = None
             p2_top1_boost = None
@@ -722,7 +726,14 @@ def recirculate(
                         assert cached_token_passes is not None
                         assert restore_cached_token is not None
                         restore_cached_token(cache, cached_token_passes[0])
+                        p2_cache_restored = True
                         final_logits = first_logits
+                        break
+                    if _top1_tokens_match(first_logits, final_logits):
+                        assert cached_token_passes is not None
+                        assert restore_cached_token is not None
+                        restore_cached_token(cache, cached_token_passes[0])
+                        p2_cache_restored = True
                         break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
@@ -730,6 +741,7 @@ def recirculate(
                 cached_token_passes is not None
                 and average_cached_token is not None
                 and p2_accepted
+                and not p2_cache_restored
             ):
                 average_cached_token(cache, cached_token_passes)
             if pass_probability_margins is not None:

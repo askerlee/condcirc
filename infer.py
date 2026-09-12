@@ -1141,16 +1141,7 @@ def main() -> None:
                     cosine_top_k=run_args.cosine_top_k,
                     rank_top_k=run_args.rank_top_k,
                     gating_pair_index=run_args.gating_pair_index,
-                    capture_cached_token=(
-                        capture_dynamic_cache_token
-                        if (
-                            run_args.margin_thres_p2 is not None
-                            or run_args.top1_boost_thres is not None
-                            or run_args.cosine_reject is not None
-                            or run_args.rank_top_k is not None
-                        )
-                        else None
-                    ),
+                    capture_cached_token=capture_dynamic_cache_token,
                     restore_cached_token=restore_dynamic_cache_token,
                 )
                 next_logits = prompt_logits[:, -1, :]
@@ -1184,16 +1175,7 @@ def main() -> None:
                         cosine_top_k=run_args.cosine_top_k,
                         rank_top_k=run_args.rank_top_k,
                         gating_pair_index=run_args.gating_pair_index,
-                        capture_cached_token=(
-                            capture_dynamic_cache_token
-                            if (
-                                run_args.margin_thres_p2 is not None
-                                or run_args.top1_boost_thres is not None
-                                or run_args.cosine_reject is not None
-                                or run_args.rank_top_k is not None
-                            )
-                            else None
-                        ),
+                        capture_cached_token=capture_dynamic_cache_token,
                         restore_cached_token=restore_dynamic_cache_token,
                     )
                 else:
@@ -1247,16 +1229,7 @@ def main() -> None:
             rejection_reasons=rejection_reasons,
             p2_cosine_similarities=p2_cosine_similarities,
             p2_top1_boosts=p2_top1_boosts,
-            capture_cached_token=(
-                capture_dynamic_cache_token
-                if (
-                    run_args.margin_thres_p2 is not None
-                    or run_args.top1_boost_thres is not None
-                    or run_args.cosine_reject is not None
-                    or run_args.rank_top_k is not None
-                )
-                else None
-            ),
+            capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
         )
         teacher_logits = first_pass_logits[-1]
@@ -1337,16 +1310,7 @@ def main() -> None:
                 rejection_reasons=rejection_reasons,
                 p2_cosine_similarities=p2_cosine_similarities,
                 p2_top1_boosts=p2_top1_boosts,
-                capture_cached_token=(
-                    capture_dynamic_cache_token
-                    if (
-                        run_args.margin_thres_p2 is not None
-                        or run_args.top1_boost_thres is not None
-                        or run_args.cosine_reject is not None
-                        or run_args.rank_top_k is not None
-                    )
-                    else None
-                ),
+                capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
             )
             teacher_logits = first_pass_logits[-1]

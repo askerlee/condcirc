@@ -383,7 +383,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--margin-thres-p1",
+        "--pre-margin-thres",
         type=float,
         default=None,
         metavar="THRESHOLD",
@@ -393,13 +393,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--margin-thres-p2",
+        "--post-margin-thres",
         type=float,
+        nargs=2,
         default=None,
-        metavar="THRESHOLD",
+        metavar=("MIN", "MAX"),
         help=(
             "Final-pass gate: accept recirculation only when its top-1 versus "
-            "top-2 probability margin is greater than this value."
+            "top-2 probability margin is between MIN and MAX, inclusive."
+        ),
+    )
+    parser.add_argument(
+        "--ada-recirculate",
+        type=int,
+        default=0,
+        metavar="X",
+        help=(
+            "When the post-recirculation margin is below MIN, run at most X "
+            "additional passes and stop early once it reaches MIN (default: 0)."
         ),
     )
     parser.add_argument(
@@ -420,7 +431,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Conditional gate: recirculate only when the top-1 predicted "
             "next-token probability is at most this value. Can be combined "
-            "with --margin-thres-p1 or used on its own."
+            "with --pre-margin-thres or used on its own."
         ),
     )
     parser.add_argument(
@@ -557,7 +568,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ablations_index = argv.index("--ablation")
     baseline_argv = argv[:ablations_index]
     args = parser.parse_args(baseline_argv)
-    args.query_index_signature = query_index_signature(baseline_argv)
+    args.query_index_signature = query_index_signature(argv)
 
     ablation_groups: list[list[str]] = []
     current_group: list[str] | None = None
@@ -578,6 +589,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if any(not group for group in ablation_groups):
         parser.error("each --ablation must be followed by at least one argument")
 
+    global_dests = {
+        "ablations",
+        "debug",
+        "debug_layer_sim",
+        "debug_adj_layer_sim",
+        "device",
+        "device_map",
+        "eval_provider",
+        "evaluate_results",
+        "evaluation_model",
+        "evaluation_output",
+        "gpu_memory",
+        "list_queries",
+        "model",
+        "openai_base_url",
+        "output",
+        "query_indices",
+        "seed",
+        "similarities_output",
+    }
+
     ablations: list[tuple[tuple[str, Any], ...]] = []
     for argument_group in ablation_groups:
         option_names = [
@@ -588,6 +620,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         variation = parser.parse_args(argument_group)
         if not option_names or variation.prompt is not None:
             parser.error("ablation arguments must be options")
+        for option_name in dict.fromkeys(option_names):
+            dest = parser._option_string_actions[option_name].dest
+            if dest in global_dests:
+                val = (
+                    getattr(variation, dest)
+                    if parser._option_string_actions[option_name].nargs == 0
+                    and isinstance(
+                        parser._option_string_actions[option_name].const, bool
+                    )
+                    else getattr(variation, dest)
+                )
+                setattr(args, dest, val)
         overrides = tuple(
             (
                 parser._option_string_actions[option_name].dest,
@@ -603,7 +647,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                 ),
             )
             for option_name in dict.fromkeys(option_names)
-            if parser._option_string_actions[option_name].dest != "ablations"
+            if parser._option_string_actions[option_name].dest not in global_dests
         )
         ablations.append(overrides)
 
@@ -748,7 +792,14 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
-    if args.passes == 1:
+    if args.ada_recirculate < 0:
+        raise ValueError("--ada-recirculate must be nonnegative.")
+    if args.ada_recirculate:
+        if args.post_margin_thres is None:
+            raise ValueError("--ada-recirculate requires --post-margin-thres.")
+        if args.mode != "source":
+            raise ValueError("--ada-recirculate requires --mode source.")
+    if args.passes == 1 and not args.ada_recirculate:
         return
     if args.act_sim_min_max is not None:
         if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
@@ -756,17 +807,20 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.cosine_reject is not None:
         if not 0.0 <= args.cosine_reject <= 1.0:
             raise ValueError("--cosine-reject must be between 0 and 1.")
-        if args.passes < 2:
+        if args.passes < 2 and not args.ada_recirculate:
             raise ValueError("--cosine-reject requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--cosine-reject requires --mode source.")
-    if args.margin_thres_p2 is not None:
-        if args.passes < 2:
-            raise ValueError("--margin-thres-p2 requires --passes of at least 2.")
+    if args.post_margin_thres is not None:
+        post_margin_min, post_margin_max = args.post_margin_thres
+        if post_margin_min > post_margin_max:
+            raise ValueError("--post-margin-thres requires MIN <= MAX.")
+        if args.passes < 2 and not args.ada_recirculate:
+            raise ValueError("--post-margin-thres requires --passes of at least 2.")
         if args.mode != "source":
-            raise ValueError("--margin-thres-p2 requires --mode source.")
+            raise ValueError("--post-margin-thres requires --mode source.")
     if args.top1_boost_thres is not None:
-        if args.passes < 2:
+        if args.passes < 2 and not args.ada_recirculate:
             raise ValueError("--top1-boost-thres requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--top1-boost-thres requires --mode source.")
@@ -775,7 +829,7 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.rank_top_k is not None:
         if args.rank_top_k < 1:
             raise ValueError("--rank-top-k must be at least 1.")
-        if args.passes < 2:
+        if args.passes < 2 and not args.ada_recirculate:
             raise ValueError("--rank-top-k requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--rank-top-k requires --mode source.")
@@ -912,12 +966,21 @@ def main() -> None:
         signature
         for threshold, signature in (
             (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
-            (args.margin_thres_p1, f"-m1{args.margin_thres_p1}"),
+            (args.pre_margin_thres, f"-pre-m{args.pre_margin_thres}"),
             (
                 args.cosine_reject,
                 f"-cos{args.cosine_reject}-k{args.cosine_top_k}",
             ),
-            (args.margin_thres_p2, f"-m2{args.margin_thres_p2}"),
+            (
+                args.post_margin_thres,
+                f"-post-m{args.post_margin_thres[0]}-{args.post_margin_thres[1]}"
+                if args.post_margin_thres is not None
+                else "",
+            ),
+            (
+                args.ada_recirculate if args.ada_recirculate else None,
+                f"-ada{args.ada_recirculate}",
+            ),
             (args.top1_boost_thres, f"-tb{args.top1_boost_thres}"),
             (args.rank_top_k, f"-rank{args.rank_top_k}"),
         )
@@ -931,7 +994,8 @@ def main() -> None:
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         args.output = Path(
-            f"{model_slug}-{pair_slug}{gate_signature}{query_signature}.json"
+            f"{model_slug}-{pair_slug}-passes{args.passes}"
+            f"{gate_signature}{query_signature}.json"
         )
     if args.similarities_output is None:
         args.similarities_output = args.output.with_name(
@@ -1068,6 +1132,9 @@ def main() -> None:
         def report_stats(
             recirculated_flags: list[bool] | None = None,
             rejected_flags: list[bool] | None = None,
+            adaptive_recirculated_flags: list[bool] | None = None,
+            adaptive_rejected_flags: list[bool] | None = None,
+            adaptive_recirculation_counts: list[int] | None = None,
             final_pass_same_top1_flags: list[bool] | None = None,
             rejection_reasons: list[tuple[str, ...]] | None = None,
         ) -> None:
@@ -1079,7 +1146,8 @@ def main() -> None:
                     enabled_reasons = tuple(
                         reason
                         for threshold, reason in (
-                            (run_args.margin_thres_p2, "margin-final"),
+                            (run_args.post_margin_thres, "post-margin-min"),
+                            (run_args.post_margin_thres, "post-margin-max"),
                             (run_args.top1_boost_thres, "top1-boost"),
                             (run_args.cosine_reject, "cosine"),
                             (run_args.rank_top_k, "rank"),
@@ -1096,6 +1164,20 @@ def main() -> None:
                     f"{len(recirculated_flags)}, same_top1 = "
                     f"{sum(final_pass_same_top1_flags or [])}, rejected = "
                     f"{sum(rejected_flags or [])}{rejection_breakdown}"
+                )
+            if adaptive_recirculated_flags is not None:
+                counts = [
+                    count
+                    for count in adaptive_recirculation_counts or []
+                    if count > 0
+                ]
+                average_count = sum(counts) / len(counts) if counts else 0.0
+                print(
+                    "adaptive_recirculated_tokens = "
+                    f"{sum(adaptive_recirculated_flags)}/"
+                    f"{len(adaptive_recirculated_flags)}, rejected = "
+                    f"{sum(adaptive_rejected_flags or [])}, "
+                    f"average_adaptive_recirculations = {average_count:.2f}"
                 )
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
@@ -1137,8 +1219,13 @@ def main() -> None:
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
-                    margin_threshold_p1=run_args.margin_thres_p1,
-                    margin_threshold_p2=run_args.margin_thres_p2,
+                    pre_margin_threshold=run_args.pre_margin_thres,
+                    post_margin_thresholds=(
+                        tuple(run_args.post_margin_thres)
+                        if run_args.post_margin_thres is not None
+                        else None
+                    ),
+                    adaptive_recirculation=run_args.ada_recirculate,
                     top1_boost_threshold=run_args.top1_boost_thres,
                     top1_prob_threshold=run_args.top1_prob_thres,
                     cosine_reject=run_args.cosine_reject,
@@ -1171,8 +1258,13 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
-                        margin_threshold_p1=run_args.margin_thres_p1,
-                        margin_threshold_p2=run_args.margin_thres_p2,
+                        pre_margin_threshold=run_args.pre_margin_thres,
+                        post_margin_thresholds=(
+                            tuple(run_args.post_margin_thres)
+                            if run_args.post_margin_thres is not None
+                            else None
+                        ),
+                        adaptive_recirculation=run_args.ada_recirculate,
                         top1_boost_threshold=run_args.top1_boost_thres,
                         top1_prob_threshold=run_args.top1_prob_thres,
                         cosine_reject=run_args.cosine_reject,
@@ -1199,6 +1291,9 @@ def main() -> None:
         actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
+        adaptive_recirculated_flags: list[bool] = []
+        adaptive_rejected_flags: list[bool] = []
+        adaptive_recirculation_counts: list[int] = []
         final_pass_same_top1_flags: list[bool] = []
         rejection_reasons: list[tuple[str, ...]] = []
         final_pass_cosine_similarities: list[float | None] = []
@@ -1217,8 +1312,13 @@ def main() -> None:
             passes=run_args.passes if use_recirculation else 1,
             rewind_layer=rewind_dynamic_cache_layer,
             condition_thresholds=condition_thresholds,
-            margin_threshold_p1=run_args.margin_thres_p1,
-            margin_threshold_p2=run_args.margin_thres_p2,
+            pre_margin_threshold=run_args.pre_margin_thres,
+            post_margin_thresholds=(
+                tuple(run_args.post_margin_thres)
+                if run_args.post_margin_thres is not None
+                else None
+            ),
+            adaptive_recirculation=run_args.ada_recirculate,
             top1_boost_threshold=run_args.top1_boost_thres,
             top1_prob_threshold=run_args.top1_prob_thres,
             cosine_reject=run_args.cosine_reject,
@@ -1231,6 +1331,9 @@ def main() -> None:
             actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
+            adaptive_recirculated_flags=adaptive_recirculated_flags,
+            adaptive_rejected_flags=adaptive_rejected_flags,
+            adaptive_recirculation_counts=adaptive_recirculation_counts,
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
@@ -1254,6 +1357,11 @@ def main() -> None:
             )
             comparison["recirculated"] = recirculated_flags[-1]
             comparison["rejected"] = rejected_flags[-1]
+            comparison["adaptive_recirculated"] = adaptive_recirculated_flags[-1]
+            comparison["adaptive_rejected"] = adaptive_rejected_flags[-1]
+            comparison["adaptive_recirculation_count"] = (
+                adaptive_recirculation_counts[-1]
+            )
             comparison["final_pass_same_top1"] = final_pass_same_top1_flags[-1]
             comparison["rejection_reasons"] = rejection_reasons[-1]
             comparison["final_pass_top_k_cosine_similarity"] = (
@@ -1300,8 +1408,13 @@ def main() -> None:
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
                 condition_thresholds=condition_thresholds,
-                margin_threshold_p1=run_args.margin_thres_p1,
-                margin_threshold_p2=run_args.margin_thres_p2,
+                pre_margin_threshold=run_args.pre_margin_thres,
+                post_margin_thresholds=(
+                    tuple(run_args.post_margin_thres)
+                    if run_args.post_margin_thres is not None
+                    else None
+                ),
+                adaptive_recirculation=run_args.ada_recirculate,
                 top1_boost_threshold=run_args.top1_boost_thres,
                 top1_prob_threshold=run_args.top1_prob_thres,
                 cosine_reject=run_args.cosine_reject,
@@ -1314,6 +1427,9 @@ def main() -> None:
                 actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
+                adaptive_recirculated_flags=adaptive_recirculated_flags,
+                adaptive_rejected_flags=adaptive_rejected_flags,
+                adaptive_recirculation_counts=adaptive_recirculation_counts,
                 final_pass_same_top1_flags=final_pass_same_top1_flags,
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
@@ -1334,6 +1450,9 @@ def main() -> None:
         report_stats(
             [comparison["recirculated"] for comparison in similarities],
             [comparison["rejected"] for comparison in similarities],
+            [comparison["adaptive_recirculated"] for comparison in similarities],
+            [comparison["adaptive_rejected"] for comparison in similarities],
+            [comparison["adaptive_recirculation_count"] for comparison in similarities],
             [comparison["final_pass_same_top1"] for comparison in similarities],
             [comparison["rejection_reasons"] for comparison in similarities],
         )
@@ -1386,10 +1505,12 @@ def main() -> None:
 
     if args.ablations is False or args.ablations is None:
         baseline_options = (
+            "passes",
             "cond_recirculate",
             "act_sim_thres",
-            "margin_thres_p1",
-            "margin_thres_p2",
+            "pre_margin_thres",
+            "post_margin_thres",
+            "ada_recirculate",
             "top1_boost_thres",
             "top1_prob_thres",
             "cosine_reject",

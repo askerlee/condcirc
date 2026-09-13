@@ -437,8 +437,9 @@ def recirculate(
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
-    margin_threshold_p1: float | None = None,
-    margin_threshold_p2: float | None = None,
+    pre_margin_threshold: float | None = None,
+    post_margin_thresholds: tuple[float, float] | None = None,
+    adaptive_recirculation: int = 0,
     top1_boost_threshold: float | None = None,
     top1_prob_threshold: float | None = None,
     cosine_reject: float | None = None,
@@ -451,6 +452,9 @@ def recirculate(
     actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
+    adaptive_recirculated_flags: list[bool] | None = None,
+    adaptive_rejected_flags: list[bool] | None = None,
+    adaptive_recirculation_counts: list[int] | None = None,
     final_pass_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
@@ -463,10 +467,17 @@ def recirculate(
 
     if passes < 1:
         raise ValueError("passes must be at least 1.")
-    if passes == 1:
+    if adaptive_recirculation < 0:
+        raise ValueError("adaptive_recirculation must be nonnegative.")
+    if adaptive_recirculation:
+        if post_margin_thresholds is None:
+            raise ValueError(
+                "adaptive_recirculation requires post_margin_thresholds."
+            )
+    if passes == 1 and not adaptive_recirculation:
         condition_thresholds = None
-        margin_threshold_p1 = None
-        margin_threshold_p2 = None
+        pre_margin_threshold = None
+        post_margin_thresholds = None
         top1_boost_threshold = None
         top1_prob_threshold = None
         cosine_reject = None
@@ -475,11 +486,17 @@ def recirculate(
         raise ValueError("cosine_top_k must be at least 1.")
     if rank_top_k is not None and rank_top_k < 1:
         raise ValueError("rank_top_k must be at least 1.")
+    if post_margin_thresholds is not None:
+        if len(post_margin_thresholds) != 2:
+            raise ValueError("post_margin_thresholds must contain MIN and MAX.")
+        post_margin_min, post_margin_max = post_margin_thresholds
+        if post_margin_min > post_margin_max:
+            raise ValueError("post_margin_thresholds must have MIN <= MAX.")
     if average_cached_token is not None and capture_cached_token is None:
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if passes >= 2 and config.mode == "source" and (
+    if (passes >= 2 or adaptive_recirculation) and config.mode == "source" and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
@@ -492,11 +509,11 @@ def recirculate(
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
             )
-        if margin_threshold_p1 is not None:
+        if pre_margin_threshold is not None:
             raise ValueError(
                 "Margin-gated recirculation currently requires --mode source."
             )
-        if margin_threshold_p2 is not None:
+        if post_margin_thresholds is not None:
             raise ValueError(
                 "Final-pass margin-gated recirculation requires --mode source."
             )
@@ -591,7 +608,9 @@ def recirculate(
                 first_pass_logits.append(first_logits)
             first_margin = (
                 _top1_top2_probability_margin(first_logits)
-                if margin_threshold_p1 is not None or pass_probability_margins is not None
+                if pre_margin_threshold is not None
+                or (passes == 1 and adaptive_recirculation)
+                or pass_probability_margins is not None
                 else None
             )
             first_top1_prob = (
@@ -625,8 +644,8 @@ def recirculate(
                 similarity_stats.values.append(sum(similarities) / len(similarities))
 
             margin_gate = (
-                margin_threshold_p1 is None
-                or first_margin <= margin_threshold_p1
+                pre_margin_threshold is None
+                or first_margin <= pre_margin_threshold
             )
             top1_prob_gate = (
                 top1_prob_threshold is None or first_top1_prob <= top1_prob_threshold
@@ -637,6 +656,13 @@ def recirculate(
                 or similarities[gating_pair_index]
                 >= condition_thresholds[gating_pair_index]
             )
+            if passes == 1 and adaptive_recirculation:
+                assert first_margin is not None
+                assert post_margin_thresholds is not None
+                should_recirculate = (
+                    should_recirculate
+                    and first_margin < post_margin_thresholds[0]
+                )
             hooks.active_pairs = (
                 tuple(probability_gate for _pair in config.pairs)
                 if condition_thresholds is None
@@ -656,7 +682,11 @@ def recirculate(
             final_pass_rejection_reasons: list[str] = []
             final_pass_cosine_similarity = None
             final_pass_top1_boost = None
-            for pass_index in range(1, passes if should_recirculate else 1):
+            max_passes = passes + adaptive_recirculation
+            adaptive_recirculation_count = 0
+            for pass_index in range(1, max_passes if should_recirculate else 1):
+                if pass_index >= passes:
+                    adaptive_recirculation_count += 1
                 cache = rewind_one(cache)
                 if select_expert_subset is not None:
                     select_expert_subset(pass_index)
@@ -690,24 +720,33 @@ def recirculate(
                 hooks.mode = "off"
                 pass_margin = (
                     _top1_top2_probability_margin(final_logits)
-                    if margin_threshold_p2 is not None
+                    if post_margin_thresholds is not None
                     or token_pass_probability_margins is not None
                     else None
                 )
                 if token_pass_probability_margins is not None:
                     assert pass_margin is not None
                     token_pass_probability_margins.append(pass_margin)
-                if pass_index == passes - 1:
+                should_retry_low_margin = (
+                    pass_index >= passes - 1
+                    and post_margin_thresholds is not None
+                    and pass_margin < post_margin_thresholds[0]
+                    and pass_index < max_passes - 1
+                )
+                if pass_index >= passes - 1 and not should_retry_low_margin:
                     final_pass_top1_boost = _top1_probability_boost(
                         first_logits, final_logits
                     )
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
-                    if margin_threshold_p2 is not None:
+                    if post_margin_thresholds is not None:
                         assert pass_margin is not None
-                        if pass_margin <= margin_threshold_p2:
-                            final_pass_rejection_reasons.append("margin-final")
+                        post_margin_min, post_margin_max = post_margin_thresholds
+                        if pass_margin < post_margin_min:
+                            final_pass_rejection_reasons.append("post-margin-min")
+                        if pass_margin > post_margin_max:
+                            final_pass_rejection_reasons.append("post-margin-max")
                     if (
                         top1_boost_threshold is not None
                         and final_pass_top1_boost > top1_boost_threshold
@@ -741,6 +780,9 @@ def recirculate(
                         assert restore_cached_token is not None
                         restore_cached_token(cache, cached_token_passes[0])
                         cache_restored = True
+                    if cached_token_passes is not None:
+                        cached_token_passes.append(capture_cached_token(cache))
+                    break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
             if (
@@ -763,12 +805,22 @@ def recirculate(
                 )
             if recirculated_flags is not None:
                 recirculated_flags.append(
-                    passes >= 2 and should_recirculate and final_pass_accepted
+                    (passes >= 2 or adaptive_recirculation > 0)
+                    and should_recirculate
+                    and final_pass_accepted
                 )
             if rejected_flags is not None:
                 rejected_flags.append(
                     should_recirculate and not final_pass_accepted
                 )
+            if adaptive_recirculated_flags is not None:
+                adaptive_recirculated_flags.append(adaptive_recirculation_count > 0)
+            if adaptive_rejected_flags is not None:
+                adaptive_rejected_flags.append(
+                    adaptive_recirculation_count > 0 and not final_pass_accepted
+                )
+            if adaptive_recirculation_counts is not None:
+                adaptive_recirculation_counts.append(adaptive_recirculation_count)
             if final_pass_same_top1_flags is not None:
                 final_pass_same_top1_flags.append(
                     should_recirculate and final_pass_same_top1

@@ -384,6 +384,8 @@ def recirculate(
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
+    capture_rewind_state: Callable[[Any], Any] | None = None,
+    restore_rewind_state: Callable[[Any, Any], None] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
@@ -408,6 +410,10 @@ def recirculate(
         raise ValueError(
             "Multi-pass source recirculation requires capture_cached_token and "
             "restore_cached_token."
+        )
+    if (capture_rewind_state is None) != (restore_rewind_state is None):
+        raise ValueError(
+            "capture_rewind_state and restore_rewind_state must be provided together."
         )
 
     if config.mode == "layerwise":
@@ -485,6 +491,11 @@ def recirculate(
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
+            rewind_state = (
+                capture_rewind_state(cache)
+                if capture_rewind_state is not None
+                else None
+            )
 
             if select_expert_subset is not None:
                 select_expert_subset(0)
@@ -570,6 +581,8 @@ def recirculate(
                 if pass_index >= passes:
                     adaptive_recirculation_count += 1
                 cache = rewind_one(cache)
+                if restore_rewind_state is not None:
+                    restore_rewind_state(cache, rewind_state)
                 if select_expert_subset is not None:
                     select_expert_subset(pass_index)
                 hooks.injection_sources = {

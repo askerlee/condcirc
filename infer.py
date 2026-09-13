@@ -698,22 +698,84 @@ def rewind_dynamic_cache_layer(
     return cache
 
 
-def capture_dynamic_cache_token(cache: DynamicCache) -> tuple[tuple[Tensor, Tensor], ...]:
+def clone_tensor_states(states: dict[int, Tensor | None]) -> dict[int, Tensor]:
+    return {
+        index: tensor.detach().clone()
+        for index, tensor in states.items()
+        if tensor is not None
+    }
+
+
+def restore_tensor_states(
+    states: dict[int, Tensor | None], saved: dict[int, Tensor]
+) -> None:
+    for index, tensor in saved.items():
+        current = states.get(index)
+        if current is None:
+            states[index] = tensor.clone()
+        else:
+            current.copy_(tensor)
+
+
+def capture_dynamic_cache_rewind_state(
+    cache: DynamicCache,
+) -> tuple[tuple[dict[int, Tensor], dict[int, bool]] | None, ...]:
     return tuple(
         (
-            layer.keys[..., -1:, :].detach().clone(),
-            layer.values[..., -1:, :].detach().clone(),
+            clone_tensor_states(layer.recurrent_states),
+            dict(layer.has_previous_state),
         )
+        if isinstance(getattr(layer, "recurrent_states", None), dict)
+        else None
         for layer in cache.layers
     )
 
 
-def restore_dynamic_cache_token(
-    cache: DynamicCache, cached_token: tuple[tuple[Tensor, Tensor], ...]
+def restore_dynamic_cache_rewind_state(
+    cache: DynamicCache,
+    saved_states: tuple[
+        tuple[dict[int, Tensor], dict[int, bool]] | None, ...
+    ],
 ) -> None:
-    for layer, (keys, values) in zip(cache.layers, cached_token):
-        layer.keys[..., -1:, :].copy_(keys)
-        layer.values[..., -1:, :].copy_(values)
+    for layer, saved in zip(cache.layers, saved_states):
+        if saved is None:
+            continue
+        recurrent_states, has_previous_state = saved
+        restore_tensor_states(layer.recurrent_states, recurrent_states)
+        layer.has_previous_state.clear()
+        layer.has_previous_state.update(has_previous_state)
+
+
+def capture_dynamic_cache_token(cache: DynamicCache) -> tuple[dict[str, Any], ...]:
+    captured = []
+    for layer in cache.layers:
+        state: dict[str, Any] = {}
+        keys = getattr(layer, "keys", None)
+        values = getattr(layer, "values", None)
+        if isinstance(keys, Tensor) and isinstance(values, Tensor) and keys.numel() > 0:
+            state["keys"] = keys[..., -1:, :].detach().clone()
+            state["values"] = values[..., -1:, :].detach().clone()
+        conv_states = getattr(layer, "conv_states", None)
+        if isinstance(conv_states, dict):
+            state["conv_states"] = clone_tensor_states(conv_states)
+        recurrent_states = getattr(layer, "recurrent_states", None)
+        if isinstance(recurrent_states, dict):
+            state["recurrent_states"] = clone_tensor_states(recurrent_states)
+        captured.append(state)
+    return tuple(captured)
+
+
+def restore_dynamic_cache_token(
+    cache: DynamicCache, cached_token: tuple[dict[str, Any], ...]
+) -> None:
+    for layer, state in zip(cache.layers, cached_token):
+        if "keys" in state:
+            layer.keys[..., -1:, :].copy_(state["keys"])
+            layer.values[..., -1:, :].copy_(state["values"])
+        if "conv_states" in state:
+            restore_tensor_states(layer.conv_states, state["conv_states"])
+        if "recurrent_states" in state:
+            restore_tensor_states(layer.recurrent_states, state["recurrent_states"])
 
 
 def sample_token(logits: Tensor, temperature: float) -> Tensor:
@@ -1113,6 +1175,8 @@ def main() -> None:
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=capture_dynamic_cache_token,
                     restore_cached_token=restore_dynamic_cache_token,
+                    capture_rewind_state=capture_dynamic_cache_rewind_state,
+                    restore_rewind_state=restore_dynamic_cache_rewind_state,
                 )
                 next_logits = prompt_logits[:, -1, :]
 
@@ -1143,6 +1207,8 @@ def main() -> None:
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=capture_dynamic_cache_token,
                         restore_cached_token=restore_dynamic_cache_token,
+                        capture_rewind_state=capture_dynamic_cache_rewind_state,
+                        restore_rewind_state=restore_dynamic_cache_rewind_state,
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1197,6 +1263,8 @@ def main() -> None:
             final_pass_cosine_similarities=final_pass_cosine_similarities,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
+            capture_rewind_state=capture_dynamic_cache_rewind_state,
+            restore_rewind_state=restore_dynamic_cache_rewind_state,
         )
         teacher_logits = first_pass_logits[-1]
         teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
@@ -1269,6 +1337,8 @@ def main() -> None:
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
+                capture_rewind_state=capture_dynamic_cache_rewind_state,
+                restore_rewind_state=restore_dynamic_cache_rewind_state,
             )
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (

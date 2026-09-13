@@ -580,5 +580,62 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(rejection_reasons, [()])
 
 
+class DynamicCacheTokenCaptureTest(unittest.TestCase):
+    def test_rewind_restores_linear_attention_state(self) -> None:
+        from infer import (
+            capture_dynamic_cache_rewind_state,
+            restore_dynamic_cache_rewind_state,
+            rewind_dynamic_cache,
+        )
+        from transformers.cache_utils import DynamicCache, LinearAttentionLayer
+
+        layer = LinearAttentionLayer(number_of_states=1)
+        cache = DynamicCache()
+        cache.layers = [layer]
+        cache.activate_past_recording()
+        layer.update_conv_state(
+            torch.ones(1, 4, 4), state_idx=0, conv_kernel_size=4
+        )
+        layer.update_recurrent_state(torch.ones(1, 4, 16), state_idx=0)
+        rewind_state = capture_dynamic_cache_rewind_state(cache)
+
+        layer.update_conv_state(torch.full((1, 4, 1), 2.0), state_idx=0)
+        layer.update_recurrent_state(torch.full((1, 4, 16), 2.0), state_idx=0)
+        rewind_dynamic_cache(cache)
+        restore_dynamic_cache_rewind_state(cache, rewind_state)
+
+        torch.testing.assert_close(layer.conv_states[0], torch.ones(1, 4, 4))
+        torch.testing.assert_close(
+            layer.recurrent_states[0], torch.ones(1, 4, 16)
+        )
+
+    def test_capture_and_restore_with_linear_and_dynamic_layers(self) -> None:
+        from infer import capture_dynamic_cache_token, restore_dynamic_cache_token
+        from transformers.cache_utils import DynamicCache, DynamicLayer, LinearAttentionLayer
+
+        l1 = DynamicLayer()
+        l2 = LinearAttentionLayer(number_of_states=1)
+        cache = DynamicCache()
+        cache.layers = [l1, l2]
+        cache.activate_past_recording()
+
+        # Populate initial layer states
+        l1.update(torch.ones(1, 2, 1, 8), torch.ones(1, 2, 1, 8))
+        l2.update_conv_state(torch.ones(1, 4, 1), state_idx=0, conv_kernel_size=3)
+        l2.update_recurrent_state(torch.ones(1, 4, 16), state_idx=0)
+
+        captured = capture_dynamic_cache_token(cache)
+
+        # Mutate states
+        l1.keys[..., -1:, :] += 5.0
+        l2.recurrent_states[0] += 10.0
+
+        # Restore
+        restore_dynamic_cache_token(cache, captured)
+
+        torch.testing.assert_close(l1.keys[..., -1:, :], torch.ones(1, 2, 1, 8))
+        torch.testing.assert_close(l2.recurrent_states[0], torch.ones(1, 4, 16))
+
+
 if __name__ == "__main__":
     unittest.main()

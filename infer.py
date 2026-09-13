@@ -342,7 +342,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--passes",
         type=int,
-        default=2,
+        default=1,
         help="Total model passes per token, including the initial pass (default: 2).",
     )
     parser.add_argument(
@@ -368,7 +368,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--pre-margin-thres",
         type=float,
-        default=None,
+        default=0.2,
         metavar="THRESHOLD",
         help=(
             "Primary conditional gate: recirculate only when the top-1 versus "
@@ -378,7 +378,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--post-margin-thres",
         type=float,
-        default=None,
+        default=0.2,
         metavar="THRESHOLD",
         help=(
             "Final-pass gate: accept recirculation only when its top-1 versus "
@@ -392,13 +392,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="X",
         help=(
             "Run at most X additional passes; with --post-margin-thres, stop "
-            "early once the margin reaches MIN (default: 0)."
+            "early once the margin reaches MIN (default: 0.2)."
         ),
     )
     parser.add_argument(
         "--cosine-reject",
         type=float,
-        default=None,
+        default=0.8,
         metavar="THRESHOLD",
         help=(
             "Discard the final pass when its distribution has cosine similarity "
@@ -1331,6 +1331,7 @@ def main() -> None:
 
     if args.ablations is False or args.ablations is None:
         baseline_options = (
+            "model",
             "passes",
             "cond_recirculate",
             "act_sim_thres",

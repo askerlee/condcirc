@@ -13,6 +13,9 @@ is recirculated for every token (with three passes):
           that pass has the same top-1 token, or restore both P1 logits and KV cache
           when a rejection gate fails; otherwise commit the final pass.
 
+Fixed and adaptive source recirculation stop early and accept the current pass
+when its top-1/top-2 probability margin is narrower than the preceding pass.
+
 When expected-embedding subtraction is enabled, each replay subtracts the
 top-K expected next-token embedding from h_s before norm matching and mixing.
 
@@ -609,7 +612,8 @@ def recirculate(
             first_margin = (
                 _top1_top2_probability_margin(first_logits)
                 if pre_margin_threshold is not None
-                or (passes == 1 and adaptive_recirculation)
+                or passes >= 2
+                or adaptive_recirculation
                 or pass_probability_margins is not None
                 else None
             )
@@ -684,6 +688,7 @@ def recirculate(
             final_pass_top1_boost = None
             max_passes = passes + adaptive_recirculation
             adaptive_recirculation_count = 0
+            previous_pass_margin = first_margin
             for pass_index in range(1, max_passes if should_recirculate else 1):
                 if pass_index >= passes:
                     adaptive_recirculation_count += 1
@@ -720,27 +725,39 @@ def recirculate(
                 hooks.mode = "off"
                 pass_margin = (
                     _top1_top2_probability_margin(final_logits)
-                    if post_margin_thresholds is not None
+                    if passes >= 2
+                    or adaptive_recirculation
+                    or post_margin_thresholds is not None
                     or token_pass_probability_margins is not None
                     else None
                 )
                 if token_pass_probability_margins is not None:
                     assert pass_margin is not None
                     token_pass_probability_margins.append(pass_margin)
+                margin_narrowed = (
+                    pass_margin is not None
+                    and previous_pass_margin is not None
+                    and pass_margin < previous_pass_margin
+                )
                 should_retry_low_margin = (
                     pass_index >= passes - 1
                     and post_margin_thresholds is not None
                     and pass_margin < post_margin_thresholds[0]
+                    and not margin_narrowed
                     and pass_index < max_passes - 1
                 )
-                if pass_index >= passes - 1 and not should_retry_low_margin:
+                if pass_margin is not None:
+                    previous_pass_margin = pass_margin
+                if margin_narrowed or (
+                    pass_index >= passes - 1 and not should_retry_low_margin
+                ):
                     final_pass_top1_boost = _top1_probability_boost(
                         first_logits, final_logits
                     )
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
-                    if post_margin_thresholds is not None:
+                    if post_margin_thresholds is not None and not margin_narrowed:
                         assert pass_margin is not None
                         post_margin_min, post_margin_max = post_margin_thresholds
                         if pass_margin < post_margin_min:
@@ -748,17 +765,20 @@ def recirculate(
                         if pass_margin > post_margin_max:
                             final_pass_rejection_reasons.append("post-margin-max")
                     if (
-                        top1_boost_threshold is not None
+                        not margin_narrowed
+                        and top1_boost_threshold is not None
                         and final_pass_top1_boost > top1_boost_threshold
                     ):
                         final_pass_rejection_reasons.append("top1-boost")
                     if (
-                        cosine_reject is not None
+                        not margin_narrowed
+                        and cosine_reject is not None
                         and final_pass_cosine_similarity < cosine_reject
                     ):
                         final_pass_rejection_reasons.append("cosine")
                     if (
-                        rank_top_k is not None
+                        not margin_narrowed
+                        and rank_top_k is not None
                         and not _final_top1_in_p1_top_k(
                             first_logits, final_logits, rank_top_k
                         )

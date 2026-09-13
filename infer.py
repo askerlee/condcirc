@@ -42,7 +42,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # no
 
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
-    MagnitudeDiffStats,
     RecirculationConfig,
     SimilarityStats,
     recirculate,
@@ -341,11 +340,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Defaults to 1 - alpha.",
     )
     parser.add_argument(
-        "--act-sim-as-alpha",
-        action="store_true",
-        help="Scale --alpha by the normalized source/destination activation similarity.",
-    )
-    parser.add_argument(
         "--passes",
         type=int,
         default=2,
@@ -372,17 +366,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--act-sim-min-max",
-        type=float,
-        nargs=2,
-        default=None,
-        metavar=("MIN", "MAX"),
-        help=(
-            "Min and max activation similarity values used to normalize act sim "
-            "before using it as alpha."
-        ),
-    )
-    parser.add_argument(
         "--pre-margin-thres",
         type=float,
         default=None,
@@ -395,12 +378,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--post-margin-thres",
         type=float,
-        nargs=2,
         default=None,
-        metavar=("MIN", "MAX"),
+        metavar="THRESHOLD",
         help=(
             "Final-pass gate: accept recirculation only when its top-1 versus "
-            "top-2 probability margin is between MIN and MAX, inclusive."
+            "top-2 probability margin is at least this value."
         ),
     )
     parser.add_argument(
@@ -409,29 +391,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0,
         metavar="X",
         help=(
-            "When the post-recirculation margin is below MIN, run at most X "
-            "additional passes and stop early once it reaches MIN (default: 0)."
-        ),
-    )
-    parser.add_argument(
-        "--top1-boost-thres",
-        type=float,
-        default=None,
-        metavar="THRESHOLD",
-        help=(
-            "Final-pass gate: accept recirculation only when its selected "
-            "token's probability boost over P1 is at most this value."
-        ),
-    )
-    parser.add_argument(
-        "--top1-prob-thres",
-        type=float,
-        default=None,
-        metavar="THRESHOLD",
-        help=(
-            "Conditional gate: recirculate only when the top-1 predicted "
-            "next-token probability is at most this value. Can be combined "
-            "with --pre-margin-thres or used on its own."
+            "Run at most X additional passes; with --post-margin-thres, stop "
+            "early once the margin reaches MIN (default: 0)."
         ),
     )
     parser.add_argument(
@@ -452,16 +413,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Compute P1/final-pass cosine over the union of their top-K "
             "tokens (default: 5)."
-        ),
-    )
-    parser.add_argument(
-        "--rank-top-k",
-        type=int,
-        default=None,
-        metavar="K",
-        help=(
-            "Final-pass gate: accept recirculation only when its top-1 token "
-            "is among P1's top-K tokens."
         ),
     )
     parser.add_argument(
@@ -489,18 +440,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Collect per-token cosine similarity between every pair of "
             "adjacent decoder blocks and print summary stats after each query."
         ),
-    )
-    parser.add_argument(
-        "--exp_emb",
-        action="store_true",
-        help="Subtract the top-K expected token embedding from the source latent.",
-    )
-    parser.add_argument(
-        "--exp_emb_K",
-        type=int,
-        default=1,
-        metavar="K",
-        help="Number of tokens used for the expected embedding (default: 1).",
     )
     parser.add_argument("--max-new-tokens", type=int, default=300)
     parser.add_argument(
@@ -785,7 +724,14 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
 
 
 def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> str:
-    values = {option: getattr(args, option) for option in options}
+    values = {
+        option: (
+            getattr(args, option).rsplit("/", 1)[-1]
+            if option == "model"
+            else getattr(args, option)
+        )
+        for option in options
+    }
     return ", ".join(
         f"{option.replace('_', '-')}={value}" for option, value in values.items()
     )
@@ -795,15 +741,10 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.ada_recirculate < 0:
         raise ValueError("--ada-recirculate must be nonnegative.")
     if args.ada_recirculate:
-        if args.post_margin_thres is None:
-            raise ValueError("--ada-recirculate requires --post-margin-thres.")
         if args.mode != "source":
             raise ValueError("--ada-recirculate requires --mode source.")
     if args.passes == 1 and not args.ada_recirculate:
         return
-    if args.act_sim_min_max is not None:
-        if args.act_sim_min_max[0] >= args.act_sim_min_max[1]:
-            raise ValueError("--act-sim-min-max requires MIN < MAX.")
     if args.cosine_reject is not None:
         if not 0.0 <= args.cosine_reject <= 1.0:
             raise ValueError("--cosine-reject must be between 0 and 1.")
@@ -812,27 +753,12 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         if args.mode != "source":
             raise ValueError("--cosine-reject requires --mode source.")
     if args.post_margin_thres is not None:
-        post_margin_min, post_margin_max = args.post_margin_thres
-        if post_margin_min > post_margin_max:
-            raise ValueError("--post-margin-thres requires MIN <= MAX.")
         if args.passes < 2 and not args.ada_recirculate:
             raise ValueError("--post-margin-thres requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--post-margin-thres requires --mode source.")
-    if args.top1_boost_thres is not None:
-        if args.passes < 2 and not args.ada_recirculate:
-            raise ValueError("--top1-boost-thres requires --passes of at least 2.")
-        if args.mode != "source":
-            raise ValueError("--top1-boost-thres requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
-    if args.rank_top_k is not None:
-        if args.rank_top_k < 1:
-            raise ValueError("--rank-top-k must be at least 1.")
-        if args.passes < 2 and not args.ada_recirculate:
-            raise ValueError("--rank-top-k requires --passes of at least 2.")
-        if args.mode != "source":
-            raise ValueError("--rank-top-k requires --mode source.")
 
 
 def main() -> None:
@@ -848,17 +774,6 @@ def main() -> None:
     if args.passes < 1:
         raise ValueError("--passes must be at least 1.")
     validate_run_arguments(args)
-    if args.exp_emb_K < 1:
-        raise ValueError("--exp_emb_K must be at least 1.")
-    if args.exp_emb and (args.mode != "source" or args.pairs != [[-1, 0]]):
-        print(
-            "--exp_emb overrides "
-            f"--mode {args.mode} --pair {args.pairs} "
-            "with --mode source --pair -1 0."
-        )
-        args.mode = "source"
-        args.pairs = [[-1, 0]]
-
     if args.temperature < 0:
         raise ValueError("--temperature must be nonnegative.")
     if args.eval_provider == "openai" and args.evaluate_results is not None:
@@ -948,24 +863,11 @@ def main() -> None:
         print(args.evaluation_output.read_text(encoding="utf-8"), end="")
         return
 
-    def expected_embedding(logits: Tensor, requested_top_k: int) -> Tensor:
-        embedding = model.get_input_embeddings()
-        top_k = min(requested_top_k, logits.shape[-1])
-        top_logits, token_ids = torch.topk(logits, top_k, dim=-1)
-        probabilities = torch.softmax(top_logits, dtype=torch.float32, dim=-1)
-        token_embeddings = embedding(token_ids.to(embedding.weight.device))
-        return torch.sum(
-            probabilities.to(token_embeddings.device).unsqueeze(-1)
-            * token_embeddings.to(dtype=torch.float32),
-            dim=-2,
-        ).to(dtype=token_embeddings.dtype)
-
     blocks = find_decoder_blocks(model)
     global_attention_layers = find_global_attention_layer_indices(model, len(blocks))
     gate_signature = "".join(
         signature
         for threshold, signature in (
-            (args.top1_prob_thres, f"-t1p{args.top1_prob_thres}"),
             (args.pre_margin_thres, f"-pre-m{args.pre_margin_thres}"),
             (
                 args.cosine_reject,
@@ -973,7 +875,7 @@ def main() -> None:
             ),
             (
                 args.post_margin_thres,
-                f"-post-m{args.post_margin_thres[0]}-{args.post_margin_thres[1]}"
+                f"-post-m{args.post_margin_thres}"
                 if args.post_margin_thres is not None
                 else "",
             ),
@@ -981,8 +883,6 @@ def main() -> None:
                 args.ada_recirculate if args.ada_recirculate else None,
                 f"-ada{args.ada_recirculate}",
             ),
-            (args.top1_boost_thres, f"-tb{args.top1_boost_thres}"),
-            (args.rank_top_k, f"-rank{args.rank_top_k}"),
         )
         if threshold is not None
     )
@@ -1083,7 +983,6 @@ def main() -> None:
         run_config: RecirculationConfig,
     ) -> tuple[Tensor, list[dict[str, Any]]]:
         torch.manual_seed(run_args.seed)
-        magnitude_diff_stats = MagnitudeDiffStats()
         similarity_stats = (
             SimilarityStats() if run_args.debug_layer_sim else None
         )
@@ -1099,12 +998,6 @@ def main() -> None:
         student_cache = DynamicCache(config=model.config)
         if use_recirculation:
             student_cache.activate_past_recording()
-        expected_embedding_fn = (
-            (lambda logits: expected_embedding(logits, run_args.exp_emb_K))
-            if run_args.exp_emb
-            else None
-        )
-
         # Probe the residual streams with a single pass so the similarity stats
         # are also collected for runs without recirculation.
         def probe_step(
@@ -1138,8 +1031,6 @@ def main() -> None:
             final_pass_same_top1_flags: list[bool] | None = None,
             rejection_reasons: list[tuple[str, ...]] | None = None,
         ) -> None:
-            if use_recirculation and magnitude_diff_stats.mean is not None:
-                print(f"magnitude_diff_stats.mean = {magnitude_diff_stats.mean:.3f}")
             if recirculated_flags is not None:
                 rejection_breakdown = ""
                 if rejection_reasons is not None:
@@ -1147,10 +1038,7 @@ def main() -> None:
                         reason
                         for threshold, reason in (
                             (run_args.post_margin_thres, "post-margin-min"),
-                            (run_args.post_margin_thres, "post-margin-max"),
-                            (run_args.top1_boost_thres, "top1-boost"),
                             (run_args.cosine_reject, "cosine"),
-                            (run_args.rank_top_k, "rank"),
                         )
                         if threshold is not None
                     )
@@ -1212,25 +1100,16 @@ def main() -> None:
                     step=student_step,
                     rewind_one=rewind_dynamic_cache,
                     config=run_config,
-                    expected_embedding=expected_embedding_fn,
-                    magnitude_diff_stats=magnitude_diff_stats,
                     similarity_stats=similarity_stats,
                     adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
                     condition_thresholds=condition_thresholds,
                     pre_margin_threshold=run_args.pre_margin_thres,
-                    post_margin_thresholds=(
-                        tuple(run_args.post_margin_thres)
-                        if run_args.post_margin_thres is not None
-                        else None
-                    ),
+                    post_margin_threshold=run_args.post_margin_thres,
                     adaptive_recirculation=run_args.ada_recirculate,
-                    top1_boost_threshold=run_args.top1_boost_thres,
-                    top1_prob_threshold=run_args.top1_prob_thres,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
-                    rank_top_k=run_args.rank_top_k,
                     gating_pair_index=run_args.gating_pair_index,
                     capture_cached_token=capture_dynamic_cache_token,
                     restore_cached_token=restore_dynamic_cache_token,
@@ -1251,25 +1130,16 @@ def main() -> None:
                         step=student_step,
                         rewind_one=rewind_dynamic_cache,
                         config=run_config,
-                        expected_embedding=expected_embedding_fn,
-                        magnitude_diff_stats=magnitude_diff_stats,
                         similarity_stats=similarity_stats,
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
                         pre_margin_threshold=run_args.pre_margin_thres,
-                        post_margin_thresholds=(
-                            tuple(run_args.post_margin_thres)
-                            if run_args.post_margin_thres is not None
-                            else None
-                        ),
+                        post_margin_threshold=run_args.post_margin_thres,
                         adaptive_recirculation=run_args.ada_recirculate,
-                        top1_boost_threshold=run_args.top1_boost_thres,
-                        top1_prob_threshold=run_args.top1_prob_thres,
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
-                        rank_top_k=run_args.rank_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         capture_cached_token=capture_dynamic_cache_token,
                         restore_cached_token=restore_dynamic_cache_token,
@@ -1288,7 +1158,6 @@ def main() -> None:
         first_pass_logits: list[Tensor] = []
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
-        actual_alphas: list[tuple[float, ...] | None] = []
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
         adaptive_recirculated_flags: list[bool] = []
@@ -1297,7 +1166,6 @@ def main() -> None:
         final_pass_same_top1_flags: list[bool] = []
         rejection_reasons: list[tuple[str, ...]] = []
         final_pass_cosine_similarities: list[float | None] = []
-        final_pass_top1_boosts: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1305,30 +1173,20 @@ def main() -> None:
             step=student_step,
             rewind_one=rewind_dynamic_cache,
             config=run_config,
-            expected_embedding=expected_embedding_fn,
-            magnitude_diff_stats=magnitude_diff_stats,
             similarity_stats=similarity_stats,
             adjacent_layer_stats=adjacent_layer_stats,
             passes=run_args.passes if use_recirculation else 1,
             rewind_layer=rewind_dynamic_cache_layer,
             condition_thresholds=condition_thresholds,
             pre_margin_threshold=run_args.pre_margin_thres,
-            post_margin_thresholds=(
-                tuple(run_args.post_margin_thres)
-                if run_args.post_margin_thres is not None
-                else None
-            ),
+            post_margin_threshold=run_args.post_margin_thres,
             adaptive_recirculation=run_args.ada_recirculate,
-            top1_boost_threshold=run_args.top1_boost_thres,
-            top1_prob_threshold=run_args.top1_prob_thres,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
-            rank_top_k=run_args.rank_top_k,
             gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
             pass_probability_margins=pass_probability_margins,
-            actual_alphas=actual_alphas,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
             adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -1337,7 +1195,6 @@ def main() -> None:
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
-            final_pass_top1_boosts=final_pass_top1_boosts,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
         )
@@ -1369,20 +1226,7 @@ def main() -> None:
                 if final_pass_cosine_similarities[-1] is not None
                 else None
             )
-            comparison["final_pass_top1_boost"] = (
-                round(final_pass_top1_boosts[-1], 6)
-                if final_pass_top1_boosts[-1] is not None
-                else None
-            )
             comparison["cosine_top_k"] = run_args.cosine_top_k
-            comparison["rank_top_k"] = run_args.rank_top_k
-            if run_args.act_sim_as_alpha:
-                actual_alpha = actual_alphas[-1]
-                comparison["actual_alpha"] = (
-                    tuple(round(alpha, 3) for alpha in actual_alpha)
-                    if actual_alpha is not None
-                    else None
-                )
             next_token = sample_token(student_next_logits, run_args.temperature)
             comparison.update(
                 token_index=token_index,
@@ -1401,30 +1245,20 @@ def main() -> None:
                 step=student_step,
                 rewind_one=rewind_dynamic_cache,
                 config=run_config,
-                expected_embedding=expected_embedding_fn,
-                magnitude_diff_stats=magnitude_diff_stats,
                 similarity_stats=similarity_stats,
                 adjacent_layer_stats=adjacent_layer_stats,
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
                 condition_thresholds=condition_thresholds,
                 pre_margin_threshold=run_args.pre_margin_thres,
-                post_margin_thresholds=(
-                    tuple(run_args.post_margin_thres)
-                    if run_args.post_margin_thres is not None
-                    else None
-                ),
+                post_margin_threshold=run_args.post_margin_thres,
                 adaptive_recirculation=run_args.ada_recirculate,
-                top1_boost_threshold=run_args.top1_boost_thres,
-                top1_prob_threshold=run_args.top1_prob_thres,
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
-                rank_top_k=run_args.rank_top_k,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
                 pass_probability_margins=pass_probability_margins,
-                actual_alphas=actual_alphas,
                 recirculated_flags=recirculated_flags,
                 rejected_flags=rejected_flags,
                 adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -1433,7 +1267,6 @@ def main() -> None:
                 final_pass_same_top1_flags=final_pass_same_top1_flags,
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
-                final_pass_top1_boosts=final_pass_top1_boosts,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
             )
@@ -1470,18 +1303,11 @@ def main() -> None:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
         )
-        act_sim_min_max = (
-            tuple(run_args.act_sim_min_max)
-            if run_args.act_sim_min_max is not None
-            else None
-        )
         run_config = RecirculationConfig(
             pairs=pairs,
             alpha=run_args.alpha,
             beta=run_args.beta,
             mode=run_args.mode,
-            act_sim_as_alpha=run_args.act_sim_as_alpha,
-            act_sim_min_max=act_sim_min_max,
         )
         if not run_config.pairs or any(
             not 0 <= destination < source < len(blocks)
@@ -1511,11 +1337,8 @@ def main() -> None:
             "pre_margin_thres",
             "post_margin_thres",
             "ada_recirculate",
-            "top1_boost_thres",
-            "top1_prob_thres",
             "cosine_reject",
             "cosine_top_k",
-            "rank_top_k",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]
@@ -1527,7 +1350,7 @@ def main() -> None:
                 for option, _ in overrides
             )
         )
-        label_options = ablated_options
+        label_options = tuple(dict.fromkeys(("model", *ablated_options)))
         baseline_arguments = format_run_arguments(args, label_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]
         for overrides in args.ablations:

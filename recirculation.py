@@ -16,9 +16,6 @@ is recirculated for every token (with three passes):
 Fixed and adaptive source recirculation stop early and accept the current pass
 when its top-1/top-2 probability margin is narrower than the preceding pass.
 
-When expected-embedding subtraction is enabled, each replay subtracts the
-top-K expected next-token embedding from h_s before norm matching and mixing.
-
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
 original input norm. Each extra pass replaces that layer's previous KV entry,
@@ -47,8 +44,6 @@ class RecirculationConfig:
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
-    act_sim_as_alpha: bool = False
-    act_sim_min_max: tuple[float, float] | None = None
 
 
 @dataclass
@@ -92,15 +87,6 @@ class AdjacentLayerSimilarityStats:
         return [stats.summary() for stats in self.per_layer]
 
 
-@dataclass
-class MagnitudeDiffStats:
-    fraction_sum: float = 0.0
-    count: int = 0
-
-    @property
-    def mean(self) -> float | None:
-        return self.fraction_sum / self.count if self.count else None
-
 def _residual(output: Any) -> Tensor:
     hidden = output[0] if isinstance(output, tuple) else output
     if not isinstance(hidden, Tensor):
@@ -114,38 +100,10 @@ def _top1_top2_probability_margin(logits: Tensor) -> float:
     return float((top_two[..., 0] - top_two[..., 1]).item())
 
 
-def _top1_probability(logits: Tensor) -> float:
-    probabilities = torch.softmax(logits[:, -1, :].float(), dim=-1)
-    return float(probabilities.max(dim=-1).values.item())
-
-
-def _top1_probability_boost(p1_logits: Tensor, final_logits: Tensor) -> float:
-    p1_probabilities = torch.softmax(p1_logits[:, -1, :].float(), dim=-1)
-    final_probabilities = torch.softmax(final_logits[:, -1, :].float(), dim=-1)
-    final_token = final_probabilities.argmax(dim=-1, keepdim=True)
-    return float(
-        (
-            final_probabilities.gather(-1, final_token)
-            - p1_probabilities.gather(-1, final_token)
-        ).item()
-    )
-
-
 def _top1_tokens_match(p1_logits: Tensor, p2_logits: Tensor) -> bool:
     p1_top_token = p1_logits[:, -1, :].argmax(dim=-1)
     p2_top_token = p2_logits[:, -1, :].argmax(dim=-1)
     return bool((p1_top_token == p2_top_token).all().item())
-
-
-def _final_top1_in_p1_top_k(
-    p1_logits: Tensor, final_logits: Tensor, top_k: int
-) -> bool:
-    selected_count = min(top_k, p1_logits.shape[-1])
-    p1_top_tokens = torch.topk(
-        p1_logits[:, -1, :], selected_count, dim=-1
-    ).indices
-    final_top_token = final_logits[:, -1, :].argmax(dim=-1, keepdim=True)
-    return bool((p1_top_tokens == final_top_token).any(dim=-1).all().item())
 
 
 def _distribution_cosine_similarity(
@@ -180,7 +138,6 @@ class _Hooks:
         self,
         blocks: Sequence[nn.Module],
         cfg: RecirculationConfig,
-        magnitude_diff_stats: MagnitudeDiffStats,
         adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     ) -> None:
         if not cfg.pairs:
@@ -200,10 +157,7 @@ class _Hooks:
         self.sources = {source for source, _destination in cfg.pairs}
         self.residuals: dict[int, Tensor] = {}
         self.injection_sources: dict[int, Tensor] = {}
-        self.injection_alphas: tuple[float, ...] | None = None
-        self.expected_embedding: Tensor | None = None
         self.active_pairs = tuple(True for _pair in cfg.pairs)
-        self.magnitude_diff_stats = magnitude_diff_stats
         self.adjacent_layer_stats = adjacent_layer_stats
         self.layer_residuals: dict[int, Tensor] = {}
         watched_layers = self.destinations | self.sources
@@ -275,40 +229,12 @@ class _Hooks:
             input_device = _residual(inputs).device
             destination = destination.to(device=input_device, dtype=torch.float32)
             source = source.to(device=input_device, dtype=torch.float32)
-            source_norm_before = torch.linalg.vector_norm(
-                source, dim=-1, keepdim=True
-            )
             source *= torch.linalg.vector_norm(destination, dim=-1, keepdim=True) / (
                 torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
 
-            if self.expected_embedding is not None:
-                expected = self.expected_embedding.to(
-                    device=input_device, dtype=torch.float32
-                )
-                projection = (source * expected).sum(dim=-1, keepdim=True) / (
-                    expected.square().sum(dim=-1, keepdim=True).clamp_min(self.cfg.eps)
-                )
-                source -= projection * expected
-
-            alpha = (
-                self.injection_alphas[pair_index]
-                if self.injection_alphas is not None
-                else self.cfg.alpha
-            )
+            alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
-            if self.expected_embedding is not None:
-                source_norm_after = torch.linalg.vector_norm(
-                    source, dim=-1, keepdim=True
-                )
-                magnitude_diff_fraction = (
-                    source_norm_before - source_norm_after
-                ) / source_norm_before.clamp_min(self.cfg.eps)
-                self.magnitude_diff_stats.fraction_sum += (
-                    magnitude_diff_fraction.sum().item()
-                )
-                self.magnitude_diff_stats.count += magnitude_diff_fraction.numel()
-
             mixed = (beta * destination + alpha * source).to(inputs[0].dtype)
             return (mixed, *inputs[1:])
 
@@ -433,26 +359,20 @@ def recirculate(
     rewind_one: Callable[[Any], Any],
     config: RecirculationConfig,
     select_expert_subset: Callable[[int], None] | None = None,
-    expected_embedding: Callable[[Tensor], Tensor] | None = None,
-    magnitude_diff_stats: MagnitudeDiffStats | None = None,
     similarity_stats: SimilarityStats | None = None,
     adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
     pre_margin_threshold: float | None = None,
-    post_margin_thresholds: tuple[float, float] | None = None,
+    post_margin_threshold: float | None = None,
     adaptive_recirculation: int = 0,
-    top1_boost_threshold: float | None = None,
-    top1_prob_threshold: float | None = None,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
-    rank_top_k: int | None = None,
     gating_pair_index: int = 0,
     first_pass_logits: list[Tensor] | None = None,
     first_pass_similarities: list[tuple[float, ...]] | None = None,
     pass_probability_margins: list[list[float]] | None = None,
-    actual_alphas: list[tuple[float, ...] | None] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
     adaptive_recirculated_flags: list[bool] | None = None,
@@ -461,7 +381,6 @@ def recirculate(
     final_pass_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
-    final_pass_top1_boosts: list[float | None] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -472,29 +391,13 @@ def recirculate(
         raise ValueError("passes must be at least 1.")
     if adaptive_recirculation < 0:
         raise ValueError("adaptive_recirculation must be nonnegative.")
-    if adaptive_recirculation:
-        if post_margin_thresholds is None:
-            raise ValueError(
-                "adaptive_recirculation requires post_margin_thresholds."
-            )
     if passes == 1 and not adaptive_recirculation:
         condition_thresholds = None
         pre_margin_threshold = None
-        post_margin_thresholds = None
-        top1_boost_threshold = None
-        top1_prob_threshold = None
+        post_margin_threshold = None
         cosine_reject = None
-        rank_top_k = None
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
-    if rank_top_k is not None and rank_top_k < 1:
-        raise ValueError("rank_top_k must be at least 1.")
-    if post_margin_thresholds is not None:
-        if len(post_margin_thresholds) != 2:
-            raise ValueError("post_margin_thresholds must contain MIN and MAX.")
-        post_margin_min, post_margin_max = post_margin_thresholds
-        if post_margin_min > post_margin_max:
-            raise ValueError("post_margin_thresholds must have MIN <= MAX.")
     if average_cached_token is not None and capture_cached_token is None:
         raise ValueError(
             "average_cached_token requires capture_cached_token."
@@ -516,22 +419,12 @@ def recirculate(
             raise ValueError(
                 "Margin-gated recirculation currently requires --mode source."
             )
-        if post_margin_thresholds is not None:
+        if post_margin_threshold is not None:
             raise ValueError(
                 "Final-pass margin-gated recirculation requires --mode source."
             )
-        if top1_boost_threshold is not None:
-            raise ValueError(
-                "Final-pass top-1 boost gating requires --mode source."
-            )
-        if top1_prob_threshold is not None:
-            raise ValueError(
-                "Top1-probability-gated recirculation currently requires --mode source."
-            )
         if cosine_reject is not None:
             raise ValueError("Final-pass trust rejection requires --mode source.")
-        if rank_top_k is not None:
-            raise ValueError("Final-pass rank gating requires --mode source.")
         if similarity_stats is not None:
             raise ValueError(
                 "Source/destination similarity stats require --mode source."
@@ -573,7 +466,6 @@ def recirculate(
     hooks = _Hooks(
         blocks,
         config,
-        magnitude_diff_stats or MagnitudeDiffStats(),
         adjacent_layer_stats=adjacent_layer_stats,
     )
     if condition_thresholds is not None and len(condition_thresholds) not in (
@@ -586,13 +478,6 @@ def recirculate(
         )
     if condition_thresholds is not None and len(condition_thresholds) == 1:
         condition_thresholds = condition_thresholds * len(config.pairs)
-    if config.act_sim_as_alpha and config.act_sim_min_max is not None:
-        if len(config.act_sim_min_max) != 2:
-            raise ValueError(
-                "act_sim_min_max must contain exactly two values (MIN, MAX)."
-            )
-        if config.act_sim_min_max[0] >= config.act_sim_min_max[1]:
-            raise ValueError("act_sim_min_max must have MIN < MAX.")
     if not 0 <= gating_pair_index < len(config.pairs):
         raise ValueError(
             f"gating_pair_index must be in [0, {len(config.pairs)})."
@@ -617,11 +502,6 @@ def recirculate(
                 or pass_probability_margins is not None
                 else None
             )
-            first_top1_prob = (
-                _top1_probability(first_logits)
-                if top1_prob_threshold is not None
-                else None
-            )
             token_pass_probability_margins = (
                 [first_margin]
                 if pass_probability_margins is not None
@@ -636,7 +516,6 @@ def recirculate(
                     similarity_stats is not None
                     or condition_thresholds is not None
                     or first_pass_similarities is not None
-                    or config.act_sim_as_alpha
                 )
                 else None
             )
@@ -651,10 +530,7 @@ def recirculate(
                 pre_margin_threshold is None
                 or first_margin <= pre_margin_threshold
             )
-            top1_prob_gate = (
-                top1_prob_threshold is None or first_top1_prob <= top1_prob_threshold
-            )
-            probability_gate = margin_gate and top1_prob_gate
+            probability_gate = margin_gate
             should_recirculate = probability_gate and (
                 condition_thresholds is None
                 or similarities[gating_pair_index]
@@ -662,10 +538,12 @@ def recirculate(
             )
             if passes == 1 and adaptive_recirculation:
                 assert first_margin is not None
-                assert post_margin_thresholds is not None
                 should_recirculate = (
                     should_recirculate
-                    and first_margin < post_margin_thresholds[0]
+                    and (
+                        post_margin_threshold is None
+                        or first_margin < post_margin_threshold
+                    )
                 )
             hooks.active_pairs = (
                 tuple(probability_gate for _pair in config.pairs)
@@ -685,7 +563,6 @@ def recirculate(
             final_pass_same_top1 = False
             final_pass_rejection_reasons: list[str] = []
             final_pass_cosine_similarity = None
-            final_pass_top1_boost = None
             max_passes = passes + adaptive_recirculation
             adaptive_recirculation_count = 0
             previous_pass_margin = first_margin
@@ -698,28 +575,6 @@ def recirculate(
                 hooks.injection_sources = {
                     source: hooks.residuals[source] for source in hooks.sources
                 }
-                if config.act_sim_as_alpha:
-                    min_val, max_val = (
-                        config.act_sim_min_max
-                        if config.act_sim_min_max is not None
-                        else (0.0, 1.0)
-                    )
-                    scale = max_val - min_val
-                    hooks.injection_alphas = tuple(
-                        min(
-                            max((similarity - min_val) / scale, 0.0),
-                            1.0,
-                        )
-                        * config.alpha
-                        for similarity in similarities
-                    )
-                else:
-                    hooks.injection_alphas = None
-                hooks.expected_embedding = (
-                    expected_embedding(final_logits[:, -1:, :])
-                    if expected_embedding is not None
-                    else None
-                )
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
@@ -727,7 +582,7 @@ def recirculate(
                     _top1_top2_probability_margin(final_logits)
                     if passes >= 2
                     or adaptive_recirculation
-                    or post_margin_thresholds is not None
+                    or post_margin_threshold is not None
                     or token_pass_probability_margins is not None
                     else None
                 )
@@ -741,8 +596,10 @@ def recirculate(
                 )
                 should_retry_low_margin = (
                     pass_index >= passes - 1
-                    and post_margin_thresholds is not None
-                    and pass_margin < post_margin_thresholds[0]
+                    and (
+                        post_margin_threshold is None
+                        or pass_margin < post_margin_threshold
+                    )
                     and not margin_narrowed
                     and pass_index < max_passes - 1
                 )
@@ -751,39 +608,19 @@ def recirculate(
                 if margin_narrowed or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
-                    final_pass_top1_boost = _top1_probability_boost(
-                        first_logits, final_logits
-                    )
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
-                    if post_margin_thresholds is not None and not margin_narrowed:
+                    if post_margin_threshold is not None and not margin_narrowed:
                         assert pass_margin is not None
-                        post_margin_min, post_margin_max = post_margin_thresholds
-                        if pass_margin < post_margin_min:
+                        if pass_margin < post_margin_threshold:
                             final_pass_rejection_reasons.append("post-margin-min")
-                        if pass_margin > post_margin_max:
-                            final_pass_rejection_reasons.append("post-margin-max")
-                    if (
-                        not margin_narrowed
-                        and top1_boost_threshold is not None
-                        and final_pass_top1_boost > top1_boost_threshold
-                    ):
-                        final_pass_rejection_reasons.append("top1-boost")
                     if (
                         not margin_narrowed
                         and cosine_reject is not None
                         and final_pass_cosine_similarity < cosine_reject
                     ):
                         final_pass_rejection_reasons.append("cosine")
-                    if (
-                        not margin_narrowed
-                        and rank_top_k is not None
-                        and not _final_top1_in_p1_top_k(
-                            first_logits, final_logits, rank_top_k
-                        )
-                    ):
-                        final_pass_rejection_reasons.append("rank")
                     final_pass_accepted = not final_pass_rejection_reasons
                     if not final_pass_accepted:
                         assert cached_token_passes is not None
@@ -815,14 +652,6 @@ def recirculate(
             if pass_probability_margins is not None:
                 assert token_pass_probability_margins is not None
                 pass_probability_margins.append(token_pass_probability_margins)
-            if actual_alphas is not None:
-                actual_alphas.append(
-                    hooks.injection_alphas
-                    if should_recirculate
-                    and final_pass_accepted
-                    and config.act_sim_as_alpha
-                    else None
-                )
             if recirculated_flags is not None:
                 recirculated_flags.append(
                     (passes >= 2 or adaptive_recirculation > 0)
@@ -855,8 +684,6 @@ def recirculate(
                 final_pass_cosine_similarities.append(
                     final_pass_cosine_similarity
                 )
-            if final_pass_top1_boosts is not None:
-                final_pass_top1_boosts.append(final_pass_top1_boost)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

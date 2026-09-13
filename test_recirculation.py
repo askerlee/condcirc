@@ -7,6 +7,35 @@ from recirculation import RecirculationConfig, recirculate
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_finalizes_cache_after_each_token(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        finalized: list[tuple[int, ...]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(int(token.item()))
+            return torch.tensor([[[0.0, 1.0]]]), current_cache
+
+        def finalize_token_cache(current_cache: list[int]) -> list[int]:
+            finalized.append(tuple(current_cache))
+            return current_cache
+
+        recirculate(
+            torch.tensor([[1, 2]]),
+            blocks=blocks,
+            cache=cache,
+            step=step,
+            rewind_one=lambda current_cache: current_cache,
+            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            passes=1,
+            finalize_token_cache=finalize_token_cache,
+        )
+
+        self.assertEqual(finalized, [(1,), (1, 2)])
+
     def test_single_pass_ignores_all_gates(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
@@ -610,7 +639,11 @@ class DynamicCacheTokenCaptureTest(unittest.TestCase):
         )
 
     def test_capture_and_restore_with_linear_and_dynamic_layers(self) -> None:
-        from infer import capture_dynamic_cache_token, restore_dynamic_cache_token
+        from infer import (
+            capture_dynamic_cache_token,
+            finalize_dynamic_cache_token,
+            restore_dynamic_cache_token,
+        )
         from transformers.cache_utils import DynamicCache, DynamicLayer, LinearAttentionLayer
 
         l1 = DynamicLayer()
@@ -619,22 +652,29 @@ class DynamicCacheTokenCaptureTest(unittest.TestCase):
         cache.layers = [l1, l2]
         cache.activate_past_recording()
 
-        # Populate initial layer states
+        # P1 may retain the full prompt while recording history.
         l1.update(torch.ones(1, 2, 1, 8), torch.ones(1, 2, 1, 8))
-        l2.update_conv_state(torch.ones(1, 4, 1), state_idx=0, conv_kernel_size=3)
+        l2.update_conv_state(
+            torch.ones(1, 4, 49), state_idx=0, conv_kernel_size=4
+        )
         l2.update_recurrent_state(torch.ones(1, 4, 16), state_idx=0)
 
         captured = capture_dynamic_cache_token(cache)
 
-        # Mutate states
+        # A replay starts from the compact kernel window and adds one position.
         l1.keys[..., -1:, :] += 5.0
+        l2.conv_states[0] = torch.full((1, 4, 5), 2.0)
         l2.recurrent_states[0] += 10.0
 
-        # Restore
         restore_dynamic_cache_token(cache, captured)
 
         torch.testing.assert_close(l1.keys[..., -1:, :], torch.ones(1, 2, 1, 8))
+        torch.testing.assert_close(l2.conv_states[0], torch.ones(1, 4, 49))
         torch.testing.assert_close(l2.recurrent_states[0], torch.ones(1, 4, 16))
+
+        finalize_dynamic_cache_token(cache)
+
+        torch.testing.assert_close(l2.conv_states[0], torch.ones(1, 4, 4))
 
 
 if __name__ == "__main__":

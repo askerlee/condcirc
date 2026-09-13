@@ -386,6 +386,7 @@ def recirculate(
     restore_cached_token: Callable[[Any, Any], None] | None = None,
     capture_rewind_state: Callable[[Any], Any] | None = None,
     restore_rewind_state: Callable[[Any, Any], None] | None = None,
+    finalize_token_cache: Callable[[Any], Any] | None = None,
 ) -> tuple[Tensor, Any]:
     """Run source-to-destination recirculation or layerwise repeated passes."""
 
@@ -697,6 +698,8 @@ def recirculate(
                 final_pass_cosine_similarities.append(
                     final_pass_cosine_similarity
                 )
+            if finalize_token_cache is not None:
+                cache = finalize_token_cache(cache)
             logits.append(final_logits)
     finally:
         if select_expert_subset is not None:

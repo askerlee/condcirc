@@ -182,6 +182,52 @@ def openai_evaluate(prompt: str, model: str, api_key: str, base_url: str) -> str
     return content
 
 
+def evaluate_single_answer(
+    prompt: str,
+    label: str,
+    answer: str,
+    *,
+    eval_provider: str,
+    model: nn.Module,
+    tokenizer: Any,
+    input_device: Any,
+    api_key: str | None = None,
+    base_url: str = "https://api.openai.com/v1",
+    evaluation_model: str = "gpt-5.6-sol",
+) -> dict[str, Any]:
+    evaluation_prompt = build_evaluation_prompt(prompt, [(label, answer)])
+    if eval_provider == "openai":
+        if not api_key:
+            raise RuntimeError("Set OPENAI_API_KEY before using --eval-provider openai.")
+        evaluation_text = openai_evaluate(
+            evaluation_prompt,
+            evaluation_model,
+            api_key,
+            base_url,
+        )
+    else:
+        evaluation_input = tokenizer.apply_chat_template(
+            [{"role": "user", "content": evaluation_prompt}],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+            return_tensors="pt",
+        ).to(input_device)
+        with torch.inference_mode():
+            evaluation_ids = model.generate(
+                input_ids=evaluation_input,
+                max_new_tokens=500,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        evaluation_text = tokenizer.decode(
+            evaluation_ids[0, evaluation_input.shape[1] :],
+            skip_special_tokens=True,
+        )
+    evaluations = parse_evaluation(evaluation_text, 1)
+    return evaluations[0]
+
+
 def write_evaluation_report(
     results: list[tuple[str, list[tuple[str, str]]]],
     output_path: Path,
@@ -283,6 +329,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("local", "openai"),
         default="openai",
         help="Use a local Transformers model or the OpenAI API for evaluation.",
+    )
+    parser.add_argument(
+        "--do-eval",
+        action="store_true",
+        help="Evaluate each generated run with the configured evaluation model.",
     )
     parser.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B-FP8")
     parser.add_argument(
@@ -487,10 +538,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Write pretty-printed debug-run records with per-token similarities.",
     )
     parser.add_argument(
-        "--evaluate-results",
+        "--evaluate-results-json",
+        dest="evaluate_results_json",
         type=Path,
         metavar="PATH",
-        help="Evaluate partial answers in an existing results report and exit.",
+        help="Evaluate partial answers in an existing JSON results report and exit.",
     )
     parser.add_argument(
         "--evaluation-output",
@@ -535,8 +587,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "debug_adj_layer_sim",
         "device",
         "device_map",
+            "do_eval",
         "eval_provider",
-        "evaluate_results",
+        "evaluate_results_json",
         "evaluation_model",
         "evaluation_output",
         "gpu_memory",
@@ -686,6 +739,13 @@ def rewind_dynamic_cache(cache: DynamicCache) -> DynamicCache:
     return cache
 
 
+def finalize_dynamic_cache_token(cache: DynamicCache) -> DynamicCache:
+    crop_parameter = next(iter(inspect.signature(cache.crop).parameters.values()))
+    if crop_parameter.name == "tokens_to_remove":
+        cache.crop(0)
+    return cache
+
+
 def rewind_dynamic_cache_layer(
     cache: DynamicCache, layer_index: int
 ) -> DynamicCache:
@@ -773,7 +833,12 @@ def restore_dynamic_cache_token(
             layer.keys[..., -1:, :].copy_(state["keys"])
             layer.values[..., -1:, :].copy_(state["values"])
         if "conv_states" in state:
-            restore_tensor_states(layer.conv_states, state["conv_states"])
+            layer.conv_states.update(
+                {
+                    index: tensor.clone()
+                    for index, tensor in state["conv_states"].items()
+                }
+            )
         if "recurrent_states" in state:
             restore_tensor_states(layer.recurrent_states, state["recurrent_states"])
 
@@ -838,12 +903,12 @@ def main() -> None:
     validate_run_arguments(args)
     if args.temperature < 0:
         raise ValueError("--temperature must be nonnegative.")
-    if args.eval_provider == "openai" and args.evaluate_results is not None:
+    if args.eval_provider == "openai" and args.evaluate_results_json is not None:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("Set OPENAI_API_KEY before using --eval-provider openai.")
         write_evaluation_report(
-            parse_results(args.evaluate_results),
+            parse_results(args.evaluate_results_json),
             args.evaluation_output,
             lambda prompt, _method_count: openai_evaluate(
                 prompt, args.evaluation_model, api_key, args.openai_base_url
@@ -874,8 +939,8 @@ def main() -> None:
     model.eval()
     input_device = model.get_input_embeddings().weight.device
 
-    if args.evaluate_results is not None:
-        results = parse_results(args.evaluate_results)
+    if args.evaluate_results_json is not None:
+        results = parse_results(args.evaluate_results_json)
         score_totals: dict[str, list[int]] = {}
         report_lines = [
             "# Partial-answer ratings",
@@ -1177,6 +1242,7 @@ def main() -> None:
                     restore_cached_token=restore_dynamic_cache_token,
                     capture_rewind_state=capture_dynamic_cache_rewind_state,
                     restore_rewind_state=restore_dynamic_cache_rewind_state,
+                    finalize_token_cache=finalize_dynamic_cache_token,
                 )
                 next_logits = prompt_logits[:, -1, :]
 
@@ -1209,6 +1275,7 @@ def main() -> None:
                         restore_cached_token=restore_dynamic_cache_token,
                         capture_rewind_state=capture_dynamic_cache_rewind_state,
                         restore_rewind_state=restore_dynamic_cache_rewind_state,
+                        finalize_token_cache=finalize_dynamic_cache_token,
                     )
                 else:
                     token_logits, student_cache = plain_step(
@@ -1265,6 +1332,7 @@ def main() -> None:
             restore_cached_token=restore_dynamic_cache_token,
             capture_rewind_state=capture_dynamic_cache_rewind_state,
             restore_rewind_state=restore_dynamic_cache_rewind_state,
+            finalize_token_cache=finalize_dynamic_cache_token,
         )
         teacher_logits = first_pass_logits[-1]
         teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
@@ -1339,6 +1407,7 @@ def main() -> None:
                 restore_cached_token=restore_dynamic_cache_token,
                 capture_rewind_state=capture_dynamic_cache_rewind_state,
                 restore_rewind_state=restore_dynamic_cache_rewind_state,
+                finalize_token_cache=finalize_dynamic_cache_token,
             )
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
@@ -1491,11 +1560,27 @@ def main() -> None:
                     run_ids[0, prompt_length:], skip_special_tokens=True
                 )
                 emit(output)
-                query_record["runs"].append({
+                run_record = {
                     "label": label,
                     "seconds": round(run_seconds, 2),
                     "output": output,
-                })
+                }
+                if args.do_eval:
+                    evaluation = evaluate_single_answer(
+                        prompt,
+                        label,
+                        output,
+                        eval_provider=args.eval_provider,
+                        model=model,
+                        tokenizer=tokenizer,
+                        input_device=input_device,
+                        api_key=os.environ.get("OPENAI_API_KEY"),
+                        base_url=args.openai_base_url,
+                        evaluation_model=args.evaluation_model,
+                    )
+                    run_record["score"] = evaluation["score"]
+                    run_record["rationale"] = evaluation["rationale"]
+                query_record["runs"].append(run_record)
                 save_output()
                 if similarities_file is not None:
                     similarity_records.append({

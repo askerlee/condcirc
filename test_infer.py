@@ -2,12 +2,19 @@ import unittest
 
 from infer import (
     aggregate_recirculation_stats,
+    format_average_eval_rating,
     format_run_stats,
     summarize_recirculation_stats,
 )
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_formats_average_eval_model_rating(self) -> None:
+        self.assertEqual(
+            format_average_eval_rating([8.0, 7.5, 9.0]),
+            "average_eval_model_rating = 8.17",
+        )
+
     def test_summarizes_result_json_stats(self) -> None:
         rejection_reasons = [
             ("post-margin-min", "post-margin-max", "cosine", "rank"),

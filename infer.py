@@ -128,6 +128,12 @@ def format_run_stats(stats: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def format_average_eval_rating(scores: Sequence[float]) -> str:
+    if not scores:
+        raise ValueError("Cannot average an empty collection of evaluation scores.")
+    return f"average_eval_model_rating = {sum(scores) / len(scores):.2f}"
+
+
 def aggregate_recirculation_stats(
     stats_records: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1778,6 +1784,8 @@ def main() -> None:
             emit(f"\n{label} ({sum(run['seconds'] for run in completed_runs):.2f} s)")
             for line in format_run_stats(aggregate_stats):
                 emit(line)
+            if args.do_eval:
+                emit(format_average_eval_rating([run["score"] for run in completed_runs]))
     finally:
         if output_file is not None:
             output_file.close()

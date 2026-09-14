@@ -13,10 +13,12 @@ is recirculated for every token (with three passes):
           that pass has the same top-1 token, or restore both P1 logits and KV cache
           when a rejection gate fails; otherwise commit the final pass.
 
-Fixed source recirculation stops early and accepts the current pass when its
-top-1/top-2 probability margin is narrower than the preceding pass. Adaptive
-source recirculation continues until its margin reaches the post-margin
-threshold or its retry budget is exhausted.
+Without post-margin gates, fixed source recirculation stops early when its
+top-1/top-2 probability margin narrows. With post-margin MIN/MAX gates, a pass
+below MIN is rejected, a pass from MIN (inclusive) to MAX (exclusive) requires
+the configured margin-ratio improvement, and a pass at or above MAX is accepted.
+Adaptive source recirculation retries rejected passes until its budget is
+exhausted.
 
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
@@ -367,7 +369,7 @@ def recirculate(
     rewind_layer: Callable[[Any, int], Any] | None = None,
     condition_thresholds: Sequence[float] | None = None,
     pre_margin_threshold: float | None = None,
-    post_margin_threshold: float | None = None,
+    post_margin_threshold: tuple[float, float] | None = None,
     post_margin_ratio_threshold: float | None = None,
     adaptive_recirculation: int = 0,
     recirculation_allowed: bool = True,
@@ -404,6 +406,19 @@ def recirculate(
         post_margin_threshold = None
         post_margin_ratio_threshold = None
         cosine_reject = None
+    if post_margin_threshold is not None:
+        post_margin_min, post_margin_max = post_margin_threshold
+        if post_margin_min < 0 or post_margin_max < 0:
+            raise ValueError("post_margin_threshold values must be nonnegative.")
+        if post_margin_min > post_margin_max:
+            raise ValueError("post_margin_threshold requires MIN <= MAX.")
+    if (
+        post_margin_ratio_threshold is not None
+        and post_margin_threshold is None
+    ):
+        raise ValueError(
+            "post_margin_ratio_threshold requires post_margin_threshold MIN/MAX."
+        )
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
     if average_cached_token is not None and capture_cached_token is None:
@@ -563,7 +578,7 @@ def recirculate(
                     should_recirculate
                     and (
                         post_margin_threshold is None
-                        or first_margin < post_margin_threshold
+                        or first_margin < post_margin_threshold[1]
                     )
                 )
             hooks.active_pairs = (
@@ -617,10 +632,15 @@ def recirculate(
                     and previous_pass_margin is not None
                     and pass_margin < previous_pass_margin
                 )
-                post_margin_threshold_met = (
-                    post_margin_threshold is not None
-                    and pass_margin is not None
-                    and pass_margin >= post_margin_threshold
+                post_margin_min = (
+                    post_margin_threshold[0]
+                    if post_margin_threshold is not None
+                    else None
+                )
+                post_margin_max = (
+                    post_margin_threshold[1]
+                    if post_margin_threshold is not None
+                    else None
                 )
                 post_margin_ratio_met = (
                     post_margin_ratio_threshold is not None
@@ -629,12 +649,27 @@ def recirculate(
                     and pass_margin / max(first_margin, config.eps)
                     >= post_margin_ratio_threshold
                 )
-                margin_gate_met = (
-                    post_margin_threshold_met or post_margin_ratio_met
+                post_margin_below_min = (
+                    post_margin_min is not None
+                    and pass_margin is not None
+                    and pass_margin < post_margin_min
+                )
+                post_margin_in_middle = (
+                    post_margin_min is not None
+                    and post_margin_max is not None
+                    and pass_margin is not None
+                    and post_margin_min <= pass_margin < post_margin_max
+                )
+                post_margin_at_or_above_max = (
+                    post_margin_max is not None
+                    and pass_margin is not None
+                    and pass_margin >= post_margin_max
+                )
+                margin_gate_met = post_margin_at_or_above_max or (
+                    post_margin_in_middle and post_margin_ratio_met
                 )
                 has_margin_gate = (
                     post_margin_threshold is not None
-                    or post_margin_ratio_threshold is not None
                 )
                 should_retry_low_margin = (
                     pass_index >= passes - 1
@@ -652,15 +687,9 @@ def recirculate(
                     )
                     if has_margin_gate and not margin_gate_met:
                         assert pass_margin is not None
-                        if (
-                            post_margin_threshold is not None
-                            and not post_margin_threshold_met
-                        ):
+                        if post_margin_below_min:
                             final_pass_rejection_reasons.append("post-margin-min")
-                        if (
-                            post_margin_ratio_threshold is not None
-                            and not post_margin_ratio_met
-                        ):
+                        elif post_margin_in_middle and not post_margin_ratio_met:
                             final_pass_rejection_reasons.append("post-margin-ratio")
                     if (
                         cosine_reject is not None

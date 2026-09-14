@@ -20,6 +20,11 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.post_margin_ratio_thres, 1.5)
 
+    def test_parses_post_margin_min_and_max(self) -> None:
+        args = parse_args(["--post-margin-thres", "0.1", "0.2", "prompt"])
+
+        self.assertEqual(args.post_margin_thres, [0.1, 0.2])
+
     def test_formats_average_eval_model_rating(self) -> None:
         self.assertEqual(
             format_average_eval_rating([8.0, 7.5, 9.0]),

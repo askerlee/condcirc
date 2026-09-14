@@ -63,7 +63,7 @@ class RecirculationCacheTest(unittest.TestCase):
             passes=1,
             condition_thresholds=[2.0],
             pre_margin_threshold=-1.0,
-            post_margin_threshold=0.0,
+            post_margin_threshold=(0.0, 0.0),
             cosine_reject=1.0,
             recirculated_flags=recirculated_flags,
             rejected_flags=rejected_flags,
@@ -237,7 +237,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=3,
-            post_margin_threshold=0.05,
+            post_margin_threshold=(0.05, 0.05),
             cosine_reject=0.8,
             rejected_flags=rejected_flags,
             rejection_reasons=rejection_reasons,
@@ -253,7 +253,7 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(rejection_reasons, [()])
         self.assertGreater(final_pass_cosine_similarities[0], 0.8)
 
-    def test_post_margin_has_no_maximum(self) -> None:
+    def test_post_margin_accepts_at_maximum_boundary(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
         pass_logits = (
@@ -293,7 +293,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=2,
-            post_margin_threshold=0.05,
+            post_margin_threshold=(0.05, 0.05),
             rejected_flags=rejected_flags,
             rejection_reasons=rejection_reasons,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -342,6 +342,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=2,
+            post_margin_threshold=(0.01, 0.5),
             post_margin_ratio_threshold=0.5,
             rejection_reasons=rejection_reasons,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -354,7 +355,7 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(final_cache, [1])
         self.assertEqual(rejection_reasons, [("post-margin-ratio",)])
 
-    def test_post_margin_gates_accept_when_ratio_passes(self) -> None:
+    def test_middle_post_margin_accepts_when_ratio_passes(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
         pass_logits = (
@@ -386,7 +387,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=2,
-            post_margin_threshold=0.7,
+            post_margin_threshold=(0.1, 0.7),
             post_margin_ratio_threshold=0.5,
             rejection_reasons=rejection_reasons,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -477,7 +478,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=1,
-            post_margin_threshold=0.2,
+            post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
             pass_probability_margins=margins,
             recirculated_flags=recirculated_flags,
@@ -539,7 +540,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=1,
-            post_margin_threshold=0.2,
+            post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
             pass_probability_margins=margins,
             adaptive_recirculation_counts=adaptive_counts,
@@ -582,7 +583,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=lambda current_cache: current_cache,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=1,
-            post_margin_threshold=0.2,
+            post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
             adaptive_recirculated_flags=adaptive_recirculated_flags,
             adaptive_recirculation_counts=adaptive_counts,
@@ -628,7 +629,7 @@ class RecirculationCacheTest(unittest.TestCase):
             rewind_one=rewind_one,
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=1,
-            post_margin_threshold=0.2,
+            post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=2,
             rejection_reasons=rejection_reasons,
             adaptive_rejected_flags=adaptive_rejected_flags,
@@ -671,7 +672,7 @@ class RecirculationCacheTest(unittest.TestCase):
             config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
             passes=1,
             pre_margin_threshold=-1.0,
-            post_margin_threshold=0.2,
+            post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=2,
             adaptive_recirculation_counts=adaptive_counts,
             capture_cached_token=lambda current_cache: current_cache[-1],

@@ -540,22 +540,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--post-margin-thres",
         type=float,
-        default=0.2,
-        metavar="THRESHOLD",
+        nargs=2,
+        default=(0.1, 0.2),
+        metavar=("MIN", "MAX"),
         help=(
-            "Final-pass gate: accept recirculation only when its top-1 versus "
-            "top-2 probability margin is at least this value."
+            "Final-pass margin bands: reject below MIN, require "
+            "--post-margin-ratio-thres from MIN (inclusive) to MAX "
+            "(exclusive), and accept at or above MAX (default: 0.1 0.2)."
         ),
     )
     parser.add_argument(
         "--post-margin-ratio-thres",
         type=float,
-        default=None,
+        default=1.2,
         metavar="RATIO",
         help=(
-            "Final-pass gate: accept recirculation when either this ratio or "
-            "--post-margin-thres is met. This is the top-1/top-2 margin "
-            "divided by P1's margin."
+            "Minimum post-margin/P1-margin ratio required when the post margin "
+            "is between --post-margin-thres MIN and MAX."
         ),
     )
     parser.add_argument(
@@ -1013,6 +1014,11 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         if args.mode != "source":
             raise ValueError("--cosine-reject requires --mode source.")
     if args.post_margin_thres is not None:
+        post_margin_min, post_margin_max = args.post_margin_thres
+        if post_margin_min < 0 or post_margin_max < 0:
+            raise ValueError("--post-margin-thres values must be nonnegative.")
+        if post_margin_min > post_margin_max:
+            raise ValueError("--post-margin-thres requires MIN <= MAX.")
         if args.passes < 2 and not args.ada_recirculate:
             raise ValueError("--post-margin-thres requires --passes of at least 2.")
         if args.mode != "source":
@@ -1145,7 +1151,7 @@ def main() -> None:
             (args.pre_margin_thres, f"-pre{args.pre_margin_thres}"),
             (
                 args.post_margin_thres,
-                f"-post{args.post_margin_thres}"
+                f"-post{args.post_margin_thres[0]}-{args.post_margin_thres[1]}"
                 if args.post_margin_thres is not None
                 else "",
             ),
@@ -1159,7 +1165,7 @@ def main() -> None:
             ),
             (
                 args.post_margin_ratio_thres,
-                f"-post-r{args.post_margin_ratio_thres}"
+                f"-postr{args.post_margin_ratio_thres}"
                 if args.post_margin_ratio_thres is not None
                 else "",
             ),

@@ -75,6 +75,32 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(recirculated_flags, [False])
         self.assertEqual(rejected_flags, [False])
 
+    def test_disallowed_recirculation_runs_only_first_pass(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        call_count = 0
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            nonlocal call_count
+            call_count += 1
+            current_cache.append(call_count)
+            return torch.tensor([[[0.0, 1.0]]]), current_cache
+
+        recirculate(
+            torch.tensor([[1]]),
+            blocks=blocks,
+            cache=cache,
+            step=step,
+            rewind_one=lambda current_cache: current_cache,
+            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            passes=3,
+            recirculation_allowed=False,
+            capture_cached_token=lambda current_cache: current_cache[-1],
+            restore_cached_token=lambda current_cache, cached_token: None,
+        )
+
+        self.assertEqual(call_count, 1)
+
     def test_same_top1_check_uses_final_pass(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

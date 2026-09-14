@@ -367,6 +367,7 @@ def recirculate(
     pre_margin_threshold: float | None = None,
     post_margin_threshold: float | None = None,
     adaptive_recirculation: int = 0,
+    recirculation_allowed: bool = True,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
     gating_pair_index: int = 0,
@@ -543,7 +544,7 @@ def recirculate(
                 or first_margin <= pre_margin_threshold
             )
             probability_gate = margin_gate
-            should_recirculate = probability_gate and (
+            should_recirculate = recirculation_allowed and probability_gate and (
                 condition_thresholds is None
                 or similarities[gating_pair_index]
                 >= condition_thresholds[gating_pair_index]

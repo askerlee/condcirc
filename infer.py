@@ -600,6 +600,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-new-tokens", type=int, default=300)
     parser.add_argument(
+        "--no-recirculate-after-N-tokens",
+        dest="no_recirculate_after_tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Disable recirculation after N generated tokens.",
+    )
+    parser.add_argument(
         "--ablation",
         dest="ablations",
         action="store_true",
@@ -702,6 +710,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "list_queries",
         "max_new_tokens",
         "model",
+        "no_recirculate_after_tokens",
         "openai_base_url",
         "output",
         "query_indices",
@@ -1005,6 +1014,11 @@ def main() -> None:
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
+    if (
+        args.no_recirculate_after_tokens is not None
+        and args.no_recirculate_after_tokens < 0
+    ):
+        raise ValueError("--no-recirculate-after-N-tokens must be nonnegative.")
     if args.passes < 1:
         raise ValueError("--passes must be at least 1.")
     validate_run_arguments(args)
@@ -1120,6 +1134,11 @@ def main() -> None:
         )
         if threshold is not None
     )
+    cutoff_signature = (
+        f"-cutoff{args.no_recirculate_after_tokens}"
+        if args.no_recirculate_after_tokens is not None
+        else ""
+    )
     if args.output is None:
         pairs = resolve_recirculation_pairs(
             args, len(blocks), global_attention_layers
@@ -1130,7 +1149,7 @@ def main() -> None:
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
-            f"{gate_signature}{query_signature}.json"
+            f"{gate_signature}{cutoff_signature}{query_signature}.json"
         )
     if args.similarities_output is None:
         args.similarities_output = args.output.with_name(
@@ -1312,6 +1331,10 @@ def main() -> None:
                 generated_rejection_reasons,
             )
 
+        def allow_generated_recirculation(generated_token_count: int) -> bool:
+            limit = run_args.no_recirculate_after_tokens
+            return limit is None or generated_token_count < limit
+
         def report_stats(
             recirculated_flags: list[bool] | None = None,
             rejected_flags: list[bool] | None = None,
@@ -1398,6 +1421,7 @@ def main() -> None:
                     pre_margin_threshold=run_args.pre_margin_thres,
                     post_margin_threshold=run_args.post_margin_thres,
                     adaptive_recirculation=run_args.ada_recirculate,
+                    recirculation_allowed=True,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
                     gating_pair_index=run_args.gating_pair_index,
@@ -1439,6 +1463,9 @@ def main() -> None:
                         pre_margin_threshold=run_args.pre_margin_thres,
                         post_margin_threshold=run_args.post_margin_thres,
                         adaptive_recirculation=run_args.ada_recirculate,
+                        recirculation_allowed=allow_generated_recirculation(
+                            generated_ids.shape[1] - input_ids.shape[1]
+                        ),
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
@@ -1493,6 +1520,7 @@ def main() -> None:
             pre_margin_threshold=run_args.pre_margin_thres,
             post_margin_threshold=run_args.post_margin_thres,
             adaptive_recirculation=run_args.ada_recirculate,
+            recirculation_allowed=True,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
             gating_pair_index=run_args.gating_pair_index,
@@ -1573,6 +1601,7 @@ def main() -> None:
                 pre_margin_threshold=run_args.pre_margin_thres,
                 post_margin_threshold=run_args.post_margin_thres,
                 adaptive_recirculation=run_args.ada_recirculate,
+                recirculation_allowed=allow_generated_recirculation(token_index + 1),
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
                 gating_pair_index=run_args.gating_pair_index,

@@ -4,11 +4,17 @@ from infer import (
     aggregate_recirculation_stats,
     format_average_eval_rating,
     format_run_stats,
+    parse_args,
     summarize_recirculation_stats,
 )
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_parses_no_recirculation_token_limit(self) -> None:
+        args = parse_args(["--no-recirculate-after-N-tokens", "12", "prompt"])
+
+        self.assertEqual(args.no_recirculate_after_tokens, 12)
+
     def test_formats_average_eval_model_rating(self) -> None:
         self.assertEqual(
             format_average_eval_rating([8.0, 7.5, 9.0]),

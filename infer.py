@@ -693,13 +693,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "debug_adj_layer_sim",
         "device",
         "device_map",
-            "do_eval",
+        "do_eval",
         "eval_provider",
         "evaluate_results_json",
         "evaluation_model",
         "evaluation_output",
         "gpu_memory",
         "list_queries",
+        "max_new_tokens",
         "model",
         "openai_base_url",
         "output",
@@ -1000,7 +1001,7 @@ def main() -> None:
     if args.list_queries:
         for index, query in enumerate(EXAMPLE_QUERIES, start=1):
             print(f"{index:2}. {query}")
-        return
+        return 
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -1128,6 +1129,7 @@ def main() -> None:
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
+            f"-tokens{args.max_new_tokens}"
             f"{gate_signature}{query_signature}.json"
         )
     if args.similarities_output is None:

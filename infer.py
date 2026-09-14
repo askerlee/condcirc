@@ -110,6 +110,67 @@ def summarize_recirculation_stats(
     }
 
 
+def format_run_stats(stats: dict[str, Any]) -> tuple[str, str]:
+    recirculated = stats["recirculated_tokens"]
+    rejected_by_gate = stats["rejected_by_gate"]
+    adaptive = stats["adaptive_recirculated_tokens"]
+    gates = ", ".join(
+        f"{gate}={rejected_by_gate[gate]}" for gate in REJECTION_GATES
+    )
+    return (
+        f"recirculated_tokens = {recirculated['count']}/{recirculated['total']}, "
+        f"same_top1 = {stats['same_top1']}, rejected = {stats['rejected']}, "
+        f"by gate: {gates}",
+        f"adaptive_recirculated_tokens = {adaptive['count']}/{adaptive['total']}, "
+        f"rejected = {stats['adaptive_rejected']}, "
+        "average_adaptive_recirculations = "
+        f"{stats['average_adaptive_recirculations']:.2f}",
+    )
+
+
+def aggregate_recirculation_stats(
+    stats_records: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    adaptive_count = sum(
+        stats["adaptive_recirculated_tokens"]["count"] for stats in stats_records
+    )
+    adaptive_recirculation_total = sum(
+        stats["average_adaptive_recirculations"]
+        * stats["adaptive_recirculated_tokens"]["count"]
+        for stats in stats_records
+    )
+    return {
+        "recirculated_tokens": {
+            "count": sum(
+                stats["recirculated_tokens"]["count"] for stats in stats_records
+            ),
+            "total": sum(
+                stats["recirculated_tokens"]["total"] for stats in stats_records
+            ),
+        },
+        "same_top1": sum(stats["same_top1"] for stats in stats_records),
+        "rejected": sum(stats["rejected"] for stats in stats_records),
+        "rejected_by_gate": {
+            gate: sum(stats["rejected_by_gate"][gate] for stats in stats_records)
+            for gate in REJECTION_GATES
+        },
+        "adaptive_recirculated_tokens": {
+            "count": adaptive_count,
+            "total": sum(
+                stats["adaptive_recirculated_tokens"]["total"]
+                for stats in stats_records
+            ),
+        },
+        "adaptive_rejected": sum(
+            stats["adaptive_rejected"] for stats in stats_records
+        ),
+        "average_adaptive_recirculations": round(
+            adaptive_recirculation_total / adaptive_count if adaptive_count else 0.0,
+            2,
+        ),
+    }
+
+
 def parse_results(path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
     text = path.read_text(encoding="utf-8")
     try:
@@ -451,7 +512,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Conditional thresholds in --pair order. Provide one value for all "
             "pairs or one per pair; each pair must meet its own threshold to "
-            "inject (default: 0.67)."
+            "inject (default: None, disabled if not set)."
         ),
     )
     parser.add_argument(
@@ -510,7 +571,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0,
         metavar="INDEX",
         help=(
-            "Zero-based --pair index that must meet its threshold before any "
+            "When multiple (source, destination) pairs are present, this is the "
+            "zero-based --pair index that must meet its threshold before any "
             "conditional recirculation occurs (default: 0)."
         ),
     )
@@ -1703,6 +1765,19 @@ def main() -> None:
                         "run": label,
                         "similarities": similarities,
                     })
+        emit(f"\n=== Summary: {len(output_records)} queries ===")
+        for run_index, (_run_args, _use_recirculation, label) in enumerate(runs):
+            completed_runs = [
+                record["runs"][run_index]
+                for record in output_records
+                if len(record["runs"]) > run_index
+            ]
+            aggregate_stats = aggregate_recirculation_stats(
+                [run["stats"] for run in completed_runs]
+            )
+            emit(f"\n{label} ({sum(run['seconds'] for run in completed_runs):.2f} s)")
+            for line in format_run_stats(aggregate_stats):
+                emit(line)
     finally:
         if output_file is not None:
             output_file.close()

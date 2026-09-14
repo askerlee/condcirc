@@ -1116,16 +1116,16 @@ def main() -> None:
     gate_signature = "".join(
         signature
         for threshold, signature in (
-            (args.pre_margin_thres, f"-pre-m{args.pre_margin_thres}"),
+            (args.pre_margin_thres, f"-pre{args.pre_margin_thres}"),
+            (
+                args.post_margin_thres,
+                f"-post{args.post_margin_thres}"
+                if args.post_margin_thres is not None
+                else "",
+            ),
             (
                 args.cosine_reject,
                 f"-cos{args.cosine_reject}-k{args.cosine_top_k}",
-            ),
-            (
-                args.post_margin_thres,
-                f"-post-m{args.post_margin_thres}"
-                if args.post_margin_thres is not None
-                else "",
             ),
             (
                 args.ada_recirculate if args.ada_recirculate else None,

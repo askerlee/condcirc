@@ -13,8 +13,10 @@ is recirculated for every token (with three passes):
           that pass has the same top-1 token, or restore both P1 logits and KV cache
           when a rejection gate fails; otherwise commit the final pass.
 
-Fixed and adaptive source recirculation stop early and accept the current pass
-when its top-1/top-2 probability margin is narrower than the preceding pass.
+Fixed source recirculation stops early and accepts the current pass when its
+top-1/top-2 probability margin is narrower than the preceding pass. Adaptive
+source recirculation continues until its margin reaches the post-margin
+threshold or its retry budget is exhausted.
 
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
@@ -615,24 +617,22 @@ def recirculate(
                         post_margin_threshold is None
                         or pass_margin < post_margin_threshold
                     )
-                    and not margin_narrowed
                     and pass_index < max_passes - 1
                 )
                 if pass_margin is not None:
                     previous_pass_margin = pass_margin
-                if margin_narrowed or (
+                if (margin_narrowed and post_margin_threshold is None) or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
-                    if post_margin_threshold is not None and not margin_narrowed:
+                    if post_margin_threshold is not None:
                         assert pass_margin is not None
                         if pass_margin < post_margin_threshold:
                             final_pass_rejection_reasons.append("post-margin-min")
                     if (
-                        not margin_narrowed
-                        and cosine_reject is not None
+                        cosine_reject is not None
                         and final_pass_cosine_similarity < cosine_reject
                     ):
                         final_pass_rejection_reasons.append("cosine")

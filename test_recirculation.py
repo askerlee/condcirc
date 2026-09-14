@@ -412,16 +412,21 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(adaptive_rejected_flags, [False])
         self.assertEqual(adaptive_counts, [1])
 
-    def test_adaptive_recirculation_stops_when_margin_narrows(self) -> None:
+    def test_adaptive_recirculation_rejects_narrowing_margin_after_retry_limit(
+        self,
+    ) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
         pass_logits = (
             torch.tensor([[[0.1, 0.0, 0.0]]]),
             torch.tensor([[[0.05, 0.0, 0.0]]]),
+            torch.tensor([[[0.02, 0.0, 0.0]]]),
+            torch.tensor([[[0.01, 0.0, 0.0]]]),
         )
         call_count = 0
         margins: list[list[float]] = []
         adaptive_counts: list[int] = []
+        rejection_reasons: list[tuple[str, ...]] = []
 
         def step(token: torch.Tensor, current_cache: list[int]):
             nonlocal call_count
@@ -449,17 +454,19 @@ class RecirculationCacheTest(unittest.TestCase):
             adaptive_recirculation=3,
             pass_probability_margins=margins,
             adaptive_recirculation_counts=adaptive_counts,
+            rejection_reasons=rejection_reasons,
             capture_cached_token=lambda current_cache: current_cache[-1],
             restore_cached_token=lambda current_cache, cached: current_cache.__setitem__(
                 -1, cached
             ),
         )
 
-        torch.testing.assert_close(logits, pass_logits[1])
+        torch.testing.assert_close(logits, pass_logits[0])
         self.assertEqual(final_cache, [1])
-        self.assertEqual(call_count, 2)
-        self.assertEqual(len(margins[0]), 2)
-        self.assertEqual(adaptive_counts, [1])
+        self.assertEqual(call_count, 4)
+        self.assertEqual(len(margins[0]), 4)
+        self.assertEqual(adaptive_counts, [3])
+        self.assertEqual(rejection_reasons, [("post-margin-min",)])
 
     def test_adaptive_recirculation_skips_replay_when_p1_margin_is_sufficient(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

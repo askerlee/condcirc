@@ -71,6 +71,44 @@ EXAMPLE_QUERIES = (
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
 )
 
+REJECTION_GATES = ("post-margin-min", "post-margin-max", "cosine", "rank")
+
+
+def summarize_recirculation_stats(
+    recirculated_flags: Sequence[bool],
+    rejected_flags: Sequence[bool],
+    adaptive_recirculated_flags: Sequence[bool],
+    adaptive_rejected_flags: Sequence[bool],
+    adaptive_recirculation_counts: Sequence[int],
+    final_pass_same_top1_flags: Sequence[bool],
+    rejection_reasons: Sequence[Sequence[str]],
+) -> dict[str, Any]:
+    total_tokens = len(recirculated_flags)
+    adaptive_counts = [count for count in adaptive_recirculation_counts if count > 0]
+    average_adaptive_recirculations = (
+        sum(adaptive_counts) / len(adaptive_counts) if adaptive_counts else 0.0
+    )
+    return {
+        "recirculated_tokens": {
+            "count": sum(recirculated_flags),
+            "total": total_tokens,
+        },
+        "same_top1": sum(final_pass_same_top1_flags),
+        "rejected": sum(rejected_flags),
+        "rejected_by_gate": {
+            gate: sum(gate in reasons for reasons in rejection_reasons)
+            for gate in REJECTION_GATES
+        },
+        "adaptive_recirculated_tokens": {
+            "count": sum(adaptive_recirculated_flags),
+            "total": total_tokens,
+        },
+        "adaptive_rejected": sum(adaptive_rejected_flags),
+        "average_adaptive_recirculations": round(
+            average_adaptive_recirculations, 2
+        ),
+    }
+
 
 def parse_results(path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
     text = path.read_text(encoding="utf-8")
@@ -1108,7 +1146,7 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
-    ) -> tuple[Tensor, list[dict[str, Any]]]:
+    ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
         torch.manual_seed(run_args.seed)
         similarity_stats = (
             SimilarityStats() if run_args.debug_layer_sim else None
@@ -1148,6 +1186,61 @@ def main() -> None:
             if similarity_stats is None and adjacent_layer_stats is None
             else probe_step
         )
+
+        recirculated_flags: list[bool] = []
+        rejected_flags: list[bool] = []
+        adaptive_recirculated_flags: list[bool] = []
+        adaptive_rejected_flags: list[bool] = []
+        adaptive_recirculation_counts: list[int] = []
+        final_pass_same_top1_flags: list[bool] = []
+        rejection_reasons: list[tuple[str, ...]] = []
+        generated_recirculated_flags: list[bool] = []
+        generated_rejected_flags: list[bool] = []
+        generated_adaptive_recirculated_flags: list[bool] = []
+        generated_adaptive_rejected_flags: list[bool] = []
+        generated_adaptive_recirculation_counts: list[int] = []
+        generated_final_pass_same_top1_flags: list[bool] = []
+        generated_rejection_reasons: list[tuple[str, ...]] = []
+
+        def record_generated_token_stats() -> None:
+            generated_recirculated_flags.append(
+                recirculated_flags[-1] if recirculated_flags else False
+            )
+            generated_rejected_flags.append(
+                rejected_flags[-1] if rejected_flags else False
+            )
+            generated_adaptive_recirculated_flags.append(
+                adaptive_recirculated_flags[-1]
+                if adaptive_recirculated_flags
+                else False
+            )
+            generated_adaptive_rejected_flags.append(
+                adaptive_rejected_flags[-1] if adaptive_rejected_flags else False
+            )
+            generated_adaptive_recirculation_counts.append(
+                adaptive_recirculation_counts[-1]
+                if adaptive_recirculation_counts
+                else 0
+            )
+            generated_final_pass_same_top1_flags.append(
+                final_pass_same_top1_flags[-1]
+                if final_pass_same_top1_flags
+                else False
+            )
+            generated_rejection_reasons.append(
+                rejection_reasons[-1] if rejection_reasons else ()
+            )
+
+        def generated_stats() -> dict[str, Any]:
+            return summarize_recirculation_stats(
+                generated_recirculated_flags,
+                generated_rejected_flags,
+                generated_adaptive_recirculated_flags,
+                generated_adaptive_rejected_flags,
+                generated_adaptive_recirculation_counts,
+                generated_final_pass_same_top1_flags,
+                generated_rejection_reasons,
+            )
 
         def report_stats(
             recirculated_flags: list[bool] | None = None,
@@ -1238,6 +1331,13 @@ def main() -> None:
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
                     gating_pair_index=run_args.gating_pair_index,
+                    recirculated_flags=recirculated_flags,
+                    rejected_flags=rejected_flags,
+                    adaptive_recirculated_flags=adaptive_recirculated_flags,
+                    adaptive_rejected_flags=adaptive_rejected_flags,
+                    adaptive_recirculation_counts=adaptive_recirculation_counts,
+                    final_pass_same_top1_flags=final_pass_same_top1_flags,
+                    rejection_reasons=rejection_reasons,
                     capture_cached_token=capture_dynamic_cache_token,
                     restore_cached_token=restore_dynamic_cache_token,
                     capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1250,6 +1350,7 @@ def main() -> None:
             for _ in range(run_args.max_new_tokens):
                 next_token = sample_token(next_logits, run_args.temperature)
                 generated_ids = torch.cat((generated_ids, next_token), dim=1)
+                record_generated_token_stats()
                 if next_token.item() in eos_token_ids:
                     break
                 if use_recirculation:
@@ -1271,6 +1372,13 @@ def main() -> None:
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
+                        recirculated_flags=recirculated_flags,
+                        rejected_flags=rejected_flags,
+                        adaptive_recirculated_flags=adaptive_recirculated_flags,
+                        adaptive_rejected_flags=adaptive_rejected_flags,
+                        adaptive_recirculation_counts=adaptive_recirculation_counts,
+                        final_pass_same_top1_flags=final_pass_same_top1_flags,
+                        rejection_reasons=rejection_reasons,
                         capture_cached_token=capture_dynamic_cache_token,
                         restore_cached_token=restore_dynamic_cache_token,
                         capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1283,21 +1391,22 @@ def main() -> None:
                     )
                 next_logits = token_logits[:, -1, :]
 
-            report_stats()
-            return generated_ids, []
+            report_stats(
+                generated_recirculated_flags,
+                generated_rejected_flags,
+                generated_adaptive_recirculated_flags,
+                generated_adaptive_rejected_flags,
+                generated_adaptive_recirculation_counts,
+                generated_final_pass_same_top1_flags,
+                generated_rejection_reasons,
+            )
+            return generated_ids, [], generated_stats()
 
         similarities: list[dict[str, Any]] = []
         generated_ids = input_ids.clone()
         first_pass_logits: list[Tensor] = []
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
-        recirculated_flags: list[bool] = []
-        rejected_flags: list[bool] = []
-        adaptive_recirculated_flags: list[bool] = []
-        adaptive_rejected_flags: list[bool] = []
-        adaptive_recirculation_counts: list[int] = []
-        final_pass_same_top1_flags: list[bool] = []
-        rejection_reasons: list[tuple[str, ...]] = []
         final_pass_cosine_similarities: list[float | None] = []
         student_logits, student_cache = recirculate(
             input_ids,
@@ -1341,6 +1450,7 @@ def main() -> None:
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
+            record_generated_token_stats()
             comparison["teacher_src_dst_sim"] = round(teacher_src_dst_sim, 3)
             comparison["top1_top2_margin"] = [
                 round(margin, 3) for margin in pass_probability_margins[-1]
@@ -1348,15 +1458,19 @@ def main() -> None:
             comparison["top1_prob"] = round(
                 float(torch.softmax(teacher_next_logits.float(), dim=-1).max().item()), 3
             )
-            comparison["recirculated"] = recirculated_flags[-1]
-            comparison["rejected"] = rejected_flags[-1]
-            comparison["adaptive_recirculated"] = adaptive_recirculated_flags[-1]
-            comparison["adaptive_rejected"] = adaptive_rejected_flags[-1]
-            comparison["adaptive_recirculation_count"] = (
-                adaptive_recirculation_counts[-1]
+            comparison["recirculated"] = generated_recirculated_flags[-1]
+            comparison["rejected"] = generated_rejected_flags[-1]
+            comparison["adaptive_recirculated"] = (
+                generated_adaptive_recirculated_flags[-1]
             )
-            comparison["final_pass_same_top1"] = final_pass_same_top1_flags[-1]
-            comparison["rejection_reasons"] = rejection_reasons[-1]
+            comparison["adaptive_rejected"] = generated_adaptive_rejected_flags[-1]
+            comparison["adaptive_recirculation_count"] = (
+                generated_adaptive_recirculation_counts[-1]
+            )
+            comparison["final_pass_same_top1"] = (
+                generated_final_pass_same_top1_flags[-1]
+            )
+            comparison["rejection_reasons"] = generated_rejection_reasons[-1]
             comparison["final_pass_top_k_cosine_similarity"] = (
                 round(final_pass_cosine_similarities[-1], 6)
                 if final_pass_cosine_similarities[-1] is not None
@@ -1429,7 +1543,7 @@ def main() -> None:
             [comparison["rejection_reasons"] for comparison in similarities],
         )
 
-        return generated_ids, similarities
+        return generated_ids, similarities, generated_stats()
 
     def synchronize_devices() -> None:
         if torch.cuda.is_available():
@@ -1438,7 +1552,7 @@ def main() -> None:
 
     def timed_generate(
         use_recirculation: bool, run_args: argparse.Namespace
-    ) -> tuple[Tensor, list[dict[str, float | int | str]], float]:
+    ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
         )
@@ -1460,13 +1574,13 @@ def main() -> None:
             raise ValueError("--mode layerwise requires exactly one --pair.")
         synchronize_devices()
         start = time.perf_counter()
-        generated_ids, similarities = generate(
+        generated_ids, similarities, stats = generate(
             use_recirculation=use_recirculation,
             run_args=run_args,
             run_config=run_config,
         )
         synchronize_devices()
-        return generated_ids, similarities, time.perf_counter() - start
+        return generated_ids, similarities, stats, time.perf_counter() - start
 
     if args.ablations is False or args.ablations is None:
         baseline_options = (
@@ -1549,7 +1663,7 @@ def main() -> None:
             prompt_length = input_ids.shape[1]
 
             for run_index, (run_args, use_recirculation, label) in enumerate(runs):
-                run_ids, similarities, run_seconds = timed_generate(
+                run_ids, similarities, stats, run_seconds = timed_generate(
                     use_recirculation=use_recirculation, run_args=run_args
                 )
                 if run_index == 0:
@@ -1564,6 +1678,7 @@ def main() -> None:
                     "label": label,
                     "seconds": round(run_seconds, 2),
                     "output": output,
+                    "stats": stats,
                 }
                 if args.do_eval:
                     evaluation = evaluate_single_answer(

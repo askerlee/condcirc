@@ -368,6 +368,7 @@ def recirculate(
     condition_thresholds: Sequence[float] | None = None,
     pre_margin_threshold: float | None = None,
     post_margin_threshold: float | None = None,
+    post_margin_ratio_threshold: float | None = None,
     adaptive_recirculation: int = 0,
     recirculation_allowed: bool = True,
     cosine_reject: float | None = None,
@@ -401,6 +402,7 @@ def recirculate(
         condition_thresholds = None
         pre_margin_threshold = None
         post_margin_threshold = None
+        post_margin_ratio_threshold = None
         cosine_reject = None
     if cosine_top_k < 1:
         raise ValueError("cosine_top_k must be at least 1.")
@@ -432,6 +434,10 @@ def recirculate(
         if post_margin_threshold is not None:
             raise ValueError(
                 "Final-pass margin-gated recirculation requires --mode source."
+            )
+        if post_margin_ratio_threshold is not None:
+            raise ValueError(
+                "Final-pass margin-ratio-gated recirculation requires --mode source."
             )
         if cosine_reject is not None:
             raise ValueError("Final-pass trust rejection requires --mode source.")
@@ -611,26 +617,51 @@ def recirculate(
                     and previous_pass_margin is not None
                     and pass_margin < previous_pass_margin
                 )
+                post_margin_threshold_met = (
+                    post_margin_threshold is not None
+                    and pass_margin is not None
+                    and pass_margin >= post_margin_threshold
+                )
+                post_margin_ratio_met = (
+                    post_margin_ratio_threshold is not None
+                    and pass_margin is not None
+                    and first_margin is not None
+                    and pass_margin / max(first_margin, config.eps)
+                    >= post_margin_ratio_threshold
+                )
+                margin_gate_met = (
+                    post_margin_threshold_met or post_margin_ratio_met
+                )
+                has_margin_gate = (
+                    post_margin_threshold is not None
+                    or post_margin_ratio_threshold is not None
+                )
                 should_retry_low_margin = (
                     pass_index >= passes - 1
-                    and (
-                        post_margin_threshold is None
-                        or pass_margin < post_margin_threshold
-                    )
+                    and has_margin_gate
+                    and not margin_gate_met
                     and pass_index < max_passes - 1
                 )
                 if pass_margin is not None:
                     previous_pass_margin = pass_margin
-                if (margin_narrowed and post_margin_threshold is None) or (
+                if (margin_narrowed and not has_margin_gate) or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
-                    if post_margin_threshold is not None:
+                    if has_margin_gate and not margin_gate_met:
                         assert pass_margin is not None
-                        if pass_margin < post_margin_threshold:
+                        if (
+                            post_margin_threshold is not None
+                            and not post_margin_threshold_met
+                        ):
                             final_pass_rejection_reasons.append("post-margin-min")
+                        if (
+                            post_margin_ratio_threshold is not None
+                            and not post_margin_ratio_met
+                        ):
+                            final_pass_rejection_reasons.append("post-margin-ratio")
                     if (
                         cosine_reject is not None
                         and final_pass_cosine_similarity < cosine_reject

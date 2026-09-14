@@ -71,7 +71,13 @@ EXAMPLE_QUERIES = (
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
 )
 
-REJECTION_GATES = ("post-margin-min", "post-margin-max", "cosine", "rank")
+REJECTION_GATES = (
+    "post-margin-min",
+    "post-margin-ratio",
+    "post-margin-max",
+    "cosine",
+    "rank",
+)
 
 
 def summarize_recirculation_stats(
@@ -542,13 +548,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--post-margin-ratio-thres",
+        type=float,
+        default=None,
+        metavar="RATIO",
+        help=(
+            "Final-pass gate: accept recirculation when either this ratio or "
+            "--post-margin-thres is met. This is the top-1/top-2 margin "
+            "divided by P1's margin."
+        ),
+    )
+    parser.add_argument(
         "--ada-recirculate",
         type=int,
         default=0,
         metavar="X",
         help=(
-            "Run at most X additional passes; with --post-margin-thres, stop "
-            "early once the margin reaches MIN (default: 0.2)."
+            "Run at most X additional passes; with a post-margin gate, stop "
+            "early once either configured threshold is met."
         ),
     )
     parser.add_argument(
@@ -1000,6 +1017,15 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--post-margin-thres requires --passes of at least 2.")
         if args.mode != "source":
             raise ValueError("--post-margin-thres requires --mode source.")
+    if args.post_margin_ratio_thres is not None:
+        if args.post_margin_ratio_thres < 0:
+            raise ValueError("--post-margin-ratio-thres must be nonnegative.")
+        if args.passes < 2 and not args.ada_recirculate:
+            raise ValueError(
+                "--post-margin-ratio-thres requires --passes of at least 2."
+            )
+        if args.mode != "source":
+            raise ValueError("--post-margin-ratio-thres requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
 
@@ -1130,6 +1156,12 @@ def main() -> None:
             (
                 args.ada_recirculate if args.ada_recirculate else None,
                 f"-ada{args.ada_recirculate}",
+            ),
+            (
+                args.post_margin_ratio_thres,
+                f"-post-r{args.post_margin_ratio_thres}"
+                if args.post_margin_ratio_thres is not None
+                else "",
             ),
         )
         if threshold is not None
@@ -1351,6 +1383,10 @@ def main() -> None:
                         reason
                         for threshold, reason in (
                             (run_args.post_margin_thres, "post-margin-min"),
+                            (
+                                run_args.post_margin_ratio_thres,
+                                "post-margin-ratio",
+                            ),
                             (run_args.cosine_reject, "cosine"),
                         )
                         if threshold is not None
@@ -1420,6 +1456,7 @@ def main() -> None:
                     condition_thresholds=condition_thresholds,
                     pre_margin_threshold=run_args.pre_margin_thres,
                     post_margin_threshold=run_args.post_margin_thres,
+                    post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                     adaptive_recirculation=run_args.ada_recirculate,
                     recirculation_allowed=True,
                     cosine_reject=run_args.cosine_reject,
@@ -1462,6 +1499,7 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         pre_margin_threshold=run_args.pre_margin_thres,
                         post_margin_threshold=run_args.post_margin_thres,
+                        post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                         adaptive_recirculation=run_args.ada_recirculate,
                         recirculation_allowed=allow_generated_recirculation(
                             generated_ids.shape[1] - input_ids.shape[1]
@@ -1519,6 +1557,7 @@ def main() -> None:
             condition_thresholds=condition_thresholds,
             pre_margin_threshold=run_args.pre_margin_thres,
             post_margin_threshold=run_args.post_margin_thres,
+            post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
             adaptive_recirculation=run_args.ada_recirculate,
             recirculation_allowed=True,
             cosine_reject=run_args.cosine_reject,
@@ -1600,6 +1639,7 @@ def main() -> None:
                 condition_thresholds=condition_thresholds,
                 pre_margin_threshold=run_args.pre_margin_thres,
                 post_margin_threshold=run_args.post_margin_thres,
+                post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                 adaptive_recirculation=run_args.ada_recirculate,
                 recirculation_allowed=allow_generated_recirculation(token_index + 1),
                 cosine_reject=run_args.cosine_reject,
@@ -1689,6 +1729,7 @@ def main() -> None:
             "act_sim_thres",
             "pre_margin_thres",
             "post_margin_thres",
+            "post_margin_ratio_thres",
             "ada_recirculate",
             "cosine_reject",
             "cosine_top_k",

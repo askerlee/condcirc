@@ -310,6 +310,95 @@ class RecirculationCacheTest(unittest.TestCase):
             [("post-margin-min",), ()],
         )
 
+    def test_post_margin_ratio_rejects_and_restores_p1(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        pass_logits = (
+            torch.tensor([[[0.0, 1.0, 0.0]]]),
+            torch.tensor([[[0.0, 0.1, 0.0]]]),
+        )
+        call_count = 0
+        rejection_reasons: list[tuple[str, ...]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            nonlocal call_count
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(call_count + 1)
+            logits = pass_logits[call_count]
+            call_count += 1
+            return logits, current_cache
+
+        def rewind_one(current_cache: list[int]) -> list[int]:
+            current_cache.pop()
+            return current_cache
+
+        result, final_cache = recirculate(
+            torch.tensor([[1]]),
+            blocks=blocks,
+            cache=cache,
+            step=step,
+            rewind_one=rewind_one,
+            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            passes=2,
+            post_margin_ratio_threshold=0.5,
+            rejection_reasons=rejection_reasons,
+            capture_cached_token=lambda current_cache: current_cache[-1],
+            restore_cached_token=lambda current_cache, cached: current_cache.__setitem__(
+                -1, cached
+            ),
+        )
+
+        torch.testing.assert_close(result, pass_logits[0])
+        self.assertEqual(final_cache, [1])
+        self.assertEqual(rejection_reasons, [("post-margin-ratio",)])
+
+    def test_post_margin_gates_accept_when_ratio_passes(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        pass_logits = (
+            torch.tensor([[[0.0, 1.0, 0.0]]]),
+            torch.tensor([[[0.8, 0.0, 0.0]]]),
+        )
+        call_count = 0
+        rejection_reasons: list[tuple[str, ...]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            nonlocal call_count
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(call_count + 1)
+            logits = pass_logits[call_count]
+            call_count += 1
+            return logits, current_cache
+
+        def rewind_one(current_cache: list[int]) -> list[int]:
+            current_cache.pop()
+            return current_cache
+
+        result, final_cache = recirculate(
+            torch.tensor([[1]]),
+            blocks=blocks,
+            cache=cache,
+            step=step,
+            rewind_one=rewind_one,
+            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            passes=2,
+            post_margin_threshold=0.7,
+            post_margin_ratio_threshold=0.5,
+            rejection_reasons=rejection_reasons,
+            capture_cached_token=lambda current_cache: current_cache[-1],
+            restore_cached_token=lambda current_cache, cached: current_cache.__setitem__(
+                -1, cached
+            ),
+        )
+
+        torch.testing.assert_close(result, pass_logits[1])
+        self.assertEqual(final_cache, [2])
+        self.assertEqual(rejection_reasons, [()])
+
     def test_fixed_recirculation_stops_when_margin_narrows(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

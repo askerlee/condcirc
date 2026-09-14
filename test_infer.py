@@ -15,6 +15,11 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.no_recirculate_after_tokens, 12)
 
+    def test_parses_post_margin_ratio_threshold(self) -> None:
+        args = parse_args(["--post-margin-ratio-thres", "1.5", "prompt"])
+
+        self.assertEqual(args.post_margin_ratio_thres, 1.5)
+
     def test_formats_average_eval_model_rating(self) -> None:
         self.assertEqual(
             format_average_eval_rating([8.0, 7.5, 9.0]),
@@ -23,8 +28,8 @@ class RecirculationStatsTest(unittest.TestCase):
 
     def test_summarizes_result_json_stats(self) -> None:
         rejection_reasons = [
-            ("post-margin-min", "post-margin-max", "cosine", "rank"),
-            ("post-margin-min", "post-margin-max", "cosine", "rank"),
+            ("post-margin-min", "post-margin-ratio", "post-margin-max", "cosine", "rank"),
+            ("post-margin-min", "post-margin-ratio", "post-margin-max", "cosine", "rank"),
             *(("post-margin-max", "cosine"),) * 4,
             *((),) * 294,
         ]
@@ -47,6 +52,7 @@ class RecirculationStatsTest(unittest.TestCase):
                 "rejected": 9,
                 "rejected_by_gate": {
                     "post-margin-min": 2,
+                    "post-margin-ratio": 2,
                     "post-margin-max": 6,
                     "cosine": 6,
                     "rank": 2,
@@ -64,6 +70,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "rejected": 9,
             "rejected_by_gate": {
                 "post-margin-min": 2,
+                "post-margin-ratio": 2,
                 "post-margin-max": 6,
                 "cosine": 6,
                 "rank": 2,
@@ -78,6 +85,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "rejected": 4,
             "rejected_by_gate": {
                 "post-margin-min": 1,
+                "post-margin-ratio": 1,
                 "post-margin-max": 2,
                 "cosine": 3,
                 "rank": 0,
@@ -93,7 +101,8 @@ class RecirculationStatsTest(unittest.TestCase):
             lines,
             (
                 "recirculated_tokens = 12/500, same_top1 = 3, rejected = 13, "
-                "by gate: post-margin-min=3, post-margin-max=8, cosine=9, rank=2",
+                "by gate: post-margin-min=3, post-margin-ratio=3, "
+                "post-margin-max=8, cosine=9, rank=2",
                 "adaptive_recirculated_tokens = 5/500, rejected = 3, "
                 "average_adaptive_recirculations = 2.00",
             ),

@@ -11,18 +11,31 @@ from infer import (
 
 
 class RecirculationStatsTest(unittest.TestCase):
-    def test_parses_noise_weight(self) -> None:
+    def test_parses_noise_level_range(self) -> None:
         args = parse_args(
-            ["--noise", "0.25", "--noise-decay-per-pass", "0.75", "prompt"]
+            [
+                "--noise-level-range",
+                "0.1",
+                "0.25",
+                "--noise-decay-per-pass",
+                "0.75",
+                "prompt",
+            ]
         )
 
-        self.assertEqual(args.noise, 0.25)
+        self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
 
-    def test_rejects_noise_weight_outside_range(self) -> None:
-        args = parse_args(["--noise", "0.51", "prompt"])
+    def test_rejects_noise_level_range_outside_range(self) -> None:
+        args = parse_args(["--noise-level-range", "0.1", "0.51", "prompt"])
 
-        with self.assertRaisesRegex(ValueError, "between 0 and 0.5"):
+        with self.assertRaisesRegex(ValueError, "0 <= MIN <= MAX <= 0.5"):
+            validate_run_arguments(args)
+
+    def test_rejects_descending_noise_level_range(self) -> None:
+        args = parse_args(["--noise-level-range", "0.3", "0.2", "prompt"])
+
+        with self.assertRaisesRegex(ValueError, "0 <= MIN <= MAX <= 0.5"):
             validate_run_arguments(args)
 
     def test_rejects_noise_decay_outside_range(self) -> None:

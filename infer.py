@@ -503,30 +503,32 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Defaults to 1 - alpha.",
     )
     parser.add_argument(
-        "--noise",
+        "--noise-level-range",
         type=float,
-        default=0.0,
-        metavar="WEIGHT",
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("MIN", "MAX"),
         help=(
-            "Add Gaussian noise to source activations after matching its magnitude "
-            "to the source (0 to 0.5; default: 0)."
+            "Magnitude-matched Gaussian noise range. Each pass maps its "
+            "normalized preceding margin from MIN to MAX "
+            "(0 <= MIN <= MAX <= 0.5; default: 0 0)."
         ),
     )
     parser.add_argument(
         "--noise-decay-per-pass",
         type=float,
-        default=0.5,
+        default=0.8,
         metavar="COEFFICIENT",
         help=(
             "Multiply the noise weight by this coefficient after each "
-            "recirculation pass (0 to 1; default: 0.5)."
+            "recirculation pass (0 to 1; default: 0.8)."
         ),
     )
     parser.add_argument(
         "--passes",
         type=int,
         default=1,
-        help="Total model passes per token, including the initial pass (default: 2).",
+        help="Total model passes per token, including the initial pass (default: 1).",
     )
     parser.add_argument(
         "--cond-recirculate",
@@ -1020,12 +1022,22 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
-    if not 0.0 <= args.noise <= 0.5:
-        raise ValueError("--noise must be between 0 and 0.5.")
+    noise_min, noise_max = args.noise_level_range
+    if not 0.0 <= noise_min <= noise_max <= 0.5:
+        raise ValueError(
+            "--noise-level-range requires 0 <= MIN <= MAX <= 0.5."
+        )
     if not 0.0 <= args.noise_decay_per_pass <= 1.0:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
-    if args.noise > 0 and args.mode != "source":
-        raise ValueError("--noise requires --mode source.")
+    if noise_max > 0 and args.mode != "source":
+        raise ValueError("--noise-level-range requires --mode source.")
+    if noise_max > 0 and (
+        args.post_margin_thres is None
+        or args.post_margin_thres[0] == args.post_margin_thres[1]
+    ):
+        raise ValueError(
+            "--noise-level-range requires --post-margin-thres with MIN < MAX."
+        )
     if args.ada_recirculate < 0:
         raise ValueError("--ada-recirculate must be nonnegative.")
     if args.ada_recirculate:
@@ -1197,8 +1209,9 @@ def main() -> None:
                 else "",
             ),
             (
-                args.noise if args.noise > 0 else None,
-                f"-noise{args.noise}-ndecay{args.noise_decay_per_pass}",
+                args.noise_level_range if args.noise_level_range[1] > 0 else None,
+                f"-noise{args.noise_level_range[0]},{args.noise_level_range[1]}"
+                f"-ndecay{args.noise_decay_per_pass}",
             ),
         )
         if threshold is not None
@@ -1736,7 +1749,7 @@ def main() -> None:
             pairs=pairs,
             alpha=run_args.alpha,
             beta=run_args.beta,
-            noise=run_args.noise,
+            noise_level_range=tuple(run_args.noise_level_range),
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
         )
@@ -1764,7 +1777,7 @@ def main() -> None:
         baseline_options = (
             "model",
             "passes",
-            "noise",
+            "noise_level_range",
             "noise_decay_per_pass",
             "cond_recirculate",
             "act_sim_thres",

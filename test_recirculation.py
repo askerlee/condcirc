@@ -1,18 +1,34 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch import nn
 
-from recirculation import RecirculationConfig, _Hooks, recirculate
+from recirculation import (
+    RecirculationConfig,
+    _Hooks,
+    _adaptive_noise_level,
+    recirculate,
+)
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_adaptive_noise_level_normalizes_and_caps_margin(self) -> None:
+        levels = [
+            _adaptive_noise_level(margin, (0.1, 0.3), (0.1, 0.4))
+            for margin in (0.0, 0.2, 0.4)
+        ]
+
+        self.assertEqual(levels[0], 0.1)
+        self.assertAlmostEqual(levels[1], 0.25)
+        self.assertEqual(levels[2], 0.4)
+
     def test_noise_is_magnitude_matched_to_source(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=1.0, noise=0.25
+                pairs=((2, 0),), alpha=1.0, noise_level_range=(0.0, 0.25)
             ),
         )
         destination = torch.tensor([[[3.0, 4.0]]])
@@ -21,6 +37,7 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks.injection_sources[2] = source
         hooks.active_pairs = (True,)
         hooks.mode = "inject"
+        hooks.noise_level = 0.25
 
         torch.manual_seed(7)
         mixed = blocks[1](destination)
@@ -40,7 +57,7 @@ class RecirculationCacheTest(unittest.TestCase):
             RecirculationConfig(
                 pairs=((2, 0),),
                 alpha=1.0,
-                noise=0.4,
+                noise_level_range=(0.0, 0.4),
                 noise_decay_per_pass=0.5,
             ),
         )
@@ -50,6 +67,7 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks.injection_sources[2] = source
         hooks.active_pairs = (True,)
         hooks.mode = "inject"
+        hooks.noise_level = 0.4
         normalized_source = torch.tensor([[[5.0, 0.0]]])
 
         perturbation_norms = []
@@ -66,6 +84,59 @@ class RecirculationCacheTest(unittest.TestCase):
             torch.stack(perturbation_norms),
             torch.tensor([[[2.0]], [[1.0]], [[0.5]]]),
         )
+
+    def test_each_pass_uses_preceding_pass_margin_for_noise(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        pass_logits = (
+            torch.tensor([[[2.0, 1.0, 0.0]]]),
+            torch.tensor([[[1.5, 1.0, 0.0]]]),
+            torch.tensor([[[1.0, 0.9, 0.0]]]),
+        )
+        call_count = 0
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            nonlocal call_count
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(call_count + 1)
+            logits = pass_logits[call_count]
+            call_count += 1
+            return logits, current_cache
+
+        with patch(
+            "recirculation._adaptive_noise_level",
+            wraps=_adaptive_noise_level,
+        ) as adaptive_noise_level:
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=cache,
+                step=step,
+                rewind_one=lambda current_cache: current_cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),),
+                    alpha=0.5,
+                    noise_level_range=(0.0, 0.4),
+                ),
+                passes=3,
+                post_margin_threshold=(0.0, 1.0),
+                capture_cached_token=lambda current_cache: current_cache[-1],
+                restore_cached_token=lambda current_cache, cached_token: None,
+            )
+
+        used_margins = [call.args[0] for call in adaptive_noise_level.call_args_list]
+        expected_margins = [
+            float(
+                (
+                    torch.softmax(logits, dim=-1).topk(2, dim=-1).values[..., 0]
+                    - torch.softmax(logits, dim=-1).topk(2, dim=-1).values[..., 1]
+                ).item()
+            )
+            for logits in pass_logits[:2]
+        ]
+        self.assertEqual(used_margins, expected_margins)
 
     def test_finalizes_cache_after_each_token(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

@@ -7,8 +7,9 @@ is recirculated for every token (with three passes):
     1. Run a normal cached pass; return its logits and save residuals h_d, h_s.
   2. Rewind the KV cache by one position.
   3. Run the token again, replacing the output of destination block d with
-    beta * h_d + alpha * (h_s' + noise * n), where h_s' is norm-matched to
-    h_d and Gaussian n is norm-matched to h_s'.
+      beta * h_d + alpha * (h_s' + noise * n), where h_s' is norm-matched to
+      h_d and Gaussian n is norm-matched to h_s'. Noise is scaled by the
+      preceding pass margin normalized to the configured post-margin band.
     4. Capture the new residuals, rewind, and repeat the recirculation once more.
       5. Evaluate the rejection gates on the final pass. Keep P1's KV cache when
           that pass has the same top-1 token, or restore both P1 logits and KV cache
@@ -47,7 +48,7 @@ class RecirculationConfig:
     pairs: tuple[tuple[int, int], ...]
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
-    noise: float = 0.0
+    noise_level_range: tuple[float, float] = (0.0, 0.0)
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
@@ -107,6 +108,20 @@ def _top1_top2_probability_margin(logits: Tensor) -> float:
     return float((top_two[..., 0] - top_two[..., 1]).item())
 
 
+def _adaptive_noise_level(
+    margin: float,
+    post_margin_threshold: tuple[float, float],
+    noise_level_range: tuple[float, float],
+) -> float:
+    post_margin_min, post_margin_max = post_margin_threshold
+    noise_min, noise_max = noise_level_range
+    normalized_margin = min(
+        1.0,
+        max(0.0, (margin - post_margin_min) / (post_margin_max - post_margin_min)),
+    )
+    return noise_min + normalized_margin * (noise_max - noise_min)
+
+
 def _top1_tokens_match(p1_logits: Tensor, p2_logits: Tensor) -> bool:
     p1_top_token = p1_logits[:, -1, :].argmax(dim=-1)
     p2_top_token = p2_logits[:, -1, :].argmax(dim=-1)
@@ -158,13 +173,17 @@ class _Hooks:
             raise ValueError(
                 "Expected 0 <= destination < source < number of blocks for every pair."
             )
-        if not 0.0 <= cfg.noise <= 0.5:
-            raise ValueError("noise must be between 0 and 0.5.")
+        noise_min, noise_max = cfg.noise_level_range
+        if not 0.0 <= noise_min <= noise_max <= 0.5:
+            raise ValueError(
+                "noise_level_range requires 0 <= MIN <= MAX <= 0.5."
+            )
         if not 0.0 <= cfg.noise_decay_per_pass <= 1.0:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")
         self.cfg = cfg
         self.mode = "off"
         self.pass_index = 1
+        self.noise_level = 0.0
         self.destinations = {destination for _source, destination in cfg.pairs}
         self.sources = {source for source, _destination in cfg.pairs}
         self.residuals: dict[int, Tensor] = {}
@@ -246,14 +265,14 @@ class _Hooks:
             ) / (
                 torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
-            if self.cfg.noise > 0:
+            if self.noise_level > 0:
                 gaussian_noise = torch.randn_like(source)
                 gaussian_noise *= torch.linalg.vector_norm(
                     source, dim=-1, keepdim=True
                 ) / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
                 ).clamp_min(self.cfg.eps)
-                noise_weight = self.cfg.noise * (
+                noise_weight = self.noise_level * (
                     self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
                 )
                 source = source + noise_weight * gaussian_noise
@@ -433,6 +452,13 @@ def recirculate(
             raise ValueError("post_margin_threshold values must be nonnegative.")
         if post_margin_min > post_margin_max:
             raise ValueError("post_margin_threshold requires MIN <= MAX.")
+    if config.noise_level_range[1] > 0 and (
+        post_margin_threshold is None
+        or post_margin_threshold[0] == post_margin_threshold[1]
+    ):
+        raise ValueError(
+            "noise_level_range requires post_margin_threshold with MIN < MAX."
+        )
     if (
         post_margin_ratio_threshold is not None
         and post_margin_threshold is None
@@ -635,6 +661,17 @@ def recirculate(
                     source: hooks.residuals[source] for source in hooks.sources
                 }
                 hooks.pass_index = pass_index
+                hooks.noise_level = (
+                    _adaptive_noise_level(
+                        previous_pass_margin,
+                        post_margin_threshold,
+                        config.noise_level_range,
+                    )
+                    if config.noise_level_range[1] > 0
+                    and previous_pass_margin is not None
+                    and post_margin_threshold is not None
+                    else 0.0
+                )
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"

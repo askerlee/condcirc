@@ -12,14 +12,23 @@ from infer import (
 
 class RecirculationStatsTest(unittest.TestCase):
     def test_parses_noise_weight(self) -> None:
-        args = parse_args(["--noise", "0.25", "prompt"])
+        args = parse_args(
+            ["--noise", "0.25", "--noise-decay-per-pass", "0.75", "prompt"]
+        )
 
         self.assertEqual(args.noise, 0.25)
+        self.assertEqual(args.noise_decay_per_pass, 0.75)
 
     def test_rejects_noise_weight_outside_range(self) -> None:
         args = parse_args(["--noise", "0.51", "prompt"])
 
         with self.assertRaisesRegex(ValueError, "between 0 and 0.5"):
+            validate_run_arguments(args)
+
+    def test_rejects_noise_decay_outside_range(self) -> None:
+        args = parse_args(["--noise-decay-per-pass", "1.1", "prompt"])
+
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
             validate_run_arguments(args)
 
     def test_parses_no_recirculation_token_limit(self) -> None:

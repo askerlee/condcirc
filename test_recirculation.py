@@ -33,6 +33,40 @@ class RecirculationCacheTest(unittest.TestCase):
             0.25 * torch.linalg.vector_norm(normalized_source, dim=-1),
         )
 
+    def test_noise_weight_decays_exponentially_per_pass(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),),
+                alpha=1.0,
+                noise=0.4,
+                noise_decay_per_pass=0.5,
+            ),
+        )
+        destination = torch.tensor([[[3.0, 4.0]]])
+        source = torch.tensor([[[1.0, 0.0]]])
+        hooks.residuals[0] = destination
+        hooks.injection_sources[2] = source
+        hooks.active_pairs = (True,)
+        hooks.mode = "inject"
+        normalized_source = torch.tensor([[[5.0, 0.0]]])
+
+        perturbation_norms = []
+        for pass_index in (1, 2, 3):
+            hooks.pass_index = pass_index
+            torch.manual_seed(7)
+            mixed = blocks[1](destination)
+            perturbation_norms.append(
+                torch.linalg.vector_norm(mixed - normalized_source, dim=-1)
+            )
+        hooks.close()
+
+        torch.testing.assert_close(
+            torch.stack(perturbation_norms),
+            torch.tensor([[[2.0]], [[1.0]], [[0.5]]]),
+        )
+
     def test_finalizes_cache_after_each_token(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

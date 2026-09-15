@@ -513,6 +513,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--noise-decay-per-pass",
+        type=float,
+        default=0.5,
+        metavar="COEFFICIENT",
+        help=(
+            "Multiply the noise weight by this coefficient after each "
+            "recirculation pass (0 to 1; default: 0.5)."
+        ),
+    )
+    parser.add_argument(
         "--passes",
         type=int,
         default=1,
@@ -1012,6 +1022,8 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if not 0.0 <= args.noise <= 0.5:
         raise ValueError("--noise must be between 0 and 0.5.")
+    if not 0.0 <= args.noise_decay_per_pass <= 1.0:
+        raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.noise > 0 and args.mode != "source":
         raise ValueError("--noise requires --mode source.")
     if args.ada_recirculate < 0:
@@ -1184,7 +1196,10 @@ def main() -> None:
                 if args.post_margin_ratio_thres is not None
                 else "",
             ),
-            (args.noise if args.noise > 0 else None, f"-noise{args.noise}"),
+            (
+                args.noise if args.noise > 0 else None,
+                f"-noise{args.noise}-ndecay{args.noise_decay_per_pass}",
+            ),
         )
         if threshold is not None
     )
@@ -1722,6 +1737,7 @@ def main() -> None:
             alpha=run_args.alpha,
             beta=run_args.beta,
             noise=run_args.noise,
+            noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
         )
         if not run_config.pairs or any(
@@ -1749,6 +1765,7 @@ def main() -> None:
             "model",
             "passes",
             "noise",
+            "noise_decay_per_pass",
             "cond_recirculate",
             "act_sim_thres",
             "pre_margin_thres",

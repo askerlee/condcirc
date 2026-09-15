@@ -48,6 +48,7 @@ class RecirculationConfig:
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise: float = 0.0
+    noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
 
@@ -159,8 +160,11 @@ class _Hooks:
             )
         if not 0.0 <= cfg.noise <= 0.5:
             raise ValueError("noise must be between 0 and 0.5.")
+        if not 0.0 <= cfg.noise_decay_per_pass <= 1.0:
+            raise ValueError("noise_decay_per_pass must be between 0 and 1.")
         self.cfg = cfg
         self.mode = "off"
+        self.pass_index = 1
         self.destinations = {destination for _source, destination in cfg.pairs}
         self.sources = {source for source, _destination in cfg.pairs}
         self.residuals: dict[int, Tensor] = {}
@@ -249,7 +253,10 @@ class _Hooks:
                 ) / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
                 ).clamp_min(self.cfg.eps)
-                source = source + self.cfg.noise * gaussian_noise
+                noise_weight = self.cfg.noise * (
+                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
+                )
+                source = source + noise_weight * gaussian_noise
 
             alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
@@ -627,6 +634,7 @@ def recirculate(
                 hooks.injection_sources = {
                     source: hooks.residuals[source] for source in hooks.sources
                 }
+                hooks.pass_index = pass_index
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"

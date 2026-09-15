@@ -7,7 +7,8 @@ is recirculated for every token (with three passes):
     1. Run a normal cached pass; return its logits and save residuals h_d, h_s.
   2. Rewind the KV cache by one position.
   3. Run the token again, replacing the output of destination block d with
-     beta * h_d + alpha * (||h_d|| / ||h_s||) * h_s.
+    beta * h_d + alpha * (h_s' + noise * n), where h_s' is norm-matched to
+    h_d and Gaussian n is norm-matched to h_s'.
     4. Capture the new residuals, rewind, and repeat the recirculation once more.
       5. Evaluate the rejection gates on the final pass. Keep P1's KV cache when
           that pass has the same top-1 token, or restore both P1 logits and KV cache
@@ -46,6 +47,7 @@ class RecirculationConfig:
     pairs: tuple[tuple[int, int], ...]
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
+    noise: float = 0.0
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
 
@@ -155,6 +157,8 @@ class _Hooks:
             raise ValueError(
                 "Expected 0 <= destination < source < number of blocks for every pair."
             )
+        if not 0.0 <= cfg.noise <= 0.5:
+            raise ValueError("noise must be between 0 and 0.5.")
         self.cfg = cfg
         self.mode = "off"
         self.destinations = {destination for _source, destination in cfg.pairs}
@@ -233,9 +237,19 @@ class _Hooks:
             input_device = _residual(inputs).device
             destination = destination.to(device=input_device, dtype=torch.float32)
             source = source.to(device=input_device, dtype=torch.float32)
-            source *= torch.linalg.vector_norm(destination, dim=-1, keepdim=True) / (
+            source = source * torch.linalg.vector_norm(
+                destination, dim=-1, keepdim=True
+            ) / (
                 torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
+            if self.cfg.noise > 0:
+                gaussian_noise = torch.randn_like(source)
+                gaussian_noise *= torch.linalg.vector_norm(
+                    source, dim=-1, keepdim=True
+                ) / torch.linalg.vector_norm(
+                    gaussian_noise, dim=-1, keepdim=True
+                ).clamp_min(self.cfg.eps)
+                source = source + self.cfg.noise * gaussian_noise
 
             alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta

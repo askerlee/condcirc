@@ -503,6 +503,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Defaults to 1 - alpha.",
     )
     parser.add_argument(
+        "--noise",
+        type=float,
+        default=0.0,
+        metavar="WEIGHT",
+        help=(
+            "Add Gaussian noise to source activations after matching its magnitude "
+            "to the source (0 to 0.5; default: 0)."
+        ),
+    )
+    parser.add_argument(
         "--passes",
         type=int,
         default=1,
@@ -1000,6 +1010,10 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
+    if not 0.0 <= args.noise <= 0.5:
+        raise ValueError("--noise must be between 0 and 0.5.")
+    if args.noise > 0 and args.mode != "source":
+        raise ValueError("--noise requires --mode source.")
     if args.ada_recirculate < 0:
         raise ValueError("--ada-recirculate must be nonnegative.")
     if args.ada_recirculate:
@@ -1170,6 +1184,7 @@ def main() -> None:
                 if args.post_margin_ratio_thres is not None
                 else "",
             ),
+            (args.noise if args.noise > 0 else None, f"-noise{args.noise}"),
         )
         if threshold is not None
     )
@@ -1706,6 +1721,7 @@ def main() -> None:
             pairs=pairs,
             alpha=run_args.alpha,
             beta=run_args.beta,
+            noise=run_args.noise,
             mode=run_args.mode,
         )
         if not run_config.pairs or any(
@@ -1732,6 +1748,7 @@ def main() -> None:
         baseline_options = (
             "model",
             "passes",
+            "noise",
             "cond_recirculate",
             "act_sim_thres",
             "pre_margin_thres",

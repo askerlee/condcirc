@@ -3,10 +3,36 @@ import unittest
 import torch
 from torch import nn
 
-from recirculation import RecirculationConfig, recirculate
+from recirculation import RecirculationConfig, _Hooks, recirculate
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_noise_is_magnitude_matched_to_source(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=1.0, noise=0.25
+            ),
+        )
+        destination = torch.tensor([[[3.0, 4.0]]])
+        source = torch.tensor([[[1.0, 0.0]]])
+        hooks.residuals[0] = destination
+        hooks.injection_sources[2] = source
+        hooks.active_pairs = (True,)
+        hooks.mode = "inject"
+
+        torch.manual_seed(7)
+        mixed = blocks[1](destination)
+        hooks.close()
+
+        normalized_source = torch.tensor([[[5.0, 0.0]]])
+        perturbation = mixed - normalized_source
+        torch.testing.assert_close(
+            torch.linalg.vector_norm(perturbation, dim=-1),
+            0.25 * torch.linalg.vector_norm(normalized_source, dim=-1),
+        )
+
     def test_finalizes_cache_after_each_token(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

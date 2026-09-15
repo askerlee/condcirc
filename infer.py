@@ -1286,6 +1286,15 @@ def main() -> None:
     if isinstance(eos_token_ids, int):
         eos_token_ids = [eos_token_ids]
     eos_token_ids = set(eos_token_ids or [])
+    output_embeddings = model.get_output_embeddings()
+    if output_embeddings is None:
+        raise ValueError("The model does not expose output embeddings for debug decoding.")
+
+    def decoded_latent_margin(latent: Tensor) -> float:
+        logits = output_embeddings(latent.to(output_embeddings.weight))
+        probabilities = torch.softmax(logits[:, -1, :].float(), dim=-1)
+        top_two = torch.topk(probabilities, k=2, dim=-1).values
+        return float((top_two[..., 0] - top_two[..., 1]).item())
 
     def distribution_similarity(
         teacher_logits: Tensor, student_logits: Tensor
@@ -1608,6 +1617,7 @@ def main() -> None:
         pass_probability_margins: list[list[float]] = []
         final_pass_cosine_similarities: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
+        injected_source_latents: list[list[Tensor]] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1640,6 +1650,7 @@ def main() -> None:
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
             injected_noise_levels=injected_noise_levels,
+            injected_source_latents=injected_source_latents,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
             capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1682,6 +1693,10 @@ def main() -> None:
             comparison["cosine_top_k"] = run_args.cosine_top_k
             comparison["injected_noise_levels"] = [
                 round(level, 6) for level in injected_noise_levels[-1]
+            ]
+            comparison["noise_injected_source_top1_top2_margin"] = [
+                round(decoded_latent_margin(latent), 3)
+                for latent in injected_source_latents[-1]
             ]
             next_token = sample_token(student_next_logits, run_args.temperature)
             comparison.update(
@@ -1726,6 +1741,7 @@ def main() -> None:
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
                 injected_noise_levels=injected_noise_levels,
+                injected_source_latents=injected_source_latents,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
                 capture_rewind_state=capture_dynamic_cache_rewind_state,

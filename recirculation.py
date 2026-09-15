@@ -161,6 +161,7 @@ class _Hooks:
         blocks: Sequence[nn.Module],
         cfg: RecirculationConfig,
         adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
+        injected_source_latents: list[Tensor] | None = None,
     ) -> None:
         if not cfg.pairs:
             raise ValueError("At least one source/destination pair is required.")
@@ -190,6 +191,7 @@ class _Hooks:
         self.injection_sources: dict[int, Tensor] = {}
         self.active_pairs = tuple(True for _pair in cfg.pairs)
         self.adjacent_layer_stats = adjacent_layer_stats
+        self.injected_source_latents = injected_source_latents
         self.layer_residuals: dict[int, Tensor] = {}
         watched_layers = self.destinations | self.sources
         handles = [
@@ -266,9 +268,6 @@ class _Hooks:
                 torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
             if self.noise_level > 0:
-                source_norm = torch.linalg.vector_norm(
-                    source, dim=-1, keepdim=True
-                )
                 gaussian_noise = torch.randn_like(source)
                 gaussian_noise *= torch.linalg.vector_norm(
                     source, dim=-1, keepdim=True
@@ -279,9 +278,8 @@ class _Hooks:
                     self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
                 )
                 source = source + noise_weight * gaussian_noise
-                source = source * source_norm / torch.linalg.vector_norm(
-                    source, dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
+                if self.injected_source_latents is not None:
+                    self.injected_source_latents.append(source.detach().clone())
 
             alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
@@ -434,6 +432,7 @@ def recirculate(
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
+    injected_source_latents: list[list[Tensor]] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -552,6 +551,7 @@ def recirculate(
         blocks,
         config,
         adjacent_layer_stats=adjacent_layer_stats,
+        injected_source_latents=[] if injected_source_latents is not None else None,
     )
     if condition_thresholds is not None and len(condition_thresholds) not in (
         1,
@@ -657,6 +657,8 @@ def recirculate(
             adaptive_recirculation_count = 0
             previous_pass_margin = first_margin
             token_injected_noise_levels: list[float] = []
+            if hooks.injected_source_latents is not None:
+                hooks.injected_source_latents.clear()
             for pass_index in range(1, max_passes if should_recirculate else 1):
                 if pass_index >= passes:
                     adaptive_recirculation_count += 1
@@ -833,6 +835,9 @@ def recirculate(
                 )
             if injected_noise_levels is not None:
                 injected_noise_levels.append(token_injected_noise_levels)
+            if injected_source_latents is not None:
+                assert hooks.injected_source_latents is not None
+                injected_source_latents.append(hooks.injected_source_latents.copy())
             if finalize_token_cache is not None:
                 cache = finalize_token_cache(cache)
             logits.append(final_logits)

@@ -2,3 +2,4 @@
 results*.txt
 ratings.md
 *.json
+*.log

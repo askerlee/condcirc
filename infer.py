@@ -472,9 +472,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         nargs=2,
         metavar=("SOURCE", "DESTINATION"),
+        default=[(-5, 5)],
         help=(
             "Source/destination pair to recirculate. Repeat for multiple pairs "
-            "(default: -4 4)."
+            "(default: -5 5)."
         ),
     )
     parser.add_argument(
@@ -616,7 +617,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "adjacent decoder blocks and print summary stats after each query."
         ),
     )
-    parser.add_argument("--max-new-tokens", type=int, default=300)
+    parser.add_argument("--max-new-tokens", type=int, default=1000)
     parser.add_argument(
         "--no-recirculate-after-N-tokens",
         dest="no_recirculate_after_tokens",
@@ -798,7 +799,7 @@ def resolve_source(source: int, num_blocks: int) -> int:
 def resolve_recirculation_pairs(
     args: argparse.Namespace, num_blocks: int, global_attention_layers: Sequence[int] | None
 ) -> tuple[tuple[int, int], ...]:
-    requested_pairs = args.pairs or [(-4, 4)]
+    requested_pairs = args.pairs
     pairs = tuple(
         (resolve_source(source, num_blocks), resolve_source(destination, num_blocks))
         for source, destination in requested_pairs
@@ -1151,7 +1152,7 @@ def main() -> None:
             (args.pre_margin_thres, f"-pre{args.pre_margin_thres}"),
             (
                 args.post_margin_thres,
-                f"-post{args.post_margin_thres[0]}-{args.post_margin_thres[1]}"
+                f"-post{args.post_margin_thres[0]},{args.post_margin_thres[1]}"
                 if args.post_margin_thres is not None
                 else "",
             ),

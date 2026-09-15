@@ -7,6 +7,7 @@ import importlib.metadata
 import inspect
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -15,6 +16,9 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 
 def _cache_packages_distributions() -> None:
@@ -1007,6 +1011,16 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
     return torch.multinomial(probabilities, num_samples=1)
 
 
+def set_random_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cuda.matmul.allow_tf32 = False
+
+
 def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> str:
     values = {
         option: (
@@ -1109,7 +1123,7 @@ def main() -> None:
         print(args.evaluation_output.read_text(encoding="utf-8"), end="")
         return
 
-    torch.manual_seed(args.seed)
+    set_random_seed(args.seed)
     device = choose_device(args.device)
     use_device_map = args.device_map != "none"
     if use_device_map and not torch.cuda.is_available():
@@ -1318,7 +1332,7 @@ def main() -> None:
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
-        torch.manual_seed(run_args.seed)
+        set_random_seed(run_args.seed)
         similarity_stats = (
             SimilarityStats() if run_args.debug_layer_sim else None
         )
@@ -1876,6 +1890,7 @@ def main() -> None:
                 emit(output)
                 run_record = {
                     "label": label,
+                    "seed": run_args.seed,
                     "seconds": round(run_seconds, 2),
                     "output": output,
                     "stats": stats,
@@ -1901,6 +1916,7 @@ def main() -> None:
                     similarity_records.append({
                         "prompt": prompt,
                         "run": label,
+                        "seed": run_args.seed,
                         "similarities": similarities,
                     })
         emit(f"\n=== Summary: {len(output_records)} queries ===")

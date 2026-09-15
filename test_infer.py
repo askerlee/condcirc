@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from infer import (
     aggregate_recirculation_stats,
@@ -6,11 +7,25 @@ from infer import (
     format_run_stats,
     parse_args,
     summarize_recirculation_stats,
+    set_random_seed,
     validate_run_arguments,
 )
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_sets_python_and_torch_random_seeds(self) -> None:
+        with (
+            patch("infer.random.seed") as python_seed,
+            patch("infer.torch.manual_seed") as torch_seed,
+            patch("infer.torch.use_deterministic_algorithms") as deterministic,
+            patch("infer.torch.cuda.is_available", return_value=False),
+        ):
+            set_random_seed(42)
+
+        python_seed.assert_called_once_with(42)
+        torch_seed.assert_called_once_with(42)
+        deterministic.assert_called_once_with(True)
+
     def test_parses_noise_level_range(self) -> None:
         args = parse_args(
             [

@@ -266,6 +266,9 @@ class _Hooks:
                 torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
             )
             if self.noise_level > 0:
+                source_norm = torch.linalg.vector_norm(
+                    source, dim=-1, keepdim=True
+                )
                 gaussian_noise = torch.randn_like(source)
                 gaussian_noise *= torch.linalg.vector_norm(
                     source, dim=-1, keepdim=True
@@ -276,6 +279,9 @@ class _Hooks:
                     self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
                 )
                 source = source + noise_weight * gaussian_noise
+                source = source * source_norm / torch.linalg.vector_norm(
+                    source, dim=-1, keepdim=True
+                ).clamp_min(self.cfg.eps)
 
             alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
@@ -427,6 +433,7 @@ def recirculate(
     final_pass_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
+    injected_noise_levels: list[list[float]] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -649,6 +656,7 @@ def recirculate(
             max_passes = passes + adaptive_recirculation
             adaptive_recirculation_count = 0
             previous_pass_margin = first_margin
+            token_injected_noise_levels: list[float] = []
             for pass_index in range(1, max_passes if should_recirculate else 1):
                 if pass_index >= passes:
                     adaptive_recirculation_count += 1
@@ -671,6 +679,11 @@ def recirculate(
                     and previous_pass_margin is not None
                     and post_margin_threshold is not None
                     else 0.0
+                )
+                token_injected_noise_levels.append(
+                    hooks.noise_level * (
+                        config.noise_decay_per_pass ** (pass_index - 1)
+                    )
                 )
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
@@ -818,6 +831,8 @@ def recirculate(
                 final_pass_cosine_similarities.append(
                     final_pass_cosine_similarity
                 )
+            if injected_noise_levels is not None:
+                injected_noise_levels.append(token_injected_noise_levels)
             if finalize_token_cache is not None:
                 cache = finalize_token_cache(cache)
             logits.append(final_logits)

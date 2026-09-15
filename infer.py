@@ -1593,6 +1593,7 @@ def main() -> None:
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
         final_pass_cosine_similarities: list[float | None] = []
+        injected_noise_levels: list[list[float]] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1624,6 +1625,7 @@ def main() -> None:
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
+            injected_noise_levels=injected_noise_levels,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
             capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1664,6 +1666,9 @@ def main() -> None:
                 else None
             )
             comparison["cosine_top_k"] = run_args.cosine_top_k
+            comparison["injected_noise_levels"] = [
+                round(level, 6) for level in injected_noise_levels[-1]
+            ]
             next_token = sample_token(student_next_logits, run_args.temperature)
             comparison.update(
                 token_index=token_index,
@@ -1706,6 +1711,7 @@ def main() -> None:
                 final_pass_same_top1_flags=final_pass_same_top1_flags,
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
+                injected_noise_levels=injected_noise_levels,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,
                 capture_rewind_state=capture_dynamic_cache_rewind_state,

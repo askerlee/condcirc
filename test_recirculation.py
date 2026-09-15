@@ -44,13 +44,12 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks.close()
 
         normalized_source = torch.tensor([[[5.0, 0.0]]])
-        perturbation = mixed - normalized_source
         torch.testing.assert_close(
-            torch.linalg.vector_norm(perturbation, dim=-1),
-            0.25 * torch.linalg.vector_norm(normalized_source, dim=-1),
+            torch.linalg.vector_norm(mixed, dim=-1),
+            torch.linalg.vector_norm(normalized_source, dim=-1),
         )
 
-    def test_noise_weight_decays_exponentially_per_pass(self) -> None:
+    def test_noise_perturbed_latent_preserves_magnitude_per_pass(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -70,24 +69,23 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks.noise_level = 0.4
         normalized_source = torch.tensor([[[5.0, 0.0]]])
 
-        perturbation_norms = []
+        latent_norms = []
         for pass_index in (1, 2, 3):
             hooks.pass_index = pass_index
             torch.manual_seed(7)
             mixed = blocks[1](destination)
-            perturbation_norms.append(
-                torch.linalg.vector_norm(mixed - normalized_source, dim=-1)
-            )
+            latent_norms.append(torch.linalg.vector_norm(mixed, dim=-1))
         hooks.close()
 
         torch.testing.assert_close(
-            torch.stack(perturbation_norms),
-            torch.tensor([[[2.0]], [[1.0]], [[0.5]]]),
+            torch.stack(latent_norms),
+            torch.tensor([[[5.0]], [[5.0]], [[5.0]]]),
         )
 
     def test_each_pass_uses_preceding_pass_margin_for_noise(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
+        injected_noise_levels: list[list[float]] = []
         pass_logits = (
             torch.tensor([[[2.0, 1.0, 0.0]]]),
             torch.tensor([[[1.5, 1.0, 0.0]]]),
@@ -122,6 +120,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 ),
                 passes=3,
                 post_margin_threshold=(0.0, 1.0),
+                injected_noise_levels=injected_noise_levels,
                 capture_cached_token=lambda current_cache: current_cache[-1],
                 restore_cached_token=lambda current_cache, cached_token: None,
             )
@@ -137,6 +136,9 @@ class RecirculationCacheTest(unittest.TestCase):
             for logits in pass_logits[:2]
         ]
         self.assertEqual(used_margins, expected_margins)
+        self.assertEqual(len(injected_noise_levels), 1)
+        self.assertAlmostEqual(injected_noise_levels[0][0], 0.4 * expected_margins[0])
+        self.assertAlmostEqual(injected_noise_levels[0][1], 0.2 * expected_margins[1])
 
     def test_finalizes_cache_after_each_token(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

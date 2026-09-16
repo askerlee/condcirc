@@ -49,6 +49,7 @@ class RecirculationConfig:
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
+    narrowing_grad_level: float = 0.0
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
@@ -122,6 +123,44 @@ def _adaptive_noise_level(
     return noise_min + normalized_margin * (noise_max - noise_min)
 
 
+def _narrow_top1_top2_logit_gap(
+    latent: Tensor,
+    logits_from_latent: Callable[[Tensor], Tensor],
+    level: float,
+    eps: float,
+) -> Tensor:
+    """Apply a scaled minimum-L2 linearized correction to the top-two logit gap."""
+    if level <= 0:
+        return latent
+    narrowed_latent = latent.detach().clone().requires_grad_(True)
+    logits = logits_from_latent(narrowed_latent)
+    top_two = torch.topk(logits[:, -1, :], k=2, dim=-1).indices
+    gap = (
+        logits[:, -1, :].gather(dim=-1, index=top_two[:, :1])
+        - logits[:, -1, :].gather(dim=-1, index=top_two[:, 1:])
+    )
+    try:
+        gradient = torch.autograd.grad(gap.sum(), narrowed_latent)[0]
+    except RuntimeError as error:
+        if "no autograd formula was registered" not in str(error):
+            raise
+        raise RuntimeError(
+            "--narrowing-grad-level requires a model whose inference kernels "
+            "support autograd. The loaded FP8 kernel has no backward formula; "
+            "use a BF16 or FP16 checkpoint."
+        ) from error
+    gradient_norm_squared = gradient.flatten(start_dim=1).square().sum(
+        dim=1, keepdim=True
+    )
+    scale = gap.to(device=gradient.device, dtype=gradient.dtype).reshape(
+        (gap.shape[0],) + (1,) * (latent.ndim - 1)
+    )
+    norm = gradient_norm_squared.reshape(
+        (gradient_norm_squared.shape[0],) + (1,) * (latent.ndim - 1)
+    )
+    return (narrowed_latent - level * scale * gradient / norm.clamp_min(eps)).detach()
+
+
 def _top1_tokens_match(p1_logits: Tensor, p2_logits: Tensor) -> bool:
     p1_top_token = p1_logits[:, -1, :].argmax(dim=-1)
     p2_top_token = p2_logits[:, -1, :].argmax(dim=-1)
@@ -181,6 +220,12 @@ class _Hooks:
             )
         if not 0.0 <= cfg.noise_decay_per_pass <= 1.0:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")
+        if cfg.narrowing_grad_level < 0:
+            raise ValueError("narrowing_grad_level must be nonnegative.")
+        if cfg.narrowing_grad_level > 0 and noise_max > 0:
+            raise ValueError(
+                "narrowing_grad_level and noise_level_range cannot both be nonzero."
+            )
         self.cfg = cfg
         self.mode = "off"
         self.pass_index = 1
@@ -455,7 +500,9 @@ def recirculate(
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
+    injected_narrowing_grad_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
+    narrow_margin: Callable[[Tensor, int, Tensor, Any, float], Tensor] | None = None,
     decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any], Any]
     | None = None,
     decoded_injected_source_latents: list[list[Any]] | None = None,
@@ -491,6 +538,12 @@ def recirculate(
         raise ValueError(
             "noise_level_range requires post_margin_threshold with MIN < MAX."
         )
+    if (
+        config.narrowing_grad_level > 0
+        and (passes >= 2 or adaptive_recirculation)
+        and narrow_margin is None
+    ):
+        raise ValueError("narrowing_grad_level requires narrow_margin.")
     if (
         post_margin_ratio_threshold is not None
         and post_margin_threshold is None
@@ -688,6 +741,7 @@ def recirculate(
             adaptive_recirculation_count = 0
             previous_pass_margin = first_margin
             token_injected_noise_levels: list[float] = []
+            token_injected_narrowing_grad_levels: list[float] = []
             token_decoded_injected_source_latents: list[Any] = []
             if hooks.injected_source_latents is not None:
                 hooks.injected_source_latents.clear()
@@ -714,7 +768,41 @@ def recirculate(
                         config.noise_decay_per_pass ** (pass_index - 1)
                     )
                 )
-                prepared_debug_latents = hooks.prepare_injections()
+                prepared_debug_latents: list[tuple[int, Tensor]] = []
+                if config.narrowing_grad_level > 0 and pass_index == 1:
+                    original_injection_sources = hooks.injection_sources.copy()
+                    for pair_index, (source_index, _destination_index) in enumerate(
+                        config.pairs
+                    ):
+                        if not hooks.active_pairs[pair_index]:
+                            continue
+                        latent = original_injection_sources[source_index]
+                        narrowed = narrow_margin(
+                            token,
+                            source_index,
+                            latent,
+                            cache,
+                            config.narrowing_grad_level,
+                        )
+                        perturbation_norm = torch.linalg.vector_norm(
+                            (narrowed - latent).float()
+                        )
+                        latent_norm = torch.linalg.vector_norm(latent.float())
+                        token_injected_narrowing_grad_levels.append(
+                            float(
+                                (
+                                    perturbation_norm
+                                    / latent_norm.clamp_min(config.eps)
+                                ).item()
+                            )
+                        )
+                        hooks.injection_sources[source_index] = narrowed
+                        prepared_debug_latents.append(
+                            (source_index, narrowed.detach().clone())
+                        )
+                noise_debug_latents = hooks.prepare_injections()
+                if not prepared_debug_latents:
+                    prepared_debug_latents = noise_debug_latents
                 if decode_injected_source_latent is not None:
                     token_decoded_injected_source_latents.extend(
                         decode_injected_source_latent(
@@ -806,7 +894,11 @@ def recirculate(
                     )
                     if adaptive_margin_narrowed:
                         final_pass_rejection_reasons.append("margin-narrowed")
-                    if has_margin_gate and not margin_gate_met:
+                    if (
+                        has_margin_gate
+                        and not adaptive_margin_narrowed
+                        and not margin_gate_met
+                    ):
                         assert pass_margin is not None
                         if post_margin_below_min:
                             final_pass_rejection_reasons.append("post-margin-min")
@@ -882,6 +974,10 @@ def recirculate(
                 )
             if injected_noise_levels is not None:
                 injected_noise_levels.append(token_injected_noise_levels)
+            if injected_narrowing_grad_levels is not None:
+                injected_narrowing_grad_levels.append(
+                    token_injected_narrowing_grad_levels
+                )
             if injected_source_latents is not None:
                 assert hooks.injected_source_latents is not None
                 injected_source_latents.append(hooks.injected_source_latents.copy())

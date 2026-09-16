@@ -546,6 +546,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--narrowing-pre-margin",
+        type=float,
+        default=0.05,
+        metavar="THRESHOLD",
+        help=(
+            "Apply narrowing only when the pre-pass top-1/top-2 probability "
+            "margin is at least this threshold (default: 0.05)."
+        ),
+    )
+    parser.add_argument(
         "--passes",
         type=int,
         default=1,
@@ -773,6 +783,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "max_new_tokens",
         "model",
         "narrowing_grad_level",
+        "narrowing_pre_margin",
         "no_recirculate_after_tokens",
         "openai_base_url",
         "output",
@@ -1063,6 +1074,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.narrowing_grad_level < 0:
         raise ValueError("--narrowing-grad-level must be nonnegative.")
+    if args.narrowing_pre_margin < 0:
+        raise ValueError("--narrowing-pre-margin must be nonnegative.")
     if args.narrowing_grad_level > 0 and noise_max > 0:
         raise ValueError(
             "--narrowing-grad-level and --noise-level-range cannot both be nonzero."
@@ -1401,9 +1414,14 @@ def main() -> None:
         return suffix
 
     def decoded_latent_stats(
-        token: Tensor, source_index: int, latent: Tensor, cache: DynamicCache
+        token: Tensor,
+        source_index: int,
+        latent: Tensor,
+        cache: DynamicCache,
+        rewind_state: Any,
     ) -> dict[str, float | str]:
         replay_cache = rewind_dynamic_cache(copy.deepcopy(cache))
+        restore_dynamic_cache_rewind_state(replay_cache, rewind_state)
 
         def inject_source(_module: nn.Module, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
             return (
@@ -1430,6 +1448,7 @@ def main() -> None:
         latent: Tensor,
         cache: DynamicCache,
         level: float,
+        rewind_state: Any,
     ) -> Tensor:
         injected_latent = latent
         suffix_start = source_index + 1
@@ -1437,6 +1456,7 @@ def main() -> None:
 
         def make_gradient_cache() -> DynamicCache:
             gradient_cache = rewind_dynamic_cache(copy.deepcopy(cache))
+            restore_dynamic_cache_rewind_state(gradient_cache, rewind_state)
 
             def update_recurrent_state(
                 cache: DynamicCache,
@@ -1932,7 +1952,7 @@ def main() -> None:
                 ]
             elif run_config.narrowing_grad_level > 0:
                 comparison["injected_narrowing_grad_levels"] = [
-                    float(f"{level:.6e}")
+                    f"{level:.6e}"
                     for level in injected_narrowing_grad_levels[-1]
                 ]
                 comparison["narrowing_grad_injected_source_top1_top2_margin"] = [
@@ -2038,6 +2058,7 @@ def main() -> None:
             beta=run_args.beta,
             noise_level_range=tuple(run_args.noise_level_range),
             narrowing_grad_level=run_args.narrowing_grad_level,
+            narrowing_pre_margin=run_args.narrowing_pre_margin,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
         )
@@ -2068,6 +2089,7 @@ def main() -> None:
             "noise_level_range",
             "noise_decay_per_pass",
             "narrowing_grad_level",
+            "narrowing_pre_margin",
             "cond_recirculate",
             "act_sim_thres",
             "pre_margin_thres",

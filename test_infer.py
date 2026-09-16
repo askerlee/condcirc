@@ -43,6 +43,17 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
 
+    def test_parses_narrowing_pre_margin(self) -> None:
+        args = parse_args(["--narrowing-pre-margin", "0.12", "prompt"])
+
+        self.assertEqual(args.narrowing_pre_margin, 0.12)
+
+    def test_rejects_negative_narrowing_pre_margin(self) -> None:
+        args = parse_args(["--narrowing-pre-margin", "-0.01", "prompt"])
+
+        with self.assertRaisesRegex(ValueError, "narrowing-pre-margin"):
+            validate_run_arguments(args)
+
     def test_rejects_noise_level_range_outside_range(self) -> None:
         args = parse_args(["--noise-level-range", "0.1", "0.51", "prompt"])
 

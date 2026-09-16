@@ -50,6 +50,7 @@ class RecirculationConfig:
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
     narrowing_grad_level: float = 0.0
+    narrowing_pre_margin: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
@@ -222,6 +223,8 @@ class _Hooks:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")
         if cfg.narrowing_grad_level < 0:
             raise ValueError("narrowing_grad_level must be nonnegative.")
+        if cfg.narrowing_pre_margin < 0:
+            raise ValueError("narrowing_pre_margin must be nonnegative.")
         if cfg.narrowing_grad_level > 0 and noise_max > 0:
             raise ValueError(
                 "narrowing_grad_level and noise_level_range cannot both be nonzero."
@@ -502,8 +505,9 @@ def recirculate(
     injected_noise_levels: list[list[float]] | None = None,
     injected_narrowing_grad_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
-    narrow_margin: Callable[[Tensor, int, Tensor, Any, float], Tensor] | None = None,
-    decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any], Any]
+    narrow_margin: Callable[[Tensor, int, Tensor, Any, float, Any], Tensor]
+    | None = None,
+    decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any, Any], Any]
     | None = None,
     decoded_injected_source_latents: list[list[Any]] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
@@ -769,7 +773,12 @@ def recirculate(
                     )
                 )
                 prepared_debug_latents: list[tuple[int, Tensor]] = []
-                if config.narrowing_grad_level > 0 and pass_index == 1:
+                if (
+                    config.narrowing_grad_level > 0
+                    and pass_index == 1
+                    and first_margin is not None
+                    and first_margin >= config.narrowing_pre_margin
+                ):
                     original_injection_sources = hooks.injection_sources.copy()
                     for pair_index, (source_index, _destination_index) in enumerate(
                         config.pairs
@@ -783,6 +792,7 @@ def recirculate(
                             latent,
                             cache,
                             config.narrowing_grad_level,
+                            rewind_state,
                         )
                         perturbation_norm = torch.linalg.vector_norm(
                             (narrowed - latent).float()
@@ -806,7 +816,7 @@ def recirculate(
                 if decode_injected_source_latent is not None:
                     token_decoded_injected_source_latents.extend(
                         decode_injected_source_latent(
-                            token, source_index, latent, cache
+                            token, source_index, latent, cache, rewind_state
                         )
                         for source_index, latent in prepared_debug_latents
                     )

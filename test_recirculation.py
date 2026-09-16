@@ -242,7 +242,7 @@ class RecirculationCacheTest(unittest.TestCase):
         cache: list[int] = []
         injected_noise_levels: list[list[float]] = []
         injected_source_latents: list[list[tuple[int, torch.Tensor]]] = []
-        decoded_injected_source_latents: list[list[tuple[int, ...]]] = []
+        decoded_injected_source_latents: list[list[dict[str, object]]] = []
         pass_logits = (
             torch.tensor([[[2.0, 1.0, 0.0]]]),
             torch.tensor([[[1.5, 1.0, 0.0]]]),
@@ -281,7 +281,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 injected_source_latents=injected_source_latents,
                 decode_injected_source_latent=(
                     lambda _token, _source_index, _latent, current_cache, _state: (
-                        tuple(current_cache)
+                        {"margin": 0.0, "cache": tuple(current_cache)}
                     )
                 ),
                 decoded_injected_source_latents=decoded_injected_source_latents,
@@ -306,10 +306,64 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(len(injected_source_latents), 1)
         self.assertEqual(len(injected_source_latents[0]), 2)
         self.assertEqual(injected_source_latents[0][0][0], 2)
-        self.assertEqual(decoded_injected_source_latents, [[(1,), (2,)]])
+        self.assertEqual(
+            decoded_injected_source_latents,
+            [[{"margin": 0.0, "cache": (1,)}, {"margin": 0.0, "cache": (2,)}]],
+        )
         self.assertFalse(
             torch.equal(injected_source_latents[0][0][1], torch.ones((1, 1, 2)))
         )
+
+    def test_noise_is_reversed_when_positive_direction_widens_margin(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        decoded_initial: list[list[dict[str, float]]] = []
+        decoded_selected: list[list[dict[str, float]]] = []
+        selected_latents: list[list[tuple[int, torch.Tensor]]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(len(current_cache))
+            return torch.tensor([[[1.0, 0.0]]]), current_cache
+
+        def decode(
+            _token: torch.Tensor,
+            _source_index: int,
+            latent: torch.Tensor,
+            _cache: list[int],
+            _state: object,
+        ) -> dict[str, float]:
+            return {"margin": 0.8 if latent[..., 0].item() > 1.0 else 0.1}
+
+        with patch(
+            "recirculation.torch.randn_like",
+            return_value=torch.tensor([[[1.0, 0.0]]]),
+        ):
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=[],
+                step=step,
+                rewind_one=lambda current_cache: current_cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),),
+                    alpha=1.0,
+                    noise_level_range=(0.4, 0.4),
+                ),
+                passes=2,
+                post_margin_threshold=(0.0, 1.0),
+                decode_injected_source_latent=decode,
+                initial_decoded_noise_source_latents=decoded_initial,
+                decoded_injected_source_latents=decoded_selected,
+                injected_source_latents=selected_latents,
+                capture_cached_token=lambda current_cache: current_cache[-1],
+                restore_cached_token=lambda current_cache, cached_token: None,
+            )
+
+        self.assertEqual(decoded_initial, [[{"margin": 0.8}]])
+        self.assertEqual(decoded_selected, [[{"margin": 0.1}]])
+        self.assertLess(selected_latents[0][0][1][..., 0].item(), 1.0)
 
     def test_narrowed_latents_are_decoded_and_levels_recorded(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

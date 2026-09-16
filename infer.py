@@ -847,6 +847,39 @@ def choose_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
+def enable_fp32_output_projection(model: nn.Module) -> None:
+    output_embeddings = model.get_output_embeddings()
+    if not isinstance(output_embeddings, nn.Linear):
+        raise TypeError("FP32 logits require a linear output embedding module.")
+
+    def fp32_forward(module: nn.Linear, hidden_states: Tensor) -> Tensor:
+        flattened = hidden_states.reshape(-1, hidden_states.shape[-1])
+        if (
+            flattened.device.type == "cuda"
+            and flattened.dtype in (torch.float16, torch.bfloat16)
+            and flattened.dtype == module.weight.dtype
+        ):
+            logits = torch.mm(
+                flattened,
+                module.weight.t(),
+                out_dtype=torch.float32,
+            )
+        else:
+            logits = torch.nn.functional.linear(
+                flattened.float(),
+                module.weight.float(),
+            )
+        if module.bias is not None:
+            logits += module.bias.float()
+        return logits.reshape(*hidden_states.shape[:-1], module.out_features)
+
+    replacement = MethodType(fp32_forward, output_embeddings)
+    if hasattr(output_embeddings, "_old_forward"):
+        output_embeddings._old_forward = replacement
+    else:
+        output_embeddings.forward = replacement
+
+
 def resolve_source(source: int, num_blocks: int) -> int:
     return num_blocks + source if source < 0 else source
 
@@ -1182,6 +1215,7 @@ def main() -> None:
     if not use_device_map:
         model.to(device)
     model.eval()
+    enable_fp32_output_projection(model)
     input_device = model.get_input_embeddings().weight.device
 
     if args.evaluate_results_json is not None:
@@ -1419,9 +1453,12 @@ def main() -> None:
         latent: Tensor,
         cache: DynamicCache,
         rewind_state: Any,
-    ) -> dict[str, float | str]:
+    ) -> dict[str, Any]:
         replay_cache = rewind_dynamic_cache(copy.deepcopy(cache))
         restore_dynamic_cache_rewind_state(replay_cache, rewind_state)
+        output_embeddings = model.get_output_embeddings()
+        projection_inputs: list[Tensor] = []
+        projection_outputs: list[Tensor] = []
 
         def inject_source(_module: nn.Module, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
             return (
@@ -1429,18 +1466,52 @@ def main() -> None:
                 *inputs[1:],
             )
 
+        def capture_projection(
+            _module: nn.Module, inputs: tuple[Any, ...], output: Tensor
+        ) -> None:
+            projection_inputs.append(inputs[0][:, -1, :].detach())
+            projection_outputs.append(output[:, -1, :].detach())
+
         handle = blocks[source_index + 1].register_forward_pre_hook(inject_source)
+        projection_handle = output_embeddings.register_forward_hook(capture_projection)
         try:
             logits, _ = student_step(token, replay_cache)
         finally:
             handle.remove()
+            projection_handle.remove()
         probabilities = torch.softmax(logits[:, -1, :].float(), dim=-1)
         top_two = torch.topk(probabilities, k=2, dim=-1)
-        return {
-            "margin": float((top_two.values[..., 0] - top_two.values[..., 1]).item()),
+        margin = float((top_two.values[..., 0] - top_two.values[..., 1]).item())
+        stats: dict[str, Any] = {
+            "margin": margin,
             "top1_token": tokenizer.decode(top_two.indices[..., 0]),
             "top2_token": tokenizer.decode(top_two.indices[..., 1]),
         }
+        if margin == 0.0 and projection_inputs and projection_outputs:
+            token_indices = top_two.indices[0]
+            projection_input = projection_inputs[-1][0].float()
+            weight_indices = token_indices.to(output_embeddings.weight.device)
+            selected_weight = output_embeddings.weight[weight_indices].float()
+            fp32_logits = torch.mv(selected_weight, projection_input)
+            bias = getattr(output_embeddings, "bias", None)
+            if bias is not None:
+                fp32_logits += bias[weight_indices].float()
+            output_indices = token_indices.to(projection_outputs[-1].device)
+            bf16_logits = projection_outputs[-1][0, output_indices].float()
+            stats["zero_gap_bf16_diagnostic"] = {
+                "fp32_before_bf16": {
+                    "z1": float(fp32_logits[0].item()),
+                    "z2": float(fp32_logits[1].item()),
+                    "gap": float((fp32_logits[0] - fp32_logits[1]).item()),
+                },
+                "after_bf16": {
+                    "dtype": str(projection_outputs[-1].dtype),
+                    "z1": float(bf16_logits[0].item()),
+                    "z2": float(bf16_logits[1].item()),
+                    "gap": float((bf16_logits[0] - bf16_logits[1]).item()),
+                },
+            }
+        return stats
 
     def narrow_margin(
         token: Tensor,
@@ -1780,6 +1851,11 @@ def main() -> None:
                     final_pass_same_top1_flags=final_pass_same_top1_flags,
                     rejection_reasons=rejection_reasons,
                     narrow_margin=narrow_margin,
+                    decode_injected_source_latent=(
+                        decoded_latent_stats
+                        if run_config.noise_level_range[1] > 0
+                        else None
+                    ),
                     capture_cached_token=capture_dynamic_cache_token,
                     restore_cached_token=restore_dynamic_cache_token,
                     capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1826,6 +1902,11 @@ def main() -> None:
                         final_pass_same_top1_flags=final_pass_same_top1_flags,
                         rejection_reasons=rejection_reasons,
                         narrow_margin=narrow_margin,
+                        decode_injected_source_latent=(
+                            decoded_latent_stats
+                            if run_config.noise_level_range[1] > 0
+                            else None
+                        ),
                         capture_cached_token=capture_dynamic_cache_token,
                         restore_cached_token=restore_dynamic_cache_token,
                         capture_rewind_state=capture_dynamic_cache_rewind_state,
@@ -1857,7 +1938,8 @@ def main() -> None:
         final_pass_cosine_similarities: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
         injected_narrowing_grad_levels: list[list[float]] = []
-        decoded_injected_source_latents: list[list[dict[str, float | str]]] = []
+        initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
+        decoded_injected_source_latents: list[list[dict[str, Any]]] = []
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -1893,6 +1975,9 @@ def main() -> None:
             injected_narrowing_grad_levels=injected_narrowing_grad_levels,
             narrow_margin=narrow_margin,
             decode_injected_source_latent=decoded_latent_stats,
+            initial_decoded_noise_source_latents=(
+                initial_decoded_noise_source_latents
+            ),
             decoded_injected_source_latents=decoded_injected_source_latents,
             capture_cached_token=capture_dynamic_cache_token,
             restore_cached_token=restore_dynamic_cache_token,
@@ -1936,12 +2021,28 @@ def main() -> None:
             )
             comparison["cosine_top_k"] = run_args.cosine_top_k
             decoded_noise_latents = decoded_injected_source_latents[-1]
+            zero_gap_diagnostics = [
+                stats["zero_gap_bf16_diagnostic"]
+                for stats in decoded_noise_latents
+                if "zero_gap_bf16_diagnostic" in stats
+            ]
+            if zero_gap_diagnostics:
+                comparison["injected_source_zero_gap_bf16_diagnostics"] = (
+                    zero_gap_diagnostics
+                )
             if run_config.noise_level_range[1] > 0:
+                initial_decoded_noise_latents = (
+                    initial_decoded_noise_source_latents[-1]
+                )
                 comparison["injected_noise_levels"] = [
                     round(level, 6) for level in injected_noise_levels[-1]
                 ]
+                comparison["initial_noise_injected_source_top1_top2_margin"] = [
+                    f"{float(stats['margin']):.6e}"
+                    for stats in initial_decoded_noise_latents
+                ]
                 comparison["noise_injected_source_top1_top2_margin"] = [
-                    round(float(stats["margin"]), 3)
+                    f"{float(stats['margin']):.6e}"
                     for stats in decoded_noise_latents
                 ]
                 comparison["noise_injected_source_top1_token"] = [
@@ -2011,6 +2112,9 @@ def main() -> None:
                 injected_narrowing_grad_levels=injected_narrowing_grad_levels,
                 narrow_margin=narrow_margin,
                 decode_injected_source_latent=decoded_latent_stats,
+                initial_decoded_noise_source_latents=(
+                    initial_decoded_noise_source_latents
+                ),
                 decoded_injected_source_latents=decoded_injected_source_latents,
                 capture_cached_token=capture_dynamic_cache_token,
                 restore_cached_token=restore_dynamic_cache_token,

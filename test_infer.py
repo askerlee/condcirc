@@ -1,10 +1,12 @@
 import unittest
 from unittest.mock import patch
 
+import torch
 from torch import nn
 
 from infer import (
     aggregate_recirculation_stats,
+    enable_fp32_output_projection,
     format_average_eval_rating,
     format_run_stats,
     parse_args,
@@ -15,6 +17,31 @@ from infer import (
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_output_projection_returns_fp32_logits(self) -> None:
+        class Model(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.output = nn.Linear(3, 2, bias=True).to(torch.bfloat16)
+
+            def get_output_embeddings(self) -> nn.Module:
+                return self.output
+
+        model = Model()
+        hidden_states = torch.tensor(
+            [[[1.0, 2.0, 3.0]]], dtype=torch.bfloat16
+        )
+        expected = torch.nn.functional.linear(
+            hidden_states.float(),
+            model.output.weight.float(),
+            model.output.bias.float(),
+        )
+
+        enable_fp32_output_projection(model)
+        logits = model.output(hidden_states)
+
+        self.assertEqual(logits.dtype, torch.float32)
+        torch.testing.assert_close(logits, expected)
+
     def test_sets_python_and_torch_random_seeds(self) -> None:
         with (
             patch("infer.random.seed") as python_seed,

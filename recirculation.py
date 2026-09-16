@@ -241,6 +241,8 @@ class _Hooks:
         self.adjacent_layer_stats = adjacent_layer_stats
         self.injected_source_latents = injected_source_latents
         self.prepared_sources: dict[int, Tensor] = {}
+        self.noise_perturbations: dict[int, tuple[Tensor, Tensor]] = {}
+        self.noise_debug_positions: dict[int, int] = {}
         self.layer_residuals: dict[int, Tensor] = {}
         watched_layers = self.destinations | self.sources
         handles = [
@@ -318,6 +320,8 @@ class _Hooks:
 
     def prepare_injections(self) -> list[tuple[int, Tensor]]:
         self.prepared_sources.clear()
+        self.noise_perturbations.clear()
+        self.noise_debug_positions.clear()
         debug_latents: list[tuple[int, Tensor]] = []
         for pair_index, (source_index, destination_index) in enumerate(self.cfg.pairs):
             if not self.active_pairs[pair_index]:
@@ -351,13 +355,37 @@ class _Hooks:
                     source + noise_weight * source_norm * gaussian_direction
                 ).detach().clone()
                 debug_latents.append((source_index, debug_latent))
-                if self.injected_source_latents is not None:
-                    self.injected_source_latents.append((source_index, debug_latent))
-                normalized_source = normalized_source + (
+                normalized_perturbation = (
                     noise_weight * destination_norm * gaussian_direction
                 )
+                raw_perturbation = noise_weight * source_norm * gaussian_direction
+                self.noise_perturbations[pair_index] = (
+                    normalized_perturbation,
+                    raw_perturbation,
+                )
+                if self.injected_source_latents is not None:
+                    self.noise_debug_positions[pair_index] = len(
+                        self.injected_source_latents
+                    )
+                    self.injected_source_latents.append((source_index, debug_latent))
+                normalized_source = normalized_source + normalized_perturbation
             self.prepared_sources[pair_index] = normalized_source
         return debug_latents
+
+    def reverse_noise(self, pair_index: int) -> Tensor:
+        normalized_perturbation, raw_perturbation = self.noise_perturbations[
+            pair_index
+        ]
+        self.prepared_sources[pair_index] -= 2 * normalized_perturbation
+        source_index, _destination_index = self.cfg.pairs[pair_index]
+        reversed_latent = (
+            self.injection_sources[source_index].to(raw_perturbation.device).float()
+            - raw_perturbation
+        ).detach().clone()
+        if self.injected_source_latents is not None:
+            position = self.noise_debug_positions[pair_index]
+            self.injected_source_latents[position] = (source_index, reversed_latent)
+        return reversed_latent
 
     def activation_similarities(self) -> tuple[float, ...]:
         similarities = []
@@ -509,6 +537,7 @@ def recirculate(
     | None = None,
     decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any, Any], Any]
     | None = None,
+    initial_decoded_noise_source_latents: list[list[Any]] | None = None,
     decoded_injected_source_latents: list[list[Any]] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
@@ -541,6 +570,10 @@ def recirculate(
     ):
         raise ValueError(
             "noise_level_range requires post_margin_threshold with MIN < MAX."
+        )
+    if config.noise_level_range[1] > 0 and decode_injected_source_latent is None:
+        raise ValueError(
+            "noise_level_range requires decode_injected_source_latent."
         )
     if (
         config.narrowing_grad_level > 0
@@ -746,6 +779,7 @@ def recirculate(
             previous_pass_margin = first_margin
             token_injected_noise_levels: list[float] = []
             token_injected_narrowing_grad_levels: list[float] = []
+            token_initial_decoded_noise_source_latents: list[Any] = []
             token_decoded_injected_source_latents: list[Any] = []
             if hooks.injected_source_latents is not None:
                 hooks.injected_source_latents.clear()
@@ -814,12 +848,41 @@ def recirculate(
                 if not prepared_debug_latents:
                     prepared_debug_latents = noise_debug_latents
                 if decode_injected_source_latent is not None:
-                    token_decoded_injected_source_latents.extend(
+                    decoded_latents = [
                         decode_injected_source_latent(
                             token, source_index, latent, cache, rewind_state
                         )
                         for source_index, latent in prepared_debug_latents
-                    )
+                    ]
+                    if noise_debug_latents:
+                        assert previous_pass_margin is not None
+                        token_initial_decoded_noise_source_latents.extend(
+                            decoded_latents
+                        )
+                        active_pair_indices = (
+                            pair_index
+                            for pair_index in range(len(config.pairs))
+                            if hooks.active_pairs[pair_index]
+                        )
+                        selected_decoded_latents = []
+                        for pair_index, decoded in zip(
+                            active_pair_indices, decoded_latents
+                        ):
+                            if float(decoded["margin"]) > previous_pass_margin:
+                                source_index, _destination_index = config.pairs[
+                                    pair_index
+                                ]
+                                reversed_latent = hooks.reverse_noise(pair_index)
+                                decoded = decode_injected_source_latent(
+                                    token,
+                                    source_index,
+                                    reversed_latent,
+                                    cache,
+                                    rewind_state,
+                                )
+                            selected_decoded_latents.append(decoded)
+                        decoded_latents = selected_decoded_latents
+                    token_decoded_injected_source_latents.extend(decoded_latents)
                 cache = rewind_one(cache)
                 if restore_rewind_state is not None:
                     restore_rewind_state(cache, rewind_state)
@@ -991,6 +1054,10 @@ def recirculate(
             if injected_source_latents is not None:
                 assert hooks.injected_source_latents is not None
                 injected_source_latents.append(hooks.injected_source_latents.copy())
+            if initial_decoded_noise_source_latents is not None:
+                initial_decoded_noise_source_latents.append(
+                    token_initial_decoded_noise_source_latents
+                )
             if decoded_injected_source_latents is not None:
                 decoded_injected_source_latents.append(
                     token_decoded_injected_source_latents

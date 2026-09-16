@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+from torch import nn
+
 from infer import (
     aggregate_recirculation_stats,
     format_average_eval_rating,
@@ -105,6 +107,7 @@ class RecirculationStatsTest(unittest.TestCase):
                 "same_top1": 2,
                 "rejected": 9,
                 "rejected_by_gate": {
+                    "margin-narrowed": 0,
                     "post-margin-min": 2,
                     "post-margin-ratio": 2,
                     "post-margin-max": 6,
@@ -123,6 +126,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "same_top1": 2,
             "rejected": 9,
             "rejected_by_gate": {
+                "margin-narrowed": 0,
                 "post-margin-min": 2,
                 "post-margin-ratio": 2,
                 "post-margin-max": 6,
@@ -138,6 +142,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "same_top1": 1,
             "rejected": 4,
             "rejected_by_gate": {
+                "margin-narrowed": 0,
                 "post-margin-min": 1,
                 "post-margin-ratio": 1,
                 "post-margin-max": 2,
@@ -155,7 +160,7 @@ class RecirculationStatsTest(unittest.TestCase):
             lines,
             (
                 "recirculated_tokens = 12/500, same_top1 = 3, rejected = 13, "
-                "by gate: post-margin-min=3, post-margin-ratio=3, "
+                "by gate: margin-narrowed=0, post-margin-min=3, post-margin-ratio=3, "
                 "post-margin-max=8, cosine=9, rank=2",
                 "adaptive_recirculated_tokens = 5/500, rejected = 3, "
                 "average_adaptive_recirculations = 2.00",

@@ -19,8 +19,8 @@ Without post-margin gates, fixed source recirculation stops early when its
 top-1/top-2 probability margin narrows. With post-margin MIN/MAX gates, a pass
 below MIN is rejected, a pass from MIN (inclusive) to MAX (exclusive) requires
 the configured margin-ratio improvement, and a pass at or above MAX is accepted.
-Adaptive source recirculation retries rejected passes until its budget is
-exhausted.
+Adaptive source recirculation retries low-margin passes until its budget is
+exhausted, but rejects an adaptive trial immediately if its margin narrows.
 
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
@@ -161,7 +161,7 @@ class _Hooks:
         blocks: Sequence[nn.Module],
         cfg: RecirculationConfig,
         adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
-        injected_source_latents: list[Tensor] | None = None,
+        injected_source_latents: list[tuple[int, Tensor]] | None = None,
     ) -> None:
         if not cfg.pairs:
             raise ValueError("At least one source/destination pair is required.")
@@ -192,6 +192,7 @@ class _Hooks:
         self.active_pairs = tuple(True for _pair in cfg.pairs)
         self.adjacent_layer_stats = adjacent_layer_stats
         self.injected_source_latents = injected_source_latents
+        self.prepared_sources: dict[int, Tensor] = {}
         self.layer_residuals: dict[int, Tensor] = {}
         watched_layers = self.destinations | self.sources
         handles = [
@@ -253,40 +254,62 @@ class _Hooks:
                 return None
             try:
                 destination = self.residuals[destination_index]
-                source = self.injection_sources[source_index]
+                source = self.prepared_sources[pair_index]
             except KeyError as error:
-                raise RuntimeError(
-                    "The first pass did not capture both residual streams for every pair."
-                ) from error
+                raise RuntimeError("Recirculation injection was not prepared.") from error
 
             input_device = _residual(inputs).device
             destination = destination.to(device=input_device, dtype=torch.float32)
-            source = source.to(device=input_device, dtype=torch.float32)
-            source = source * torch.linalg.vector_norm(
-                destination, dim=-1, keepdim=True
-            ) / (
-                torch.linalg.vector_norm(source, dim=-1, keepdim=True).clamp_min(self.cfg.eps)
-            )
-            if self.noise_level > 0:
-                gaussian_noise = torch.randn_like(source)
-                gaussian_noise *= torch.linalg.vector_norm(
-                    source, dim=-1, keepdim=True
-                ) / torch.linalg.vector_norm(
-                    gaussian_noise, dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
-                noise_weight = self.noise_level * (
-                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
-                )
-                source = source + noise_weight * gaussian_noise
-                if self.injected_source_latents is not None:
-                    self.injected_source_latents.append(source.detach().clone())
-
+            source = source.to(device=input_device)
             alpha = self.cfg.alpha
             beta = 1.0 - alpha if self.cfg.beta is None else self.cfg.beta
             mixed = (beta * destination + alpha * source).to(inputs[0].dtype)
             return (mixed, *inputs[1:])
 
         return hook
+
+    def prepare_injections(self) -> list[tuple[int, Tensor]]:
+        self.prepared_sources.clear()
+        debug_latents: list[tuple[int, Tensor]] = []
+        for pair_index, (source_index, destination_index) in enumerate(self.cfg.pairs):
+            if not self.active_pairs[pair_index]:
+                continue
+            try:
+                destination = self.residuals[destination_index].float()
+                source = self.injection_sources[source_index].to(
+                    device=destination.device, dtype=torch.float32
+                )
+            except KeyError as error:
+                raise RuntimeError(
+                    "The preceding pass did not capture both residual streams for "
+                    "every pair."
+                ) from error
+            source_norm = torch.linalg.vector_norm(source, dim=-1, keepdim=True)
+            destination_norm = torch.linalg.vector_norm(
+                destination, dim=-1, keepdim=True
+            )
+            normalized_source = source * destination_norm / source_norm.clamp_min(
+                self.cfg.eps
+            )
+            if self.noise_level > 0:
+                gaussian_noise = torch.randn_like(source)
+                gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
+                    gaussian_noise, dim=-1, keepdim=True
+                ).clamp_min(self.cfg.eps)
+                noise_weight = self.noise_level * (
+                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
+                )
+                debug_latent = (
+                    source + noise_weight * source_norm * gaussian_direction
+                ).detach().clone()
+                debug_latents.append((source_index, debug_latent))
+                if self.injected_source_latents is not None:
+                    self.injected_source_latents.append((source_index, debug_latent))
+                normalized_source = normalized_source + (
+                    noise_weight * destination_norm * gaussian_direction
+                )
+            self.prepared_sources[pair_index] = normalized_source
+        return debug_latents
 
     def activation_similarities(self) -> tuple[float, ...]:
         similarities = []
@@ -432,7 +455,10 @@ def recirculate(
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
-    injected_source_latents: list[list[Tensor]] | None = None,
+    injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
+    decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any], Any]
+    | None = None,
+    decoded_injected_source_latents: list[list[Any]] | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -551,7 +577,12 @@ def recirculate(
         blocks,
         config,
         adjacent_layer_stats=adjacent_layer_stats,
-        injected_source_latents=[] if injected_source_latents is not None else None,
+        injected_source_latents=(
+            []
+            if injected_source_latents is not None
+            or decode_injected_source_latent is not None
+            else None
+        ),
     )
     if condition_thresholds is not None and len(condition_thresholds) not in (
         1,
@@ -657,16 +688,12 @@ def recirculate(
             adaptive_recirculation_count = 0
             previous_pass_margin = first_margin
             token_injected_noise_levels: list[float] = []
+            token_decoded_injected_source_latents: list[Any] = []
             if hooks.injected_source_latents is not None:
                 hooks.injected_source_latents.clear()
             for pass_index in range(1, max_passes if should_recirculate else 1):
                 if pass_index >= passes:
                     adaptive_recirculation_count += 1
-                cache = rewind_one(cache)
-                if restore_rewind_state is not None:
-                    restore_rewind_state(cache, rewind_state)
-                if select_expert_subset is not None:
-                    select_expert_subset(pass_index)
                 hooks.injection_sources = {
                     source: hooks.residuals[source] for source in hooks.sources
                 }
@@ -687,6 +714,19 @@ def recirculate(
                         config.noise_decay_per_pass ** (pass_index - 1)
                     )
                 )
+                prepared_debug_latents = hooks.prepare_injections()
+                if decode_injected_source_latent is not None:
+                    token_decoded_injected_source_latents.extend(
+                        decode_injected_source_latent(
+                            token, source_index, latent, cache
+                        )
+                        for source_index, latent in prepared_debug_latents
+                    )
+                cache = rewind_one(cache)
+                if restore_rewind_state is not None:
+                    restore_rewind_state(cache, rewind_state)
+                if select_expert_subset is not None:
+                    select_expert_subset(pass_index)
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
@@ -745,6 +785,11 @@ def recirculate(
                 has_margin_gate = (
                     post_margin_threshold is not None
                 )
+                adaptive_margin_narrowed = (
+                    has_margin_gate
+                    and adaptive_recirculation_count > 0
+                    and margin_narrowed
+                )
                 should_retry_low_margin = (
                     pass_index >= passes - 1
                     and has_margin_gate
@@ -753,12 +798,14 @@ def recirculate(
                 )
                 if pass_margin is not None:
                     previous_pass_margin = pass_margin
-                if (margin_narrowed and not has_margin_gate) or (
+                if (margin_narrowed and not has_margin_gate) or adaptive_margin_narrowed or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
                         first_logits, final_logits, cosine_top_k
                     )
+                    if adaptive_margin_narrowed:
+                        final_pass_rejection_reasons.append("margin-narrowed")
                     if has_margin_gate and not margin_gate_met:
                         assert pass_margin is not None
                         if post_margin_below_min:
@@ -838,6 +885,10 @@ def recirculate(
             if injected_source_latents is not None:
                 assert hooks.injected_source_latents is not None
                 injected_source_latents.append(hooks.injected_source_latents.copy())
+            if decoded_injected_source_latents is not None:
+                decoded_injected_source_latents.append(
+                    token_decoded_injected_source_latents
+                )
             if finalize_token_cache is not None:
                 cache = finalize_token_cache(cache)
             logits.append(final_logits)

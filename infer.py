@@ -483,10 +483,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         nargs=2,
         metavar=("SOURCE", "DESTINATION"),
-        default=[(-5, 5)],
+        default=None,
         help=(
             "Source/destination pair to recirculate. Repeat for multiple pairs "
-            "(default: -5 5)."
+            "(default: -5 5, or 25 19 for gemma-4-26b-a4b)."
         ),
     )
     parser.add_argument(
@@ -739,6 +739,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     if "--ablation" not in argv:
         args = parser.parse_args(argv)
+        if args.pairs is None:
+            model_name = args.model.rsplit("/", 1)[-1].lower()
+            args.pairs = [(25, 19)] if model_name.startswith("gemma-4-26b-a4b") else [(-5, 5)]
         args.ablations = False
         args.query_index_signature = query_index_signature(argv)
         return args
@@ -746,6 +749,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ablations_index = argv.index("--ablation")
     baseline_argv = argv[:ablations_index]
     args = parser.parse_args(baseline_argv)
+    if args.pairs is None:
+        model_name = args.model.rsplit("/", 1)[-1].lower()
+        args.pairs = [(25, 19)] if model_name.startswith("gemma-4-26b-a4b") else [(-5, 5)]
     args.query_index_signature = query_index_signature(argv)
 
     ablation_groups: list[list[str]] = []

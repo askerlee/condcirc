@@ -11,6 +11,7 @@ from typing import Any, Sequence
 class MethodRatings:
     scores: list[float] = field(default_factory=list)
     total_runs: int = 0
+    total_seconds: float = 0.0
     stats: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -43,6 +44,13 @@ def load_method_ratings(path: Path) -> dict[str, MethodRatings]:
                 )
             ratings = methods.setdefault(run["label"], MethodRatings())
             ratings.total_runs += 1
+            seconds = run.get("seconds")
+            if seconds is not None:
+                if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+                    raise ValueError(
+                        f"Run {run_index} of query {query_index} has invalid seconds."
+                    )
+                ratings.total_seconds += float(seconds)
             stats = run.get("stats")
             if stats is not None:
                 if not isinstance(stats, dict):
@@ -106,7 +114,10 @@ def format_method_ratings(methods: dict[str, MethodRatings]) -> str:
         section = (
             f"{label}\n"
             f"average_eval_model_rating = {ratings.average:.2f} "
-            f"({len(ratings.scores)}/{ratings.total_runs} rated)"
+            f"({len(ratings.scores)}/{ratings.total_runs} rated)\n"
+            f"total_time = {ratings.total_seconds:.2f}s, "
+            f"average_time_per_query = "
+            f"{ratings.total_seconds / ratings.total_runs:.2f}s"
         )
         if ratings.has_stats:
             stats = ratings.stats

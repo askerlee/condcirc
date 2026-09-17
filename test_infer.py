@@ -70,6 +70,25 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
 
+    def test_uses_gemma_specific_default_pair(self) -> None:
+        args = parse_args(["--model", "google/gemma-4-26b-a4b-it", "prompt"])
+
+        self.assertEqual(args.pairs, [(25, 19)])
+
+    def test_explicit_pair_overrides_model_default(self) -> None:
+        args = parse_args(
+            [
+                "--model",
+                "google/gemma-4-26b-a4b-it",
+                "--pair",
+                "7",
+                "3",
+                "prompt",
+            ]
+        )
+
+        self.assertEqual(args.pairs, [[7, 3]])
+
     def test_parses_perturb_pre_margin_threshold(self) -> None:
         args = parse_args(["--perturb-pre-margin-thres", "0.12", "prompt"])
 

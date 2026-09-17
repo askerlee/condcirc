@@ -887,6 +887,11 @@ def enable_fp32_output_projection(model: nn.Module) -> None:
         output_embeddings.forward = replacement
 
 
+def configure_model_generation(model: nn.Module, model_name: str) -> None:
+    if model_name.rsplit("/", 1)[-1].lower().startswith("gpt-oss"):
+        model.generation_config.repetition_penalty = 1.1
+
+
 def resolve_source(source: int, num_blocks: int) -> int:
     return num_blocks + source if source < 0 else source
 
@@ -908,6 +913,16 @@ def resolve_recirculation_pairs(
             for source, destination in pairs
         )
     return pairs
+
+
+def output_recirculation_pairs(args: argparse.Namespace) -> Sequence[Sequence[int]]:
+    if args.cond_recirculate or not args.ablations:
+        return args.pairs
+    for overrides in args.ablations:
+        values = dict(overrides)
+        if values.get("cond_recirculate") and "pairs" in values:
+            return values["pairs"]
+    return args.pairs
 
 
 def find_global_attention_layer_indices(
@@ -1080,6 +1095,18 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
     return torch.multinomial(probabilities, num_samples=1)
 
 
+def apply_repetition_penalty(
+    logits: Tensor, previous_token_ids: Tensor, penalty: float
+) -> Tensor:
+    if penalty == 1.0:
+        return logits
+    previous_scores = logits.gather(1, previous_token_ids)
+    previous_scores = torch.where(
+        previous_scores < 0, previous_scores * penalty, previous_scores / penalty
+    )
+    return logits.scatter(1, previous_token_ids, previous_scores)
+
+
 def set_random_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -1222,6 +1249,7 @@ def main() -> None:
     if not use_device_map:
         model.to(device)
     model.eval()
+    configure_model_generation(model, args.model)
     enable_fp32_output_projection(model)
     input_device = model.get_input_embeddings().weight.device
 
@@ -1320,8 +1348,11 @@ def main() -> None:
         else ""
     )
     if args.output is None:
+        output_args = argparse.Namespace(
+            **vars(args), pairs=output_recirculation_pairs(args)
+        )
         pairs = resolve_recirculation_pairs(
-            args, len(blocks), global_attention_layers
+            output_args, len(blocks), global_attention_layers
         )
         model_slug = args.model.rsplit("/", 1)[-1]
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
@@ -1873,7 +1904,14 @@ def main() -> None:
 
             generated_ids = input_ids.clone()
             for _ in range(run_args.max_new_tokens):
-                next_token = sample_token(next_logits, run_args.temperature)
+                next_token = sample_token(
+                    apply_repetition_penalty(
+                        next_logits,
+                        generated_ids,
+                        model.generation_config.repetition_penalty,
+                    ),
+                    run_args.temperature,
+                )
                 generated_ids = torch.cat((generated_ids, next_token), dim=1)
                 record_generated_token_stats()
                 if next_token.item() in eos_token_ids:
@@ -2073,7 +2111,14 @@ def main() -> None:
                 comparison["narrowing_grad_injected_source_top2_token"] = [
                     stats["top2_token"] for stats in decoded_noise_latents
                 ]
-            next_token = sample_token(student_next_logits, run_args.temperature)
+            next_token = sample_token(
+                apply_repetition_penalty(
+                    student_next_logits,
+                    generated_ids,
+                    model.generation_config.repetition_penalty,
+                ),
+                run_args.temperature,
+            )
             comparison.update(
                 token_index=token_index,
                 selected_token=tokenizer.decode(next_token[0]),

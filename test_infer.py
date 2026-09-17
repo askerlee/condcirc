@@ -1,14 +1,18 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import torch
 from torch import nn
 
 from infer import (
     aggregate_recirculation_stats,
+    apply_repetition_penalty,
+    configure_model_generation,
     enable_fp32_output_projection,
     format_average_eval_rating,
     format_run_stats,
+    output_recirculation_pairs,
     parse_args,
     summarize_recirculation_stats,
     set_random_seed,
@@ -88,6 +92,48 @@ class RecirculationStatsTest(unittest.TestCase):
         )
 
         self.assertEqual(args.pairs, [[7, 3]])
+
+    def test_ablation_pair_is_used_for_conditional_output_name(self) -> None:
+        args = parse_args(
+            [
+                "--model",
+                "openai/gpt-oss-20b",
+                "--ablation",
+                "--cond-recirculate",
+                "--pair",
+                "-5",
+                "12",
+            ]
+        )
+
+        self.assertEqual(args.pairs, [(-5, 5)])
+        self.assertEqual(output_recirculation_pairs(args), [[-5, 12]])
+
+    def test_sets_gpt_oss_repetition_penalty(self) -> None:
+        model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))
+
+        configure_model_generation(model, "openai/gpt-oss-20b")
+
+        self.assertEqual(model.generation_config.repetition_penalty, 1.1)
+
+    def test_leaves_other_model_repetition_penalty_unchanged(self) -> None:
+        model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))
+
+        configure_model_generation(model, "Qwen/Qwen3.6-35B-A3B-FP8")
+
+        self.assertEqual(model.generation_config.repetition_penalty, 1.0)
+
+    def test_applies_repetition_penalty_to_previous_tokens(self) -> None:
+        logits = torch.tensor([[-2.0, 2.0, 4.0]])
+        previous_token_ids = torch.tensor([[0, 1]])
+
+        penalized_logits = apply_repetition_penalty(
+            logits, previous_token_ids, 1.1
+        )
+
+        torch.testing.assert_close(
+            penalized_logits, torch.tensor([[-2.2, 2.0 / 1.1, 4.0]])
+        )
 
     def test_parses_perturb_pre_margin_threshold(self) -> None:
         args = parse_args(["--perturb-pre-margin-thres", "0.12", "prompt"])

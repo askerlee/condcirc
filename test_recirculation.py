@@ -75,6 +75,39 @@ class RecirculationCacheTest(unittest.TestCase):
 
         self.assertEqual(narrowed, [])
 
+    def test_noise_injection_skips_small_pre_margin(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        injected_source_latents: list[tuple[int, torch.Tensor]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(len(current_cache))
+            return torch.tensor([[[0.1, 0.0, 0.0]]]), current_cache
+
+        recirculate(
+            torch.tensor([[1]]),
+            blocks=blocks,
+            cache=[],
+            step=step,
+            rewind_one=lambda current_cache: current_cache[:-1],
+            config=RecirculationConfig(
+                pairs=((2, 0),),
+                alpha=0.5,
+                noise_level_range=(0.1, 0.2),
+                perturb_pre_margin_thres=0.05,
+            ),
+            passes=2,
+            post_margin_threshold=(0.1, 0.2),
+            injected_source_latents=injected_source_latents,
+            decode_injected_source_latent=lambda _token, _source, latent, _cache, _state: {},
+            capture_cached_token=lambda current_cache: current_cache[-1],
+            restore_cached_token=lambda current_cache, cached_token: None,
+        )
+
+        self.assertEqual(injected_source_latents, [[]])
+
     def test_gradient_narrowing_receives_raw_source_before_normalization(self) -> None:
         blocks = nn.ModuleList(
             [nn.Identity(), nn.Identity(), nn.Linear(2, 2, bias=False)]
@@ -201,7 +234,7 @@ class RecirculationCacheTest(unittest.TestCase):
             0.25 * torch.linalg.vector_norm(source, dim=-1),
         )
 
-    def test_noise_weight_decays_exponentially_per_pass(self) -> None:
+    def test_noise_is_applied_on_first_recirculation_pass_only(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -234,10 +267,10 @@ class RecirculationCacheTest(unittest.TestCase):
 
         torch.testing.assert_close(
             torch.stack(perturbation_norms),
-            torch.tensor([[[2.0]], [[1.0]], [[0.5]]]),
+            torch.tensor([[[2.0]], [[0.0]], [[0.0]]]),
         )
 
-    def test_each_pass_uses_preceding_pass_margin_for_noise(self) -> None:
+    def test_only_first_recirculation_pass_uses_noise(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
         injected_noise_levels: list[list[float]] = []
@@ -302,13 +335,13 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(used_margins, expected_margins)
         self.assertEqual(len(injected_noise_levels), 1)
         self.assertAlmostEqual(injected_noise_levels[0][0], 0.4 * expected_margins[0])
-        self.assertAlmostEqual(injected_noise_levels[0][1], 0.2 * expected_margins[1])
+        self.assertEqual(injected_noise_levels[0][1], 0.0)
         self.assertEqual(len(injected_source_latents), 1)
-        self.assertEqual(len(injected_source_latents[0]), 2)
+        self.assertEqual(len(injected_source_latents[0]), 1)
         self.assertEqual(injected_source_latents[0][0][0], 2)
         self.assertEqual(
             decoded_injected_source_latents,
-            [[{"margin": 0.0, "cache": (1,)}, {"margin": 0.0, "cache": (2,)}]],
+            [[{"margin": 0.0, "cache": (1,)}]],
         )
         self.assertFalse(
             torch.equal(injected_source_latents[0][0][1], torch.ones((1, 1, 2)))
@@ -909,7 +942,7 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(adaptive_rejected_flags, [False])
         self.assertEqual(adaptive_counts, [1])
 
-    def test_adaptive_recirculation_rejects_narrowing_margin_immediately(
+    def test_adaptive_recirculation_rejects_narrowing_margin_on_final_pass(
         self,
     ) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
@@ -960,9 +993,9 @@ class RecirculationCacheTest(unittest.TestCase):
 
         torch.testing.assert_close(logits, pass_logits[0])
         self.assertEqual(final_cache, [1])
-        self.assertEqual(call_count, 2)
-        self.assertEqual(len(margins[0]), 2)
-        self.assertEqual(adaptive_counts, [1])
+        self.assertEqual(call_count, 4)
+        self.assertEqual(len(margins[0]), 4)
+        self.assertEqual(adaptive_counts, [3])
         self.assertEqual(
             rejection_reasons,
             [("margin-narrowed",)],

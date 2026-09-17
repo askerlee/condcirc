@@ -20,7 +20,7 @@ top-1/top-2 probability margin narrows. With post-margin MIN/MAX gates, a pass
 below MIN is rejected, a pass from MIN (inclusive) to MAX (exclusive) requires
 the configured margin-ratio improvement, and a pass at or above MAX is accepted.
 Adaptive source recirculation retries low-margin passes until its budget is
-exhausted, but rejects an adaptive trial immediately if its margin narrows.
+exhausted, then rejects the final adaptive trial if its margin narrows.
 
 In layerwise mode, each block from destination through source is run ``passes``
 times in place, feeding each pass output into the next pass after matching the
@@ -50,7 +50,7 @@ class RecirculationConfig:
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
     narrowing_grad_level: float = 0.0
-    narrowing_pre_margin: float = 0.05
+    perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
@@ -223,8 +223,8 @@ class _Hooks:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")
         if cfg.narrowing_grad_level < 0:
             raise ValueError("narrowing_grad_level must be nonnegative.")
-        if cfg.narrowing_pre_margin < 0:
-            raise ValueError("narrowing_pre_margin must be nonnegative.")
+        if cfg.perturb_pre_margin_thres < 0:
+            raise ValueError("perturb_pre_margin_thres must be nonnegative.")
         if cfg.narrowing_grad_level > 0 and noise_max > 0:
             raise ValueError(
                 "narrowing_grad_level and noise_level_range cannot both be nonzero."
@@ -343,7 +343,7 @@ class _Hooks:
             normalized_source = source * destination_norm / source_norm.clamp_min(
                 self.cfg.eps
             )
-            if self.noise_level > 0:
+            if self.noise_level > 0 and self.pass_index == 1:
                 gaussian_noise = torch.randn_like(source)
                 gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
@@ -454,6 +454,7 @@ class _LayerwiseHooks:
                 original_input.to(dtype=torch.float32), dim=-1, keepdim=True
             )
             repeated_output = output
+            # NOTE: pass_index is 1-based.
             for pass_index in range(1, self.passes):
                 hidden = _residual(repeated_output)
                 hidden_float = hidden.to(dtype=torch.float32)
@@ -798,20 +799,21 @@ def recirculate(
                     )
                     if config.noise_level_range[1] > 0
                     and previous_pass_margin is not None
+                    and previous_pass_margin >= config.perturb_pre_margin_thres
                     and post_margin_threshold is not None
                     else 0.0
                 )
                 token_injected_noise_levels.append(
-                    hooks.noise_level * (
-                        config.noise_decay_per_pass ** (pass_index - 1)
-                    )
+                    hooks.noise_level
+                    if pass_index == 1
+                    else 0.0
                 )
                 prepared_debug_latents: list[tuple[int, Tensor]] = []
                 if (
                     config.narrowing_grad_level > 0
                     and pass_index == 1
                     and first_margin is not None
-                    and first_margin >= config.narrowing_pre_margin
+                    and first_margin >= config.perturb_pre_margin_thres
                 ):
                     original_injection_sources = hooks.injection_sources.copy()
                     for pair_index, (source_index, _destination_index) in enumerate(
@@ -950,6 +952,7 @@ def recirculate(
                     has_margin_gate
                     and adaptive_recirculation_count > 0
                     and margin_narrowed
+                    and pass_index == max_passes - 1
                 )
                 should_retry_low_margin = (
                     pass_index >= passes - 1

@@ -546,13 +546,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--narrowing-pre-margin",
+        "--perturb-pre-margin-thres",
         type=float,
-        default=0.05,
+        default=0.1,
         metavar="THRESHOLD",
         help=(
-            "Apply narrowing only when the pre-pass top-1/top-2 probability "
-            "margin is at least this threshold (default: 0.05)."
+            "Apply narrowing gradients and noise only when the pre-pass "
+            "top-1/top-2 probability margin is at least this threshold "
+            "(default: 0.05)."
         ),
     )
     parser.add_argument(
@@ -783,7 +784,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "max_new_tokens",
         "model",
         "narrowing_grad_level",
-        "narrowing_pre_margin",
+        "perturb_pre_margin_thres",
         "no_recirculate_after_tokens",
         "openai_base_url",
         "output",
@@ -1107,8 +1108,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.narrowing_grad_level < 0:
         raise ValueError("--narrowing-grad-level must be nonnegative.")
-    if args.narrowing_pre_margin < 0:
-        raise ValueError("--narrowing-pre-margin must be nonnegative.")
+    if args.perturb_pre_margin_thres < 0:
+        raise ValueError("--perturb-pre-margin-thres must be nonnegative.")
     if args.narrowing_grad_level > 0 and noise_max > 0:
         raise ValueError(
             "--narrowing-grad-level and --noise-level-range cannot both be nonzero."
@@ -2162,7 +2163,7 @@ def main() -> None:
             beta=run_args.beta,
             noise_level_range=tuple(run_args.noise_level_range),
             narrowing_grad_level=run_args.narrowing_grad_level,
-            narrowing_pre_margin=run_args.narrowing_pre_margin,
+            perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
         )
@@ -2193,7 +2194,7 @@ def main() -> None:
             "noise_level_range",
             "noise_decay_per_pass",
             "narrowing_grad_level",
-            "narrowing_pre_margin",
+            "perturb_pre_margin_thres",
             "cond_recirculate",
             "act_sim_thres",
             "pre_margin_thres",

@@ -158,17 +158,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "existing result JSON file."
         )
     )
-    parser.add_argument("result_json", type=Path, help="Path to the result JSON file.")
+    parser.add_argument(
+        "result_jsons",
+        type=Path,
+        nargs="+",
+        metavar="RESULT_JSON",
+        help="Paths to result JSON files.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    try:
-        methods = load_method_ratings(args.result_json)
-    except (OSError, ValueError) as error:
-        raise SystemExit(f"error: {error}") from error
-    print(format_method_ratings(methods))
+    for index, path in enumerate(args.result_jsons):
+        try:
+            methods = load_method_ratings(path)
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"error: {error}") from error
+        if index:
+            print()
+        print(f"{path}:")
+        print(format_method_ratings(methods))
 
 
 if __name__ == "__main__":

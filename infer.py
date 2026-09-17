@@ -528,7 +528,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--noise-decay-per-pass",
         type=float,
-        default=0.8,
+        default=0,
         metavar="COEFFICIENT",
         help=(
             "Multiply the noise weight by this coefficient after each "

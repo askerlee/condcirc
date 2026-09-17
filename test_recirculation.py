@@ -108,6 +108,44 @@ class RecirculationCacheTest(unittest.TestCase):
 
         self.assertEqual(injected_source_latents, [[]])
 
+    def test_noise_injection_uses_decay_on_later_passes(self) -> None:
+        def injected_noise_levels_for_decay(decay: float) -> list[float]:
+            blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+            injected_noise_levels: list[list[float]] = []
+
+            def step(token: torch.Tensor, current_cache: list[int]):
+                hidden = torch.ones((1, 1, 2))
+                for block in blocks:
+                    hidden = block(hidden)
+                current_cache.append(len(current_cache))
+                return torch.tensor([[[2.0, 0.0, 0.0]]]), current_cache
+
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=[],
+                step=step,
+                rewind_one=lambda current_cache: current_cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),),
+                    alpha=0.5,
+                    noise_level_range=(0.2, 0.2),
+                    noise_decay_per_pass=decay,
+                ),
+                passes=3,
+                post_margin_threshold=(0.1, 0.2),
+                injected_noise_levels=injected_noise_levels,
+                decode_injected_source_latent=(
+                    lambda _token, _source, _latent, _cache, _state: {"margin": 0.0}
+                ),
+                capture_cached_token=lambda current_cache: current_cache[-1],
+                restore_cached_token=lambda current_cache, cached_token: None,
+            )
+            return injected_noise_levels[0]
+
+        self.assertEqual(injected_noise_levels_for_decay(0.0), [0.2, 0.0])
+        self.assertEqual(injected_noise_levels_for_decay(0.5), [0.2, 0.1])
+
     def test_gradient_narrowing_receives_raw_source_before_normalization(self) -> None:
         blocks = nn.ModuleList(
             [nn.Identity(), nn.Identity(), nn.Linear(2, 2, bias=False)]
@@ -234,7 +272,7 @@ class RecirculationCacheTest(unittest.TestCase):
             0.25 * torch.linalg.vector_norm(source, dim=-1),
         )
 
-    def test_noise_is_applied_on_first_recirculation_pass_only(self) -> None:
+    def test_noise_is_decayed_on_later_recirculation_passes(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -267,10 +305,10 @@ class RecirculationCacheTest(unittest.TestCase):
 
         torch.testing.assert_close(
             torch.stack(perturbation_norms),
-            torch.tensor([[[2.0]], [[0.0]], [[0.0]]]),
+            torch.tensor([[[2.0]], [[1.0]], [[0.5]]]),
         )
 
-    def test_only_first_recirculation_pass_uses_noise(self) -> None:
+    def test_later_recirculation_passes_use_decayed_noise(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []
         injected_noise_levels: list[list[float]] = []
@@ -307,6 +345,7 @@ class RecirculationCacheTest(unittest.TestCase):
                     pairs=((2, 0),),
                     alpha=0.5,
                     noise_level_range=(0.0, 0.4),
+                    noise_decay_per_pass=0.5,
                 ),
                 passes=3,
                 post_margin_threshold=(0.0, 1.0),
@@ -335,16 +374,22 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(used_margins, expected_margins)
         self.assertEqual(len(injected_noise_levels), 1)
         self.assertAlmostEqual(injected_noise_levels[0][0], 0.4 * expected_margins[0])
-        self.assertEqual(injected_noise_levels[0][1], 0.0)
+        self.assertAlmostEqual(
+            injected_noise_levels[0][1], 0.2 * expected_margins[1]
+        )
         self.assertEqual(len(injected_source_latents), 1)
-        self.assertEqual(len(injected_source_latents[0]), 1)
+        self.assertEqual(len(injected_source_latents[0]), 2)
         self.assertEqual(injected_source_latents[0][0][0], 2)
+        self.assertEqual(injected_source_latents[0][1][0], 2)
         self.assertEqual(
             decoded_injected_source_latents,
-            [[{"margin": 0.0, "cache": (1,)}]],
+            [[{"margin": 0.0, "cache": (1,)}, {"margin": 0.0, "cache": (2,)}]],
         )
         self.assertFalse(
             torch.equal(injected_source_latents[0][0][1], torch.ones((1, 1, 2)))
+        )
+        self.assertFalse(
+            torch.equal(injected_source_latents[0][1][1], torch.ones((1, 1, 2)))
         )
 
     def test_noise_is_reversed_when_positive_direction_widens_margin(self) -> None:

@@ -343,7 +343,7 @@ class _Hooks:
             normalized_source = source * destination_norm / source_norm.clamp_min(
                 self.cfg.eps
             )
-            if self.noise_level > 0 and self.pass_index == 1:
+            if self.noise_level > 0:
                 gaussian_noise = torch.randn_like(source)
                 gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
@@ -805,8 +805,7 @@ def recirculate(
                 )
                 token_injected_noise_levels.append(
                     hooks.noise_level
-                    if pass_index == 1
-                    else 0.0
+                    * (config.noise_decay_per_pass ** (pass_index - 1))
                 )
                 prepared_debug_latents: list[tuple[int, Tensor]] = []
                 if (

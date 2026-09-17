@@ -1,0 +1,19 @@
+#!/bin/bash
+#PBS -N cond_eval
+#PBS -q normal
+#PBS -P 11610002
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=24:00:00
+
+set -euo pipefail
+
+model="${1:?Usage: qsub run_cond_recirculate_eval.pbs -- <model-id>}"
+shift
+
+export PYTHONUNBUFFERED=1
+
+cd "$PBS_O_WORKDIR" || exit 1
+exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
+
+set -x
+python infer.py --model "$model" --do-eval "$@"

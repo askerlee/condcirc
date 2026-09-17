@@ -12,7 +12,8 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 cd "$PBS_O_WORKDIR" || exit 1
+source ~/miniconda3/etc/profile.d/conda.sh
 exec > "pbs-${PBS_JOBID}.out" 2> "pbs-${PBS_JOBID}.err"
 
 set -x
-python infer.py --do-eval $input
+~/miniconda3/bin/python infer.py --do-eval $input

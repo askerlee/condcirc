@@ -2,8 +2,8 @@
 #PBS -N cond_eval
 #PBS -q normal
 #PBS -P 11610002
-#PBS -l select=1:ngpus=1
-#PBS -l walltime=24:00:00
+#PBS -l select=1:ngpus=2
+#PBS -l walltime=02:00:00
 
 set -euo pipefail
 

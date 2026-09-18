@@ -116,10 +116,24 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(model.generation_config.repetition_penalty, 1.1)
 
+    def test_cli_repetition_penalty_overrides_gpt_oss_default(self) -> None:
+        model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))
+
+        configure_model_generation(model, "openai/gpt-oss-20b", 1.25)
+
+        self.assertEqual(model.generation_config.repetition_penalty, 1.25)
+
     def test_leaves_other_model_repetition_penalty_unchanged(self) -> None:
         model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))
 
         configure_model_generation(model, "Qwen/Qwen3.6-35B-A3B-FP8")
+
+        self.assertEqual(model.generation_config.repetition_penalty, 1.0)
+
+    def test_defaults_unset_repetition_penalty_to_one(self) -> None:
+        model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=None))
+
+        configure_model_generation(model, "google/gemma-3-4b-it")
 
         self.assertEqual(model.generation_config.repetition_penalty, 1.0)
 
@@ -135,6 +149,16 @@ class RecirculationStatsTest(unittest.TestCase):
             penalized_logits, torch.tensor([[-2.2, 2.0 / 1.1, 4.0]])
         )
 
+    def test_skips_repetition_penalty_after_accepted_recirculation(self) -> None:
+        logits = torch.tensor([[-2.0, 2.0, 4.0]])
+        previous_token_ids = torch.tensor([[0, 1]])
+
+        sampling_logits = apply_repetition_penalty(
+            logits, previous_token_ids, 1.1, recirculated=True
+        )
+
+        torch.testing.assert_close(sampling_logits, logits)
+
     def test_parses_perturb_pre_margin_threshold(self) -> None:
         args = parse_args(["--perturb-pre-margin-thres", "0.12", "prompt"])
 
@@ -144,6 +168,17 @@ class RecirculationStatsTest(unittest.TestCase):
         args = parse_args(["--perturb-pre-margin-thres", "-0.01", "prompt"])
 
         with self.assertRaisesRegex(ValueError, "perturb-pre-margin-thres"):
+            validate_run_arguments(args)
+
+    def test_parses_repetition_penalty(self) -> None:
+        args = parse_args(["--repetition-penalty", "1.25", "prompt"])
+
+        self.assertEqual(args.repetition_penalty, 1.25)
+
+    def test_rejects_nonpositive_repetition_penalty(self) -> None:
+        args = parse_args(["--repetition-penalty", "0", "prompt"])
+
+        with self.assertRaisesRegex(ValueError, "repetition-penalty"):
             validate_run_arguments(args)
 
     def test_rejects_noise_level_range_outside_range(self) -> None:

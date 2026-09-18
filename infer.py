@@ -695,6 +695,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0.0,
         help="Use greedy decoding at 0, sampling above 0.",
     )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        metavar="PENALTY",
+        help=(
+            "Override the model repetition penalty; values above 1 discourage "
+            "previously generated tokens."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--device",
@@ -795,6 +805,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "openai_base_url",
         "output",
         "query_indices",
+        "repetition_penalty",
         "seed",
         "similarities_output",
     }
@@ -887,9 +898,15 @@ def enable_fp32_output_projection(model: nn.Module) -> None:
         output_embeddings.forward = replacement
 
 
-def configure_model_generation(model: nn.Module, model_name: str) -> None:
-    if model_name.rsplit("/", 1)[-1].lower().startswith("gpt-oss"):
+def configure_model_generation(
+    model: nn.Module, model_name: str, repetition_penalty: float | None = None
+) -> None:
+    if repetition_penalty is not None:
+        model.generation_config.repetition_penalty = repetition_penalty
+    elif model_name.rsplit("/", 1)[-1].lower().startswith("gpt-oss"):
         model.generation_config.repetition_penalty = 1.1
+    elif model.generation_config.repetition_penalty is None:
+        model.generation_config.repetition_penalty = 1.0
 
 
 def resolve_source(source: int, num_blocks: int) -> int:
@@ -1096,9 +1113,12 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
 
 
 def apply_repetition_penalty(
-    logits: Tensor, previous_token_ids: Tensor, penalty: float
+    logits: Tensor,
+    previous_token_ids: Tensor,
+    penalty: float,
+    recirculated: bool = False,
 ) -> Tensor:
-    if penalty == 1.0:
+    if recirculated or penalty == 1.0:
         return logits
     previous_scores = logits.gather(1, previous_token_ids)
     previous_scores = torch.where(
@@ -1132,6 +1152,8 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
 
 
 def validate_run_arguments(args: argparse.Namespace) -> None:
+    if args.repetition_penalty is not None and args.repetition_penalty <= 0:
+        raise ValueError("--repetition-penalty must be positive.")
     noise_min, noise_max = args.noise_level_range
     if not 0.0 <= noise_min <= noise_max <= 0.5:
         raise ValueError(
@@ -1249,7 +1271,7 @@ def main() -> None:
     if not use_device_map:
         model.to(device)
     model.eval()
-    configure_model_generation(model, args.model)
+    configure_model_generation(model, args.model, args.repetition_penalty)
     enable_fp32_output_projection(model)
     input_device = model.get_input_embeddings().weight.device
 
@@ -1347,20 +1369,26 @@ def main() -> None:
         if args.no_recirculate_after_tokens is not None
         else ""
     )
+    repetition_penalty_signature = (
+        f"-rpen{args.repetition_penalty}"
+        if args.repetition_penalty is not None
+        else ""
+    )
     if args.output is None:
         output_args = argparse.Namespace(
-            **vars(args), pairs=output_recirculation_pairs(args)
+            **{**vars(args), "pairs": output_recirculation_pairs(args)}
         )
         pairs = resolve_recirculation_pairs(
             output_args, len(blocks), global_attention_layers
         )
-        model_slug = args.model.rsplit("/", 1)[-1]
+        model_slug = args.model.rsplit("/", 1)[-1].lower()
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
-            f"{gate_signature}{cutoff_signature}{query_signature}.json"
+            f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
+            f"{query_signature}.json"
         )
     if args.similarities_output is None:
         args.similarities_output = args.output.with_name(
@@ -1909,6 +1937,9 @@ def main() -> None:
                         next_logits,
                         generated_ids,
                         model.generation_config.repetition_penalty,
+                        recirculated=bool(
+                            recirculated_flags and recirculated_flags[-1]
+                        ),
                     ),
                     run_args.temperature,
                 )
@@ -2116,6 +2147,9 @@ def main() -> None:
                     student_next_logits,
                     generated_ids,
                     model.generation_config.repetition_penalty,
+                    recirculated=bool(
+                        recirculated_flags and recirculated_flags[-1]
+                    ),
                 ),
                 run_args.temperature,
             )
@@ -2254,6 +2288,7 @@ def main() -> None:
             "ada_recirculate",
             "cosine_reject",
             "cosine_top_k",
+            "repetition_penalty",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]

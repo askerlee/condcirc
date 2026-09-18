@@ -76,6 +76,7 @@ EXAMPLE_QUERIES = (
     "A family must choose between caring for an aging relative at home, hiring in-home support, or moving them to assisted living. Build a respectful decision process that considers autonomy, safety, finances, caregiver capacity, and how the plan should be revisited over time.",
     "A news platform wants to reduce misinformation without suppressing legitimate disagreement or breaking-news updates that later change. Design a moderation approach that combines labels, distribution rules, appeals, and evidence standards, then explain its likely failure modes.",
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
+    r"Find positive real numbers \(x,y,z\) satisfying \[ x+y+z=6, \] \[ xy+yz+zx=12, \] and \[ xyz=10. \] Give a solution and explain how you found it."
 )
 
 REJECTION_GATES = (
@@ -591,6 +592,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Primary conditional gate: recirculate only when the top-1 versus "
             "top-2 probability margin is at most this value."
         ),
+    )
+    parser.add_argument(
+        "--pre-margin-relax-tokens",
+        type=int,
+        default=0,
+        metavar="M",
+        help=(
+            "For the first M generated tokens, multiply --pre-margin-thres "
+            "by --pre-margin-relax-factor (default: 0, disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--pre-margin-relax-factor",
+        type=float,
+        default=2.0,
+        metavar="T",
+        help="Multiplier for the relaxed initial-token pre-margin threshold (default: 1).",
     )
     parser.add_argument(
         "--post-margin-thres",
@@ -1151,9 +1169,24 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
     )
 
 
+def generated_pre_margin_threshold(
+    pre_margin_threshold: float,
+    relax_tokens: int,
+    relax_factor: float,
+    generated_token_count: int,
+) -> float:
+    if generated_token_count <= relax_tokens:
+        return pre_margin_threshold * relax_factor
+    return pre_margin_threshold
+
+
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
+    if args.pre_margin_relax_tokens < 0:
+        raise ValueError("--pre-margin-relax-tokens must be nonnegative.")
+    if args.pre_margin_relax_factor < 1.0:
+        raise ValueError("--pre-margin-relax-factor must be at least 1.")
     noise_min, noise_max = args.noise_level_range
     if not 0.0 <= noise_min <= noise_max <= 0.5:
         raise ValueError(
@@ -1960,7 +1993,12 @@ def main() -> None:
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
                         condition_thresholds=condition_thresholds,
-                        pre_margin_threshold=run_args.pre_margin_thres,
+                        pre_margin_threshold=generated_pre_margin_threshold(
+                            run_args.pre_margin_thres,
+                            run_args.pre_margin_relax_tokens,
+                            run_args.pre_margin_relax_factor,
+                            generated_ids.shape[1] - input_ids.shape[1],
+                        ),
                         post_margin_threshold=run_args.post_margin_thres,
                         post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                         adaptive_recirculation=run_args.ada_recirculate,

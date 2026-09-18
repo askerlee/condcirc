@@ -12,6 +12,7 @@ from infer import (
     enable_fp32_output_projection,
     format_average_eval_rating,
     format_run_stats,
+    generated_pre_margin_threshold,
     output_recirculation_pairs,
     parse_args,
     summarize_recirculation_stats,
@@ -73,6 +74,26 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
+
+    def test_parses_initial_pre_margin_relaxation(self) -> None:
+        args = parse_args(
+            [
+                "--pre-margin-relax-tokens",
+                "3",
+                "--pre-margin-relax-factor",
+                "1.5",
+                "prompt",
+            ]
+        )
+
+        self.assertEqual(args.pre_margin_relax_tokens, 3)
+        self.assertEqual(args.pre_margin_relax_factor, 1.5)
+
+    def test_relaxes_only_the_first_generated_tokens(self) -> None:
+        self.assertEqual(generated_pre_margin_threshold(0.2, 0, 1.5, 1), 0.2)
+        self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 1), 0.3)
+        self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 3), 0.3)
+        self.assertEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 4), 0.2)
 
     def test_uses_gemma_specific_default_pair(self) -> None:
         args = parse_args(["--model", "google/gemma-4-26b-a4b-it", "prompt"])

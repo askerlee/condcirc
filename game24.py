@@ -13,8 +13,8 @@ COUNTDOWN_NUMBERS = frozenset((1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 25, 50, 75, 100))
 
 
 def validate_countdown_puzzle(target: int, numbers: Sequence[int]) -> None:
-    if type(target) is not int or not 100 <= target <= 999:
-        raise ValueError("Countdown target must be an integer from 100 to 999.")
+    if type(target) is not int or not 100 <= target <= 1999:
+        raise ValueError("Countdown target must be an integer from 100 to 1999.")
     if len(numbers) != 6 or any(
         type(number) is not int or number not in COUNTDOWN_NUMBERS
         for number in numbers

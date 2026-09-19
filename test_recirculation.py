@@ -14,6 +14,37 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_force_recirculation_allows_noise_without_post_margin_gate(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        recirculated_flags: list[bool] = []
+
+        def step(token: torch.Tensor, cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            cache.append(len(cache))
+            return torch.tensor([[[2.0, 1.0, 0.0]]]), cache
+
+        recirculate(
+            torch.tensor([[1]]),
+            blocks=blocks,
+            cache=[],
+            step=step,
+            rewind_one=lambda cache: cache[:-1],
+            config=RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+            ),
+            passes=1,
+            adaptive_recirculation=1,
+            force_recirculation=True,
+            decode_injected_source_latent=lambda *_args: {"margin": 0.0},
+            capture_cached_token=lambda cache: cache[-1],
+            restore_cached_token=lambda _cache, _cached_token: None,
+            recirculated_flags=recirculated_flags,
+        )
+
+        self.assertEqual(recirculated_flags, [True])
+
     def test_accepts_noise_level_one(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
 

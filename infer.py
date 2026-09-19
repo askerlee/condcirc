@@ -792,6 +792,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--repetition-recovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Force recirculation without eligibility or rejection gates when a "
+            "generated line occurs for the third time (default: enabled)."
+        ),
+    )
+    parser.add_argument(
         "--cosine-top-k",
         type=int,
         default=5,
@@ -828,7 +837,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "adjacent decoder blocks and print summary stats after each query."
         ),
     )
-    parser.add_argument("--max-new-tokens", type=int, default=1000)
+    parser.add_argument("--max-new-tokens", type=int, default=2000)
     parser.add_argument(
         "--no-recirculate-after-N-tokens",
         dest="no_recirculate_after_tokens",
@@ -1352,6 +1361,136 @@ def generated_cosine_reject(
     return cosine_reject
 
 
+def has_third_repeated_suffix(
+    token_ids: Sequence[int],
+    minimum_sequence_length: int = 8,
+    maximum_sequence_length: int = 32,
+) -> bool:
+    """Whether the current suffix is the third occurrence of a token sequence."""
+    maximum_length = min(maximum_sequence_length, len(token_ids) // 3)
+    for sequence_length in range(minimum_sequence_length, maximum_length + 1):
+        suffix = token_ids[-sequence_length:]
+        occurrences = sum(
+            token_ids[start : start + sequence_length] == suffix
+            for start in range(len(token_ids) - sequence_length + 1)
+        )
+        if occurrences >= 3:
+            return True
+    return False
+
+
+def has_third_repeated_text_suffix(
+    text: str,
+    minimum_word_count: int = 4,
+) -> bool:
+    """Whether the current normalized line is appearing for the third time."""
+    lines = [
+        re.sub(r"^\d+[.)]\s*", "", line.strip())
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    if not lines or len(re.findall(r"\S+", lines[-1])) < minimum_word_count:
+        return False
+    return lines.count(lines[-1]) >= 3
+
+
+@dataclasses.dataclass(frozen=True)
+class RepetitionRecoverySettings:
+    noise_level_range: tuple[float, float]
+    cosine_reject: float | None
+    pre_margin_threshold: float | None
+    post_margin_threshold: tuple[float, float] | None
+    post_margin_ratio_threshold: float | None
+    condition_thresholds: Sequence[float] | None
+    recirculation_allowed: bool
+    force_recirculation: bool
+
+
+def repetition_recovery_settings(
+    noise_level_range: tuple[float, float],
+    cosine_reject: float | None,
+    pre_margin_threshold: float,
+    post_margin_threshold: tuple[float, float] | None,
+    post_margin_ratio_threshold: float | None,
+    condition_thresholds: Sequence[float] | None,
+    recirculation_allowed: bool,
+    token_ids: Sequence[int],
+    enabled: bool = True,
+    decoded_text: str | None = None,
+) -> RepetitionRecoverySettings:
+    repetition_detected = (
+        has_third_repeated_text_suffix(decoded_text)
+        if decoded_text is not None
+        else has_third_repeated_suffix(token_ids)
+    )
+    if not enabled or not repetition_detected:
+        return RepetitionRecoverySettings(
+            noise_level_range,
+            cosine_reject,
+            pre_margin_threshold,
+            post_margin_threshold,
+            post_margin_ratio_threshold,
+            condition_thresholds,
+            recirculation_allowed,
+            False,
+        )
+    return RepetitionRecoverySettings(
+        tuple(level * 2 for level in noise_level_range),
+        None,
+        None,
+        None,
+        None,
+        None,
+        True,
+        True,
+    )
+
+
+class StreamingSimilarityWriter:
+    def __init__(self, path: Path) -> None:
+        self.file = path.open("w+", encoding="utf-8")
+        self.file.write("[]\n")
+        self.file.flush()
+        self.top_close_position = 1
+        self.run_count = 0
+        self.similarity_count = 0
+        self.similarities_close_position = 0
+
+    def start_run(self, prompt: str, run: str, seed: int) -> None:
+        self.file.seek(self.top_close_position)
+        self.file.write("\n" if self.run_count == 0 else ",\n")
+        self.file.write("  {\n    \"prompt\": ")
+        json.dump(prompt, self.file, ensure_ascii=False)
+        self.file.write(",\n    \"run\": ")
+        json.dump(run, self.file, ensure_ascii=False)
+        self.file.write(f",\n    \"seed\": {seed},\n    \"similarities\": [\n")
+        self.similarities_close_position = self.file.tell()
+        self.similarity_count = 0
+        self._write_closing_delimiters()
+        self.run_count += 1
+
+    def append(self, similarity: dict[str, Any]) -> None:
+        self.file.seek(self.similarities_close_position)
+        if self.similarity_count:
+            self.file.write(",\n")
+        self.file.write("      ")
+        json.dump(similarity, self.file, ensure_ascii=False, indent=6)
+        self.file.write("\n")
+        self.similarities_close_position = self.file.tell()
+        self.similarity_count += 1
+        self._write_closing_delimiters()
+
+    def _write_closing_delimiters(self) -> None:
+        self.file.write("    ]\n  }\n")
+        self.top_close_position = self.file.tell()
+        self.file.write("]\n")
+        self.file.truncate()
+        self.file.flush()
+
+    def close(self) -> None:
+        self.file.close()
+
+
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
@@ -1492,7 +1631,10 @@ def main() -> None:
     dtype = torch.bfloat16 if use_device_map or device.type == "cuda" else torch.float32
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    load_kwargs: dict[str, Any] = {"dtype": dtype}
+    load_kwargs: dict[str, Any] = {
+        "dtype": dtype,
+        "attn_implementation": "sdpa",
+    }
     if use_device_map:
         load_kwargs.update(
             device_map=args.device_map,
@@ -1961,6 +2103,7 @@ def main() -> None:
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
         on_generated_token: Callable[[Tensor], None] | None = None,
+        on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
         set_random_seed(run_args.seed)
         similarity_stats = (
@@ -2183,6 +2326,7 @@ def main() -> None:
                 next_logits = prompt_logits[:, -1, :]
 
             generated_ids = input_ids.clone()
+            repetition_detection_active = False
             for _ in range(run_args.max_new_tokens):
                 next_token = sample_token(
                     apply_repetition_penalty(
@@ -2199,18 +2343,51 @@ def main() -> None:
                 if on_generated_token is not None:
                     on_generated_token(next_token)
                 record_generated_token_stats()
+                generated_text = tokenizer.decode(
+                    generated_ids[0, input_ids.shape[1] :],
+                    skip_special_tokens=True,
+                )
+                repetition_detected = has_third_repeated_text_suffix(generated_text)
+                if repetition_detected and not repetition_detection_active:
+                    print("\nrepetition detected", flush=True)
+                repetition_detection_active = repetition_detected
                 if next_token.item() in eos_token_ids:
                     break
                 if use_recirculation:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
-                    token_run_config = dataclasses.replace(
-                        run_config,
-                        noise_level_range=generated_noise_level_range(
+                    pre_margin_threshold = generated_pre_margin_threshold(
+                        run_args.pre_margin_thres,
+                        run_args.startup_relax_tokens,
+                        run_args.pre_margin_relax_factor,
+                        generated_token_count,
+                    )
+                    recovery_settings = repetition_recovery_settings(
+                        generated_noise_level_range(
                             run_config.noise_level_range,
                             tuple(run_args.startup_noise_level_range),
                             run_args.startup_relax_tokens,
                             generated_token_count,
                         ),
+                        generated_cosine_reject(
+                            run_args.cosine_reject,
+                            run_args.startup_cosine_reject,
+                            run_args.startup_relax_tokens,
+                            generated_token_count,
+                        ),
+                        pre_margin_threshold,
+                        tuple(run_args.post_margin_thres)
+                        if run_args.post_margin_thres is not None
+                        else None,
+                        run_args.post_margin_ratio_thres,
+                        condition_thresholds,
+                        allow_generated_recirculation(generated_token_count),
+                        generated_ids[0, -generated_token_count:].tolist(),
+                        enabled=run_args.repetition_recovery,
+                        decoded_text=generated_text,
+                    )
+                    token_run_config = dataclasses.replace(
+                        run_config,
+                        noise_level_range=recovery_settings.noise_level_range,
                     )
                     token_logits, student_cache = recirculate(
                         next_token,
@@ -2223,25 +2400,16 @@ def main() -> None:
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
-                        condition_thresholds=condition_thresholds,
-                        pre_margin_threshold=generated_pre_margin_threshold(
-                            run_args.pre_margin_thres,
-                            run_args.startup_relax_tokens,
-                            run_args.pre_margin_relax_factor,
-                            generated_token_count,
+                        condition_thresholds=recovery_settings.condition_thresholds,
+                        pre_margin_threshold=recovery_settings.pre_margin_threshold,
+                        post_margin_threshold=recovery_settings.post_margin_threshold,
+                        post_margin_ratio_threshold=(
+                            recovery_settings.post_margin_ratio_threshold
                         ),
-                        post_margin_threshold=run_args.post_margin_thres,
-                        post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                         adaptive_recirculation=run_args.ada_recirculate,
-                        recirculation_allowed=allow_generated_recirculation(
-                            generated_token_count
-                        ),
-                        cosine_reject=generated_cosine_reject(
-                            run_args.cosine_reject,
-                            run_args.startup_cosine_reject,
-                            run_args.startup_relax_tokens,
-                            generated_token_count,
-                        ),
+                        recirculation_allowed=recovery_settings.recirculation_allowed,
+                        force_recirculation=recovery_settings.force_recirculation,
+                        cosine_reject=recovery_settings.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         recirculated_flags=recirculated_flags,
@@ -2342,6 +2510,8 @@ def main() -> None:
         student_next_logits = student_logits[:, -1, :]
         current_token = input_ids[:, -1:]
         student_run_config = run_config
+        repetition_detection_active = False
+        repetition_recovery_active = False
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -2433,22 +2603,81 @@ def main() -> None:
                 token_index=token_index,
                 selected_token=tokenizer.decode(next_token[0]),
             )
-            similarities.append(comparison)
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
             if on_generated_token is not None:
                 on_generated_token(next_token)
 
             if next_token.item() in eos_token_ids:
+                similarities.append(comparison)
+                if on_debug_comparison is not None:
+                    on_debug_comparison(comparison)
                 break
 
-            student_run_config = dataclasses.replace(
-                run_config,
-                noise_level_range=generated_noise_level_range(
+            generated_token_ids = generated_ids[0, -(token_index + 1) :].tolist()
+            generated_text = tokenizer.decode(
+                generated_ids[0, input_ids.shape[1] :],
+                skip_special_tokens=True,
+            )
+            repetition_detected = has_third_repeated_text_suffix(generated_text)
+            if repetition_detected and not repetition_detection_active:
+                print("\nrepetition detected", flush=True)
+            repetition_detection_active = repetition_detected
+            repetition_recovery_active = (
+                repetition_detected and run_args.repetition_recovery
+            )
+            recovery_settings = repetition_recovery_settings(
+                generated_noise_level_range(
                     run_config.noise_level_range,
                     tuple(run_args.startup_noise_level_range),
                     run_args.startup_relax_tokens,
                     token_index + 1,
                 ),
+                generated_cosine_reject(
+                    run_args.cosine_reject,
+                    run_args.startup_cosine_reject,
+                    run_args.startup_relax_tokens,
+                    token_index + 1,
+                ),
+                run_args.pre_margin_thres,
+                tuple(run_args.post_margin_thres)
+                if run_args.post_margin_thres is not None
+                else None,
+                run_args.post_margin_ratio_thres,
+                condition_thresholds,
+                allow_generated_recirculation(token_index + 1),
+                generated_token_ids,
+                enabled=run_args.repetition_recovery,
+                decoded_text=generated_text,
+            )
+            comparison["repetition_detected"] = repetition_detected
+            comparison["repetition_recovery_active"] = repetition_recovery_active
+            comparison["repetition_recovery_noise_level_range"] = (
+                recovery_settings.noise_level_range
+                if repetition_recovery_active
+                else None
+            )
+            comparison["repetition_recovery_cosine_reject"] = (
+                recovery_settings.cosine_reject if repetition_recovery_active else None
+            )
+            comparison["repetition_recovery_pre_margin_threshold"] = (
+                recovery_settings.pre_margin_threshold
+                if repetition_recovery_active
+                else None
+            )
+            comparison["repetition_recovery_post_margin_threshold"] = (
+                recovery_settings.post_margin_threshold
+                if repetition_recovery_active
+                else None
+            )
+            comparison["repetition_recovery_forces_recirculation"] = (
+                repetition_recovery_active
+            )
+            similarities.append(comparison)
+            if on_debug_comparison is not None:
+                on_debug_comparison(comparison)
+            student_run_config = dataclasses.replace(
+                run_config,
+                noise_level_range=recovery_settings.noise_level_range,
             )
             student_logits, student_cache = recirculate(
                 next_token,
@@ -2461,18 +2690,16 @@ def main() -> None:
                 adjacent_layer_stats=adjacent_layer_stats,
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
-                condition_thresholds=condition_thresholds,
-                pre_margin_threshold=run_args.pre_margin_thres,
-                post_margin_threshold=run_args.post_margin_thres,
-                post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
-                adaptive_recirculation=run_args.ada_recirculate,
-                recirculation_allowed=allow_generated_recirculation(token_index + 1),
-                cosine_reject=generated_cosine_reject(
-                    run_args.cosine_reject,
-                    run_args.startup_cosine_reject,
-                    run_args.startup_relax_tokens,
-                    token_index + 1,
+                condition_thresholds=recovery_settings.condition_thresholds,
+                pre_margin_threshold=recovery_settings.pre_margin_threshold,
+                post_margin_threshold=recovery_settings.post_margin_threshold,
+                post_margin_ratio_threshold=(
+                    recovery_settings.post_margin_ratio_threshold
                 ),
+                adaptive_recirculation=run_args.ada_recirculate,
+                recirculation_allowed=recovery_settings.recirculation_allowed,
+                force_recirculation=recovery_settings.force_recirculation,
+                cosine_reject=recovery_settings.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
@@ -2533,6 +2760,7 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         on_generated_token: Callable[[Tensor], None] | None = None,
+        on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
@@ -2564,6 +2792,7 @@ def main() -> None:
             run_args=run_args,
             run_config=run_config,
             on_generated_token=on_generated_token,
+            on_debug_comparison=on_debug_comparison,
         )
         synchronize_devices()
         return generated_ids, similarities, stats, time.perf_counter() - start
@@ -2584,6 +2813,7 @@ def main() -> None:
             "ada_recirculate",
             "cosine_reject",
             "cosine_top_k",
+            "repetition_recovery",
             "repetition_penalty",
             "seed",
         )
@@ -2599,6 +2829,7 @@ def main() -> None:
         )
         label_options = tuple(dict.fromkeys(("model", *ablated_options)))
         baseline_arguments = format_run_arguments(args, label_options)
+        # True: use_recirculation is always enabled for both baseline and ablation runs.
         runs = [(args, True, f"Baseline: {baseline_arguments}")]
         for overrides in args.ablations:
             ablation_args = argparse.Namespace(**vars(args))
@@ -2672,13 +2903,12 @@ def main() -> None:
         )
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
-    similarities_file = (
-        args.similarities_output.open("w", encoding="utf-8")
+    similarities_writer = (
+        StreamingSimilarityWriter(args.similarities_output)
         if args.debug and args.similarities_output
         else None
     )
     output_records: list[dict[str, Any]] = []
-    similarity_records: list[dict[str, Any]] = []
 
     def emit(text: str) -> None:
         print(text)
@@ -2721,6 +2951,8 @@ def main() -> None:
 
             for run_index, (run_args, use_recirculation, label) in enumerate(runs):
                 emit(f"\n=== {label} ===")
+                if similarities_writer is not None:
+                    similarities_writer.start_run(prompt, label, run_args.seed)
                 run_ids, similarities, stats, run_seconds = timed_generate(
                     use_recirculation=use_recirculation,
                     run_args=run_args,
@@ -2728,6 +2960,11 @@ def main() -> None:
                         tokenizer.decode(token[0], skip_special_tokens=True),
                         end="",
                         flush=True,
+                    ),
+                    on_debug_comparison=(
+                        similarities_writer.append
+                        if similarities_writer is not None
+                        else None
                     ),
                 )
                 output = tokenizer.decode(
@@ -2770,13 +3007,6 @@ def main() -> None:
                     run_record["rationale"] = evaluation["rationale"]
                 query_record["runs"].append(run_record)
                 save_output()
-                if similarities_file is not None:
-                    similarity_records.append({
-                        "prompt": prompt,
-                        "run": label,
-                        "seed": run_args.seed,
-                        "similarities": similarities,
-                    })
         emit(f"\n=== Summary: {len(output_records)} queries ===")
         for run_index, (_run_args, _use_recirculation, label) in enumerate(runs):
             completed_runs = [
@@ -2830,15 +3060,8 @@ def main() -> None:
     finally:
         if output_file is not None:
             output_file.close()
-        if similarities_file is not None:
-            json.dump(
-                similarity_records,
-                similarities_file,
-                ensure_ascii=False,
-                indent=2,
-            )
-            similarities_file.write("\n")
-            similarities_file.close()
+        if similarities_writer is not None:
+            similarities_writer.close()
 
 
 if __name__ == "__main__":

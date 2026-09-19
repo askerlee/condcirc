@@ -1,4 +1,6 @@
 import unittest
+import json
+import tempfile
 from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
@@ -18,9 +20,13 @@ from infer import (
     generated_cosine_reject,
     generated_noise_level_range,
     generated_pre_margin_threshold,
+    has_third_repeated_suffix,
+    has_third_repeated_text_suffix,
     output_recirculation_pairs,
     parse_args,
+    repetition_recovery_settings,
     resolve_game24_indices,
+    StreamingSimilarityWriter,
     summarize_recirculation_stats,
     set_random_seed,
     validate_run_arguments,
@@ -28,6 +34,32 @@ from infer import (
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_streams_valid_similarity_json_after_each_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "debug.json"
+            writer = StreamingSimilarityWriter(path)
+            writer.start_run("prompt", "run", 7)
+            self.assertEqual(json.loads(path.read_text())[0]["similarities"], [])
+
+            writer.append({"token_index": 0})
+            first_snapshot = json.loads(path.read_text())
+            writer.append({"token_index": 1})
+            second_snapshot = json.loads(path.read_text())
+            writer.start_run("another prompt", "another run", 8)
+            writer.append({"token_index": 0})
+            multi_run_snapshot = json.loads(path.read_text())
+            writer.close()
+
+        self.assertEqual(first_snapshot[0]["similarities"], [{"token_index": 0}])
+        self.assertEqual(
+            second_snapshot[0]["similarities"],
+            [{"token_index": 0}, {"token_index": 1}],
+        )
+        self.assertEqual(len(multi_run_snapshot), 2)
+        self.assertEqual(
+            multi_run_snapshot[1]["similarities"], [{"token_index": 0}]
+        )
+
     def test_output_projection_returns_fp32_logits(self) -> None:
         class Model(nn.Module):
             def __init__(self) -> None:
@@ -183,6 +215,138 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 3), 0.9)
         self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 4), 0.8)
         self.assertEqual(generated_cosine_reject(0.8, None, 3, 1), 0.8)
+
+    def test_parses_repetition_recovery_toggle(self) -> None:
+        self.assertTrue(parse_args(["prompt"]).repetition_recovery)
+        self.assertFalse(
+            parse_args(["--no-repetition-recovery", "prompt"]).repetition_recovery
+        )
+
+    def test_detects_a_third_repeated_generated_token_sequence(self) -> None:
+        repeated = list(range(8)) * 3
+
+        self.assertTrue(has_third_repeated_suffix(repeated))
+        self.assertFalse(has_third_repeated_suffix(repeated + [11]))
+
+    def test_detects_an_interleaved_repeated_suffix(self) -> None:
+        repeated_answer = list(range(8))
+        token_ids = (
+            [21, 22, 23]
+            + repeated_answer
+            + [24, 25, 26]
+            + repeated_answer
+            + [27, 28, 29]
+            + repeated_answer
+        )
+
+        self.assertTrue(has_third_repeated_suffix(token_ids))
+
+    def test_detects_a_repeated_decoded_text_suffix(self) -> None:
+        text = "\n".join(
+            (
+                "10. $106 \\times 8 = 848$.",
+                "11. $848 - (9 - 6 + 1)$... No.",
+                "12. $106 \\times 8 = 848$.",
+                "13. $848 - (9 - 3 - 2)$... No.",
+                "14. $106 \\times 8 = 848$.",
+            )
+        )
+
+        self.assertTrue(has_third_repeated_text_suffix(text))
+
+    def test_ignores_repeated_short_prose_fragments(self) -> None:
+        text = "\n".join(
+            (
+                "1. First, multiply 9 and 25 to get 225.",
+                "2. Subtract 6 from 225 to get 219.",
+                "3. Multiply 219 by 4 to get 876.",
+                "4. Multiply 8 and 4 to get 32.",
+                "Alternative path:",
+                "1. Multiply 25 by 3 to get 75.",
+            )
+        )
+
+        self.assertFalse(has_third_repeated_text_suffix(text))
+
+    def test_ignores_repeated_short_restart_headers(self) -> None:
+        text = "\n".join(
+            (
+                "Let's try:",
+                "1. $25 \\times 8 \\times 4 = 800$.",
+                "2. $844 - 800 = 44$.",
+                "Let's try:",
+                "1. $25 + 6 = 31$.",
+                "2. $31 \\times 3 \\times 9 = 837$.",
+                "Let's try:",
+            )
+        )
+
+        self.assertFalse(has_third_repeated_text_suffix(text))
+
+    def test_decoded_text_takes_priority_over_raw_token_repetition(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            decoded_text="Let's try:\nLet's try:\nLet's try:",
+        )
+
+        self.assertEqual(settings.noise_level_range, (0.1, 0.2))
+        self.assertEqual(settings.cosine_reject, 0.8)
+        self.assertEqual(settings.pre_margin_threshold, 0.2)
+        self.assertEqual(settings.post_margin_threshold, (0.1, 0.2))
+        self.assertEqual(settings.post_margin_ratio_threshold, 1.2)
+        self.assertEqual(settings.condition_thresholds, (0.7,))
+        self.assertFalse(settings.recirculation_allowed)
+        self.assertFalse(settings.force_recirculation)
+
+    def test_recovers_from_repetition_with_more_noise_and_lower_cosine_gate(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+        )
+
+        self.assertEqual(settings.noise_level_range, (0.2, 0.4))
+        self.assertIsNone(settings.cosine_reject)
+        self.assertIsNone(settings.pre_margin_threshold)
+        self.assertIsNone(settings.post_margin_threshold)
+        self.assertIsNone(settings.post_margin_ratio_threshold)
+        self.assertIsNone(settings.condition_thresholds)
+        self.assertTrue(settings.recirculation_allowed)
+        self.assertTrue(settings.force_recirculation)
+
+    def test_can_disable_repetition_recovery(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            enabled=False,
+        )
+
+        self.assertEqual(settings.noise_level_range, (0.1, 0.2))
+        self.assertEqual(settings.cosine_reject, 0.8)
+        self.assertEqual(settings.pre_margin_threshold, 0.2)
+        self.assertEqual(settings.post_margin_threshold, (0.1, 0.2))
+        self.assertEqual(settings.post_margin_ratio_threshold, 1.2)
+        self.assertEqual(settings.condition_thresholds, (0.7,))
+        self.assertFalse(settings.recirculation_allowed)
+        self.assertFalse(settings.force_recirculation)
 
     def test_accepts_startup_noise_level_one(self) -> None:
         args = parse_args(

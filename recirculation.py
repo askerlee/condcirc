@@ -517,6 +517,7 @@ def recirculate(
     post_margin_ratio_threshold: float | None = None,
     adaptive_recirculation: int = 0,
     recirculation_allowed: bool = True,
+    force_recirculation: bool = False,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
     gating_pair_index: int = 0,
@@ -565,7 +566,7 @@ def recirculate(
             raise ValueError("post_margin_threshold values must be nonnegative.")
         if post_margin_min > post_margin_max:
             raise ValueError("post_margin_threshold requires MIN <= MAX.")
-    if config.noise_level_range[1] > 0 and (
+    if not force_recirculation and config.noise_level_range[1] > 0 and (
         post_margin_threshold is None
         or post_margin_threshold[0] == post_margin_threshold[1]
     ):
@@ -743,12 +744,18 @@ def recirculate(
                 or first_margin <= pre_margin_threshold
             )
             probability_gate = margin_gate
-            should_recirculate = recirculation_allowed and probability_gate and (
-                condition_thresholds is None
-                or similarities[gating_pair_index]
-                >= condition_thresholds[gating_pair_index]
+            should_recirculate = recirculation_allowed and (
+                force_recirculation
+                or (
+                    probability_gate
+                    and (
+                        condition_thresholds is None
+                        or similarities[gating_pair_index]
+                        >= condition_thresholds[gating_pair_index]
+                    )
+                )
             )
-            if passes == 1 and adaptive_recirculation:
+            if passes == 1 and adaptive_recirculation and not force_recirculation:
                 assert first_margin is not None
                 should_recirculate = (
                     should_recirculate
@@ -792,7 +799,9 @@ def recirculate(
                 }
                 hooks.pass_index = pass_index
                 hooks.noise_level = (
-                    _adaptive_noise_level(
+                    config.noise_level_range[1]
+                    if force_recirculation and config.noise_level_range[1] > 0
+                    else _adaptive_noise_level(
                         previous_pass_margin,
                         post_margin_threshold,
                         config.noise_level_range,

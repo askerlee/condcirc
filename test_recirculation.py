@@ -14,6 +14,16 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_accepts_noise_level_one(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+
+        _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.5, 1.0)
+            ),
+        )
+
     def test_gradient_narrowing_is_only_applied_on_first_recirculation_pass(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

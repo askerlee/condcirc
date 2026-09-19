@@ -76,7 +76,8 @@ EXAMPLE_QUERIES = (
     "A family must choose between caring for an aging relative at home, hiring in-home support, or moving them to assisted living. Build a respectful decision process that considers autonomy, safety, finances, caregiver capacity, and how the plan should be revisited over time.",
     "A news platform wants to reduce misinformation without suppressing legitimate disagreement or breaking-news updates that later change. Design a moderation approach that combines labels, distribution rules, appeals, and evidence standards, then explain its likely failure modes.",
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
-    r"Find positive real numbers \(x,y,z\) satisfying \[ x+y+z=6, \] \[ xy+yz+zx=12, \] and \[ xyz=10. \] Give a solution and explain how you found it."
+    r"A rectangle has perimeter \(28\) and diagonal length \(9\)."
+    r"Find its side lengths and explain your reasoning."
 )
 
 REJECTION_GATES = (
@@ -527,6 +528,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--startup-noise-level-range",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.0),
+        metavar=("MIN", "MAX"),
+        help=(
+            "Use this noise range for generated startup tokens covered by "
+            "--startup-relax-tokens when MAX is positive (default: 0 0, "
+            "which keeps --noise-level-range)."
+        ),
+    )
+    parser.add_argument(
         "--noise-decay-per-pass",
         type=float,
         default=0,
@@ -594,7 +607,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--pre-margin-relax-tokens",
+        "--startup-relax-tokens",
         type=int,
         default=0,
         metavar="M",
@@ -1180,11 +1193,25 @@ def generated_pre_margin_threshold(
     return pre_margin_threshold
 
 
+def generated_noise_level_range(
+    noise_level_range: tuple[float, float],
+    startup_noise_level_range: tuple[float, float],
+    startup_relax_tokens: int,
+    generated_token_count: int,
+) -> tuple[float, float]:
+    if (
+        startup_noise_level_range[1] > 0
+        and generated_token_count <= startup_relax_tokens
+    ):
+        return startup_noise_level_range
+    return noise_level_range
+
+
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
-    if args.pre_margin_relax_tokens < 0:
-        raise ValueError("--pre-margin-relax-tokens must be nonnegative.")
+    if args.startup_relax_tokens < 0:
+        raise ValueError("--startup-relax-tokens must be nonnegative.")
     if args.pre_margin_relax_factor < 1.0:
         raise ValueError("--pre-margin-relax-factor must be at least 1.")
     noise_min, noise_max = args.noise_level_range
@@ -1192,26 +1219,35 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError(
             "--noise-level-range requires 0 <= MIN <= MAX <= 0.5."
         )
+    startup_noise_min, startup_noise_max = args.startup_noise_level_range
+    if not 0.0 <= startup_noise_min <= startup_noise_max <= 1.0:
+        raise ValueError(
+            "--startup-noise-level-range requires 0 <= MIN <= MAX <= 1."
+        )
+    if startup_noise_max > 0 and args.startup_relax_tokens == 0:
+        raise ValueError(
+            "--startup-noise-level-range requires --startup-relax-tokens above 0."
+        )
     if not 0.0 <= args.noise_decay_per_pass <= 1.0:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.narrowing_grad_level < 0:
         raise ValueError("--narrowing-grad-level must be nonnegative.")
     if args.perturb_pre_margin_thres < 0:
         raise ValueError("--perturb-pre-margin-thres must be nonnegative.")
-    if args.narrowing_grad_level > 0 and noise_max > 0:
+    if args.narrowing_grad_level > 0 and max(noise_max, startup_noise_max) > 0:
         raise ValueError(
-            "--narrowing-grad-level and --noise-level-range cannot both be nonzero."
+            "--narrowing-grad-level cannot be combined with a nonzero noise range."
         )
     if args.narrowing_grad_level > 0 and args.mode != "source":
         raise ValueError("--narrowing-grad-level requires --mode source.")
-    if noise_max > 0 and args.mode != "source":
-        raise ValueError("--noise-level-range requires --mode source.")
-    if noise_max > 0 and (
+    if max(noise_max, startup_noise_max) > 0 and args.mode != "source":
+        raise ValueError("noise ranges require --mode source.")
+    if max(noise_max, startup_noise_max) > 0 and (
         args.post_margin_thres is None
         or args.post_margin_thres[0] == args.post_margin_thres[1]
     ):
         raise ValueError(
-            "--noise-level-range requires --post-margin-thres with MIN < MAX."
+            "noise ranges require --post-margin-thres with MIN < MAX."
         )
     if args.ada_recirculate < 0:
         raise ValueError("--ada-recirculate must be nonnegative.")
@@ -1981,13 +2017,23 @@ def main() -> None:
                 if next_token.item() in eos_token_ids:
                     break
                 if use_recirculation:
+                    generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
+                    token_run_config = dataclasses.replace(
+                        run_config,
+                        noise_level_range=generated_noise_level_range(
+                            run_config.noise_level_range,
+                            tuple(run_args.startup_noise_level_range),
+                            run_args.startup_relax_tokens,
+                            generated_token_count,
+                        ),
+                    )
                     token_logits, student_cache = recirculate(
                         next_token,
                         blocks=blocks,
                         cache=student_cache,
                         step=student_step,
                         rewind_one=rewind_dynamic_cache,
-                        config=run_config,
+                        config=token_run_config,
                         similarity_stats=similarity_stats,
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
@@ -1995,15 +2041,15 @@ def main() -> None:
                         condition_thresholds=condition_thresholds,
                         pre_margin_threshold=generated_pre_margin_threshold(
                             run_args.pre_margin_thres,
-                            run_args.pre_margin_relax_tokens,
+                            run_args.startup_relax_tokens,
                             run_args.pre_margin_relax_factor,
-                            generated_ids.shape[1] - input_ids.shape[1],
+                            generated_token_count,
                         ),
                         post_margin_threshold=run_args.post_margin_thres,
                         post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                         adaptive_recirculation=run_args.ada_recirculate,
                         recirculation_allowed=allow_generated_recirculation(
-                            generated_ids.shape[1] - input_ids.shape[1]
+                            generated_token_count
                         ),
                         cosine_reject=run_args.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
@@ -2018,7 +2064,7 @@ def main() -> None:
                         narrow_margin=narrow_margin,
                         decode_injected_source_latent=(
                             decoded_latent_stats
-                            if run_config.noise_level_range[1] > 0
+                            if token_run_config.noise_level_range[1] > 0
                             else None
                         ),
                         capture_cached_token=capture_dynamic_cache_token,
@@ -2104,6 +2150,7 @@ def main() -> None:
         teacher_next_logits = teacher_logits[:, -1, :]
         student_next_logits = student_logits[:, -1, :]
         current_token = input_ids[:, -1:]
+        student_run_config = run_config
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -2144,7 +2191,7 @@ def main() -> None:
                 comparison["injected_source_zero_gap_bf16_diagnostics"] = (
                     zero_gap_diagnostics
                 )
-            if run_config.noise_level_range[1] > 0:
+            if student_run_config.noise_level_range[1] > 0:
                 initial_decoded_noise_latents = (
                     initial_decoded_noise_source_latents[-1]
                 )
@@ -2165,7 +2212,7 @@ def main() -> None:
                 comparison["noise_injected_source_top2_token"] = [
                     stats["top2_token"] for stats in decoded_noise_latents
                 ]
-            elif run_config.narrowing_grad_level > 0:
+            elif student_run_config.narrowing_grad_level > 0:
                 comparison["injected_narrowing_grad_levels"] = [
                     f"{level:.6e}"
                     for level in injected_narrowing_grad_levels[-1]
@@ -2201,13 +2248,22 @@ def main() -> None:
             if next_token.item() in eos_token_ids:
                 break
 
+            student_run_config = dataclasses.replace(
+                run_config,
+                noise_level_range=generated_noise_level_range(
+                    run_config.noise_level_range,
+                    tuple(run_args.startup_noise_level_range),
+                    run_args.startup_relax_tokens,
+                    token_index + 1,
+                ),
+            )
             student_logits, student_cache = recirculate(
                 next_token,
                 blocks=blocks,
                 cache=student_cache,
                 step=student_step,
                 rewind_one=rewind_dynamic_cache,
-                config=run_config,
+                config=student_run_config,
                 similarity_stats=similarity_stats,
                 adjacent_layer_stats=adjacent_layer_stats,
                 passes=run_args.passes if use_recirculation else 1,

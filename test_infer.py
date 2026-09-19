@@ -12,6 +12,7 @@ from infer import (
     enable_fp32_output_projection,
     format_average_eval_rating,
     format_run_stats,
+    generated_noise_level_range,
     generated_pre_margin_threshold,
     output_recirculation_pairs,
     parse_args,
@@ -75,18 +76,22 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
 
-    def test_parses_initial_pre_margin_relaxation(self) -> None:
+    def test_parses_startup_relaxation(self) -> None:
         args = parse_args(
             [
-                "--pre-margin-relax-tokens",
+                "--startup-relax-tokens",
                 "3",
+                "--startup-noise-level-range",
+                "0.2",
+                "0.4",
                 "--pre-margin-relax-factor",
                 "1.5",
                 "prompt",
             ]
         )
 
-        self.assertEqual(args.pre_margin_relax_tokens, 3)
+        self.assertEqual(args.startup_relax_tokens, 3)
+        self.assertEqual(args.startup_noise_level_range, [0.2, 0.4])
         self.assertEqual(args.pre_margin_relax_factor, 1.5)
 
     def test_relaxes_only_the_first_generated_tokens(self) -> None:
@@ -94,6 +99,41 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 1), 0.3)
         self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 3), 0.3)
         self.assertEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 4), 0.2)
+
+    def test_uses_startup_noise_only_for_startup_tokens(self) -> None:
+        base_range = (0.1, 0.2)
+        startup_range = (0.3, 0.4)
+
+        self.assertEqual(
+            generated_noise_level_range(base_range, startup_range, 3, 1),
+            startup_range,
+        )
+        self.assertEqual(
+            generated_noise_level_range(base_range, startup_range, 3, 3),
+            startup_range,
+        )
+        self.assertEqual(
+            generated_noise_level_range(base_range, startup_range, 3, 4),
+            base_range,
+        )
+        self.assertEqual(
+            generated_noise_level_range(base_range, (0.0, 0.0), 3, 1),
+            base_range,
+        )
+
+    def test_accepts_startup_noise_level_one(self) -> None:
+        args = parse_args(
+            [
+                "--startup-relax-tokens",
+                "1",
+                "--startup-noise-level-range",
+                "0.5",
+                "1",
+                "prompt",
+            ]
+        )
+
+        validate_run_arguments(args)
 
     def test_uses_gemma_specific_default_pair(self) -> None:
         args = parse_args(["--model", "google/gemma-4-26b-a4b-it", "prompt"])

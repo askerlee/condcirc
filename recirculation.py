@@ -215,9 +215,9 @@ class _Hooks:
                 "Expected 0 <= destination < source < number of blocks for every pair."
             )
         noise_min, noise_max = cfg.noise_level_range
-        if not 0.0 <= noise_min <= noise_max <= 0.5:
+        if not 0.0 <= noise_min <= noise_max <= 1.0:
             raise ValueError(
-                "noise_level_range requires 0 <= MIN <= MAX <= 0.5."
+                "noise_level_range requires 0 <= MIN <= MAX <= 1."
             )
         if not 0.0 <= cfg.noise_decay_per_pass <= 1.0:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")

@@ -47,8 +47,11 @@ from torch import Tensor, nn  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # noqa: E402
 
 from game24 import format_prompt as format_game24_prompt  # noqa: E402
+from game24 import format_countdown_prompt  # noqa: E402
 from game24 import is_solution as is_game24_solution  # noqa: E402
+from game24 import load_countdown_puzzles  # noqa: E402
 from game24 import load_puzzles as load_game24_puzzles  # noqa: E402
+from game24 import score_countdown_output  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
@@ -417,24 +420,37 @@ def parse_query_indices(value: str) -> tuple[int, ...]:
 def parse_game24_indices(value: str) -> tuple[int, ...]:
     indices: list[int] = []
     for part in value.split(","):
-        bounds = part.split("-", maxsplit=1)
-        try:
-            start = int(bounds[0])
-            end = int(bounds[-1])
-        except ValueError as error:
+        match = re.fullmatch(r"(-?\d+)(?:-(-?\d+))?", part)
+        if match is None:
             raise argparse.ArgumentTypeError(
                 f"invalid Game24 index or range: {part!r}"
-            ) from error
+            )
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
         if start > end:
             raise argparse.ArgumentTypeError(
                 f"Game24 index range must be ascending: {part!r}"
             )
-        if start < 1:
+        if start == 0:
             raise argparse.ArgumentTypeError(
-                "Game24 indices must be positive."
+                "Game24 indices cannot be zero."
             )
         indices.extend(range(start, end + 1))
     return tuple(dict.fromkeys(indices))
+
+
+def resolve_game24_indices(
+    indices: Sequence[int], puzzle_count: int
+) -> tuple[int, ...]:
+    resolved = tuple(
+        index if index > 0 else puzzle_count + index + 1 for index in indices
+    )
+    if any(not 1 <= index <= puzzle_count for index in resolved):
+        raise ValueError(
+            f"Game24 indices must be between 1 and {puzzle_count}, or between "
+            f"-{puzzle_count} and -1."
+        )
+    return resolved
 
 
 def format_index_ranges(indices: Sequence[int]) -> str:
@@ -464,6 +480,21 @@ def query_index_signature(argv: Sequence[str]) -> str:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
+    normalized_argv: list[str] = []
+    argument_index = 0
+    while argument_index < len(argv):
+        argument = argv[argument_index]
+        if (
+            argument in ("--game24-index", "--countdown-index")
+            and argument_index + 1 < len(argv)
+            and argv[argument_index + 1].startswith("-")
+        ):
+            normalized_argv.append(f"{argument}={argv[argument_index + 1]}")
+            argument_index += 2
+            continue
+        normalized_argv.append(argument)
+        argument_index += 1
+    argv = normalized_argv
     parser = argparse.ArgumentParser(
         description="Generate text with multi-pass residual-stream recirculation."
     )
@@ -488,25 +519,44 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the built-in queries and exit.",
     )
-    game24_group = parser.add_mutually_exclusive_group()
-    game24_group.add_argument(
+    task_group = parser.add_mutually_exclusive_group()
+    task_group.add_argument(
         "--game24-puzzle",
         type=int,
         nargs=4,
         metavar=("NUMBER", "NUMBER", "NUMBER", "NUMBER"),
         help="Run one Game24 puzzle using the four supplied numbers.",
     )
-    game24_group.add_argument(
+    task_group.add_argument(
         "--game24-file",
         type=Path,
         help="Run puzzles from a tree-of-thought-llm-compatible Game24 CSV.",
+    )
+    task_group.add_argument(
+        "--countdown-puzzle",
+        type=int,
+        nargs=7,
+        metavar=("TARGET", "N1", "N2", "N3", "N4", "N5", "N6"),
+        help="Run one Countdown target followed by its six allowed numbers.",
+    )
+    task_group.add_argument(
+        "--countdown-file",
+        type=Path,
+        help="Run puzzles from a Countdown CSV with Numbers and Target columns.",
     )
     parser.add_argument(
         "--game24-index",
         type=parse_game24_indices,
         default=(1,),
         metavar="INDEX[-INDEX][,...]",
-        help="1-based Game24 CSV puzzle indices (default: 1).",
+        help="1-based Game24 CSV indices; negative values count from the end (default: 1).",
+    )
+    parser.add_argument(
+        "--countdown-index",
+        type=parse_game24_indices,
+        default=(1,),
+        metavar="INDEX[-INDEX][,...]",
+        help="1-based Countdown CSV indices; negative values count from the end (default: 1).",
     )
     parser.add_argument(
         "--eval-provider",
@@ -900,6 +950,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "game24_file",
         "game24_index",
         "game24_puzzle",
+        "countdown_puzzle",
+        "countdown_file",
+        "countdown_index",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1388,11 +1441,16 @@ def main() -> None:
         return 
 
     if args.prompt is not None and (
-        args.game24_puzzle is not None or args.game24_file is not None
+        args.game24_puzzle is not None
+        or args.game24_file is not None
+        or args.countdown_puzzle is not None
+        or args.countdown_file is not None
     ):
-        raise ValueError("A free-form prompt cannot be combined with a Game24 task.")
+        raise ValueError("A free-form prompt cannot be combined with a benchmark task.")
     if args.game24_puzzle is not None and args.game24_index != (1,):
         raise ValueError("--game24-index requires --game24-file.")
+    if args.countdown_puzzle is not None and args.countdown_index != (1,):
+        raise ValueError("--countdown-index requires --countdown-file.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -1560,10 +1618,21 @@ def main() -> None:
             if args.game24_puzzle is not None
             else ""
         )
+        countdown_signature = (
+            f"-countdown-{format_index_ranges(args.countdown_index)}"
+            if args.countdown_file is not None
+            else (
+                f"-countdown-{args.countdown_puzzle[0]}-"
+                f"{','.join(map(str, args.countdown_puzzle[1:]))}"
+                if args.countdown_puzzle is not None
+                else ""
+            )
+        )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
-            f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}{game24_signature}"
+            f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
+            f"{game24_signature}{countdown_signature}"
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
@@ -1885,6 +1954,7 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
+        on_generated_token: Callable[[Tensor], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
         set_random_seed(run_args.seed)
         similarity_stats = (
@@ -2120,6 +2190,8 @@ def main() -> None:
                     run_args.temperature,
                 )
                 generated_ids = torch.cat((generated_ids, next_token), dim=1)
+                if on_generated_token is not None:
+                    on_generated_token(next_token)
                 record_generated_token_stats()
                 if next_token.item() in eos_token_ids:
                     break
@@ -2191,6 +2263,7 @@ def main() -> None:
                     )
                 next_logits = token_logits[:, -1, :]
 
+            print()
             report_stats(
                 generated_recirculated_flags,
                 generated_rejected_flags,
@@ -2356,6 +2429,8 @@ def main() -> None:
             )
             similarities.append(comparison)
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
+            if on_generated_token is not None:
+                on_generated_token(next_token)
 
             if next_token.item() in eos_token_ids:
                 break
@@ -2430,6 +2505,7 @@ def main() -> None:
         # recirculated_flags also covers prompt positions and one trailing lookahead
         # call, neither of which produce a comparison entry, so count from
         # `similarities` instead to match the tokens actually reported.
+        print()
         report_stats(
             [comparison["recirculated"] for comparison in similarities],
             [comparison["rejected"] for comparison in similarities],
@@ -2448,7 +2524,9 @@ def main() -> None:
                 torch.cuda.synchronize(gpu)
 
     def timed_generate(
-        use_recirculation: bool, run_args: argparse.Namespace
+        use_recirculation: bool,
+        run_args: argparse.Namespace,
+        on_generated_token: Callable[[Tensor], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
@@ -2479,6 +2557,7 @@ def main() -> None:
             use_recirculation=use_recirculation,
             run_args=run_args,
             run_config=run_config,
+            on_generated_token=on_generated_token,
         )
         synchronize_devices()
         return generated_ids, similarities, stats, time.perf_counter() - start
@@ -2530,22 +2609,54 @@ def main() -> None:
         if args.game24_file is not None
         else None
     )
-    if game24_puzzles is not None and any(
-        index > len(game24_puzzles) for index in args.game24_index
-    ):
-        raise ValueError(
-            f"Game24 indices must be between 1 and {len(game24_puzzles)}."
-        )
+    game24_indices = (
+        resolve_game24_indices(args.game24_index, len(game24_puzzles))
+        if game24_puzzles is not None
+        else ()
+    )
+    manual_countdown_puzzle = (
+        (args.countdown_puzzle[0], tuple(args.countdown_puzzle[1:]))
+        if args.countdown_puzzle is not None
+        else None
+    )
+    countdown_puzzles = (
+        (manual_countdown_puzzle,)
+        if manual_countdown_puzzle is not None
+        else load_countdown_puzzles(args.countdown_file)
+        if args.countdown_file is not None
+        else None
+    )
+    countdown_indices = (
+        resolve_game24_indices(args.countdown_index, len(countdown_puzzles))
+        if countdown_puzzles is not None
+        else ()
+    )
     prompts = (
-        ((1, args.prompt, None),)
+        ((1, args.prompt, None, None),)
         if args.prompt is not None
         else tuple(
-            (index, format_game24_prompt(game24_puzzles[index - 1]), game24_puzzles[index - 1])
-            for index in args.game24_index
+            (
+                index,
+                format_game24_prompt(game24_puzzles[index - 1]),
+                game24_puzzles[index - 1],
+                None,
+            )
+            for index in game24_indices
         )
         if game24_puzzles is not None
         else tuple(
-            (index, EXAMPLE_QUERIES[index - 1], None) for index in args.query_indices
+            (
+                index,
+                format_countdown_prompt(*countdown_puzzles[index - 1]),
+                None,
+                countdown_puzzles[index - 1],
+            )
+            for index in countdown_indices
+        )
+        if countdown_puzzles is not None
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1], None, None)
+            for index in args.query_indices
         )
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
@@ -2569,7 +2680,7 @@ def main() -> None:
             output_file.flush()
 
     try:
-        for prompt_index, prompt, game24_puzzle in prompts:
+        for prompt_index, prompt, game24_puzzle, countdown_puzzle in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
                 "prompt": prompt,
@@ -2577,6 +2688,10 @@ def main() -> None:
             }
             if game24_puzzle is not None:
                 query_record["game24_puzzle"] = list(game24_puzzle)
+            if countdown_puzzle is not None:
+                target, numbers = countdown_puzzle
+                query_record["countdown_target"] = target
+                query_record["countdown_numbers"] = list(numbers)
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
@@ -2593,14 +2708,20 @@ def main() -> None:
             prompt_length = input_ids.shape[1]
 
             for run_index, (run_args, use_recirculation, label) in enumerate(runs):
+                emit(f"\n=== {label} ===")
                 run_ids, similarities, stats, run_seconds = timed_generate(
-                    use_recirculation=use_recirculation, run_args=run_args
+                    use_recirculation=use_recirculation,
+                    run_args=run_args,
+                    on_generated_token=lambda token: print(
+                        tokenizer.decode(token[0], skip_special_tokens=True),
+                        end="",
+                        flush=True,
+                    ),
                 )
-                emit(f"\n=== {label} ({run_seconds:.2f} s) ===")
                 output = tokenizer.decode(
                     run_ids[0, prompt_length:], skip_special_tokens=True
                 )
-                emit(output)
+                emit(f"({run_seconds:.2f} s)")
                 run_record = {
                     "label": label,
                     "seed": run_args.seed,
@@ -2612,6 +2733,14 @@ def main() -> None:
                     run_record["game24_solved"] = is_game24_solution(
                         game24_puzzle, output
                     )
+                if countdown_puzzle is not None:
+                    target, numbers = countdown_puzzle
+                    value = score_countdown_output(target, numbers, output)
+                    run_record["countdown_valid"] = value is not None
+                    if value is not None:
+                        run_record["countdown_value"] = str(value)
+                        run_record["countdown_distance"] = float(abs(value - target))
+                        run_record["countdown_exact"] = value == target
                 if args.do_eval:
                     evaluation = evaluate_single_answer(
                         prompt,
@@ -2657,6 +2786,32 @@ def main() -> None:
                     "game24_solved = "
                     f"{sum(run['game24_solved'] for run in game24_runs)}/"
                     f"{len(game24_runs)}"
+                )
+            countdown_runs = [
+                run for run in completed_runs if "countdown_valid" in run
+            ]
+            if countdown_runs:
+                valid_runs = [
+                    run for run in countdown_runs if run["countdown_valid"]
+                ]
+                exact_runs = [
+                    run for run in valid_runs if run["countdown_exact"]
+                ]
+                average_distance = (
+                    sum(run["countdown_distance"] for run in valid_runs)
+                    / len(valid_runs)
+                    if valid_runs
+                    else None
+                )
+                emit(
+                    "countdown_valid = "
+                    f"{len(valid_runs)}/{len(countdown_runs)}, exact = "
+                    f"{len(exact_runs)}/{len(countdown_runs)}, "
+                    "average_distance = "
+                    f"{average_distance:.2f}" if average_distance is not None
+                    else "countdown_valid = 0/"
+                    f"{len(countdown_runs)}, exact = 0/{len(countdown_runs)}, "
+                    "average_distance = n/a"
                 )
             if args.do_eval:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))

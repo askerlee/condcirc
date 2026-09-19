@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -19,6 +20,7 @@ from infer import (
     generated_pre_margin_threshold,
     output_recirculation_pairs,
     parse_args,
+    resolve_game24_indices,
     summarize_recirculation_stats,
     set_random_seed,
     validate_run_arguments,
@@ -85,12 +87,43 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.game24_puzzle, [2, 3, 4, 6])
         self.assertEqual(args.game24_index, (1,))
 
+    def test_parses_a_countdown_puzzle(self) -> None:
+        args = parse_args(
+            ["--countdown-puzzle", "999", "100", "50", "25", "10", "2", "1"]
+        )
+
+        self.assertEqual(args.countdown_puzzle, [999, 100, 50, 25, 10, 2, 1])
+
+    def test_parses_countdown_file_and_indices(self) -> None:
+        args = parse_args(
+            ["--countdown-file", "countdown.csv", "--countdown-index", "1-3"]
+        )
+        last = parse_args(
+            ["--countdown-file", "countdown.csv", "--countdown-index", "-1"]
+        )
+
+        self.assertEqual(args.countdown_file, Path("countdown.csv"))
+        self.assertEqual(args.countdown_index, (1, 2, 3))
+        self.assertEqual(last.countdown_index, (-1,))
+
     def test_parses_game24_indices_beyond_builtin_queries(self) -> None:
         args = parse_args(
             ["--game24-file", "24.csv", "--game24-index", "21-23"]
         )
 
         self.assertEqual(args.game24_index, (21, 22, 23))
+
+    def test_parses_and_resolves_negative_game24_indices(self) -> None:
+        args = parse_args(["--game24-file", "24.csv", "--game24-index", "-3--1"])
+        last = parse_args(["--game24-file", "24.csv", "--game24-index", "-1"])
+
+        self.assertEqual(args.game24_index, (-3, -2, -1))
+        self.assertEqual(last.game24_index, (-1,))
+        self.assertEqual(resolve_game24_indices(args.game24_index, 10), (8, 9, 10))
+
+    def test_rejects_zero_game24_index(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--game24-file", "24.csv", "--game24-index", "0"])
 
     def test_compacts_contiguous_indices_for_filenames(self) -> None:
         self.assertEqual(format_index_ranges((1, 2, 3, 7, 9, 10)), "1-3,7,9-10")

@@ -12,6 +12,7 @@ from infer import (
     enable_fp32_output_projection,
     format_average_eval_rating,
     format_run_stats,
+    generated_cosine_reject,
     generated_noise_level_range,
     generated_pre_margin_threshold,
     output_recirculation_pairs,
@@ -84,6 +85,8 @@ class RecirculationStatsTest(unittest.TestCase):
                 "--startup-noise-level-range",
                 "0.2",
                 "0.4",
+                "--startup-cosine-reject",
+                "0.9",
                 "--pre-margin-relax-factor",
                 "1.5",
                 "prompt",
@@ -92,6 +95,7 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.startup_relax_tokens, 3)
         self.assertEqual(args.startup_noise_level_range, [0.2, 0.4])
+        self.assertEqual(args.startup_cosine_reject, 0.9)
         self.assertEqual(args.pre_margin_relax_factor, 1.5)
 
     def test_relaxes_only_the_first_generated_tokens(self) -> None:
@@ -120,6 +124,12 @@ class RecirculationStatsTest(unittest.TestCase):
             generated_noise_level_range(base_range, (0.0, 0.0), 3, 1),
             base_range,
         )
+
+    def test_uses_startup_cosine_rejection_only_for_startup_tokens(self) -> None:
+        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 1), 0.9)
+        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 3), 0.9)
+        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 4), 0.8)
+        self.assertEqual(generated_cosine_reject(0.8, None, 3, 1), 0.8)
 
     def test_accepts_startup_noise_level_one(self) -> None:
         args = parse_args(
@@ -169,6 +179,23 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.pairs, [(-5, 5)])
         self.assertEqual(output_recirculation_pairs(args), [[-5, 12]])
+
+    def test_ablation_seed_overrides_only_its_run(self) -> None:
+        args = parse_args(
+            [
+                "--seed",
+                "11",
+                "--ablation",
+                "--alpha",
+                "0.25",
+                "--ablation",
+                "--seed",
+                "17",
+            ]
+        )
+
+        self.assertEqual(args.seed, 11)
+        self.assertEqual(args.ablations, ((('alpha', 0.25),), (('seed', 17),)))
 
     def test_sets_gpt_oss_repetition_penalty(self) -> None:
         model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))

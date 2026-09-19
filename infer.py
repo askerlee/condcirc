@@ -76,8 +76,7 @@ EXAMPLE_QUERIES = (
     "A family must choose between caring for an aging relative at home, hiring in-home support, or moving them to assisted living. Build a respectful decision process that considers autonomy, safety, finances, caregiver capacity, and how the plan should be revisited over time.",
     "A news platform wants to reduce misinformation without suppressing legitimate disagreement or breaking-news updates that later change. Design a moderation approach that combines labels, distribution rules, appeals, and evidence standards, then explain its likely failure modes.",
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
-    r"A rectangle has perimeter \(28\) and diagonal length \(9\)."
-    r"Find its side lengths and explain your reasoning."
+    r"> Using each of the numbers $2,3,4,6$ exactly once, together with $+,-,\times,\div$ and parentheses, make 24. Give exactly one solution and explain your reasoning.",
 )
 
 REJECTION_GATES = (
@@ -620,8 +619,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--pre-margin-relax-factor",
         type=float,
         default=2.0,
-        metavar="T",
-        help="Multiplier for the relaxed initial-token pre-margin threshold (default: 1).",
+        metavar="F",
+        help="Multiplier for the relaxed initial-token pre-margin threshold (default: 2).",
     )
     parser.add_argument(
         "--post-margin-thres",
@@ -663,6 +662,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Discard the final pass when its distribution has cosine similarity "
             "below this threshold relative to P1."
+        ),
+    )
+    parser.add_argument(
+        "--startup-cosine-reject",
+        type=float,
+        default=None,
+        metavar="THRESHOLD",
+        help=(
+            "Override --cosine-reject for generated startup tokens covered by "
+            "--startup-relax-tokens."
         ),
     )
     parser.add_argument(
@@ -837,7 +846,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "output",
         "query_indices",
         "repetition_penalty",
-        "seed",
         "similarities_output",
     }
 
@@ -1207,6 +1215,20 @@ def generated_noise_level_range(
     return noise_level_range
 
 
+def generated_cosine_reject(
+    cosine_reject: float | None,
+    startup_cosine_reject: float | None,
+    startup_relax_tokens: int,
+    generated_token_count: int,
+) -> float | None:
+    if (
+        startup_cosine_reject is not None
+        and generated_token_count <= startup_relax_tokens
+    ):
+        return startup_cosine_reject
+    return cosine_reject
+
+
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
@@ -1228,6 +1250,13 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError(
             "--startup-noise-level-range requires --startup-relax-tokens above 0."
         )
+    if args.startup_cosine_reject is not None:
+        if not 0.0 <= args.startup_cosine_reject <= 1.0:
+            raise ValueError("--startup-cosine-reject must be between 0 and 1.")
+        if args.startup_relax_tokens == 0:
+            raise ValueError(
+                "--startup-cosine-reject requires --startup-relax-tokens above 0."
+            )
     if not 0.0 <= args.noise_decay_per_pass <= 1.0:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.narrowing_grad_level < 0:
@@ -2051,7 +2080,12 @@ def main() -> None:
                         recirculation_allowed=allow_generated_recirculation(
                             generated_token_count
                         ),
-                        cosine_reject=run_args.cosine_reject,
+                        cosine_reject=generated_cosine_reject(
+                            run_args.cosine_reject,
+                            run_args.startup_cosine_reject,
+                            run_args.startup_relax_tokens,
+                            generated_token_count,
+                        ),
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
                         recirculated_flags=recirculated_flags,
@@ -2274,7 +2308,12 @@ def main() -> None:
                 post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
                 adaptive_recirculation=run_args.ada_recirculate,
                 recirculation_allowed=allow_generated_recirculation(token_index + 1),
-                cosine_reject=run_args.cosine_reject,
+                cosine_reject=generated_cosine_reject(
+                    run_args.cosine_reject,
+                    run_args.startup_cosine_reject,
+                    run_args.startup_relax_tokens,
+                    token_index + 1,
+                ),
                 cosine_top_k=run_args.cosine_top_k,
                 gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
@@ -2440,6 +2479,8 @@ def main() -> None:
                 "runs": [],
             }
             output_records.append(query_record)
+            emit(f"\n=== Query {prompt_index} ===")
+            emit(prompt)
             encoded_prompt = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
                 tokenize=True,
@@ -2456,9 +2497,6 @@ def main() -> None:
                 run_ids, similarities, stats, run_seconds = timed_generate(
                     use_recirculation=use_recirculation, run_args=run_args
                 )
-                if run_index == 0:
-                    emit(f"\n=== Query {prompt_index} ===")
-                    emit(prompt)
                 emit(f"\n=== {label} ({run_seconds:.2f} s) ===")
                 output = tokenizer.decode(
                     run_ids[0, prompt_length:], skip_special_tokens=True

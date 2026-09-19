@@ -542,21 +542,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     task_group.add_argument(
         "--countdown-file",
         type=Path,
-        help="Run puzzles from a Countdown CSV with Numbers and Target columns.",
+        help="Run puzzles from a Countdown CSV with numbers and target columns.",
     )
     parser.add_argument(
         "--game24-index",
         type=parse_game24_indices,
-        default=(1,),
+        default=(),
         metavar="INDEX[-INDEX][,...]",
-        help="1-based Game24 CSV indices; negative values count from the end (default: 1).",
+        help=(
+            "1-based Game24 CSV indices; negative values count from the end "
+            "(default: all)."
+        ),
     )
     parser.add_argument(
         "--countdown-index",
         type=parse_game24_indices,
-        default=(1,),
+        default=(),
         metavar="INDEX[-INDEX][,...]",
-        help="1-based Countdown CSV indices; negative values count from the end (default: 1).",
+        help=(
+            "1-based Countdown CSV indices; negative values count from the end "
+            "(default: all)."
+        ),
     )
     parser.add_argument(
         "--eval-provider",
@@ -1447,9 +1453,9 @@ def main() -> None:
         or args.countdown_file is not None
     ):
         raise ValueError("A free-form prompt cannot be combined with a benchmark task.")
-    if args.game24_puzzle is not None and args.game24_index != (1,):
+    if args.game24_puzzle is not None and args.game24_index:
         raise ValueError("--game24-index requires --game24-file.")
-    if args.countdown_puzzle is not None and args.countdown_index != (1,):
+    if args.countdown_puzzle is not None and args.countdown_index:
         raise ValueError("--countdown-index requires --countdown-file.")
 
     if args.max_new_tokens < 0:
@@ -1612,14 +1618,14 @@ def main() -> None:
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         game24_signature = (
-            f"-game24-{format_index_ranges(args.game24_index)}"
+            f"-game24-{format_index_ranges(args.game24_index) or 'all'}"
             if args.game24_file is not None
             else "-game24"
             if args.game24_puzzle is not None
             else ""
         )
         countdown_signature = (
-            f"-countdown-{format_index_ranges(args.countdown_index)}"
+            f"-countdown-{format_index_ranges(args.countdown_index) or 'all'}"
             if args.countdown_file is not None
             else (
                 f"-countdown-{args.countdown_puzzle[0]}-"
@@ -2610,7 +2616,10 @@ def main() -> None:
         else None
     )
     game24_indices = (
-        resolve_game24_indices(args.game24_index, len(game24_puzzles))
+        resolve_game24_indices(
+            args.game24_index or tuple(range(1, len(game24_puzzles) + 1)),
+            len(game24_puzzles),
+        )
         if game24_puzzles is not None
         else ()
     )
@@ -2627,7 +2636,10 @@ def main() -> None:
         else None
     )
     countdown_indices = (
-        resolve_game24_indices(args.countdown_index, len(countdown_puzzles))
+        resolve_game24_indices(
+            args.countdown_index or tuple(range(1, len(countdown_puzzles) + 1)),
+            len(countdown_puzzles),
+        )
         if countdown_puzzles is not None
         else ()
     )

@@ -85,7 +85,7 @@ class RecirculationStatsTest(unittest.TestCase):
         args = parse_args(["--game24-puzzle", "2", "3", "4", "6"])
 
         self.assertEqual(args.game24_puzzle, [2, 3, 4, 6])
-        self.assertEqual(args.game24_index, (1,))
+        self.assertEqual(args.game24_index, ())
 
     def test_parses_a_countdown_puzzle(self) -> None:
         args = parse_args(
@@ -95,6 +95,7 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.countdown_puzzle, [999, 100, 50, 25, 10, 2, 1])
 
     def test_parses_countdown_file_and_indices(self) -> None:
+        default = parse_args(["--countdown-file", "countdown.csv"])
         args = parse_args(
             ["--countdown-file", "countdown.csv", "--countdown-index", "1-3"]
         )
@@ -102,6 +103,7 @@ class RecirculationStatsTest(unittest.TestCase):
             ["--countdown-file", "countdown.csv", "--countdown-index", "-1"]
         )
 
+        self.assertEqual(default.countdown_index, ())
         self.assertEqual(args.countdown_file, Path("countdown.csv"))
         self.assertEqual(args.countdown_index, (1, 2, 3))
         self.assertEqual(last.countdown_index, (-1,))

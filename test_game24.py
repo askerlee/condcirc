@@ -40,8 +40,8 @@ class Game24Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "countdown.csv"
             path.write_text(
-                "Case,Numbers,Target,Rough difficulty\n"
-                "1,25 50 75 100 3 6,952,Very hard\n",
+                "numbers,target\n"
+                '"25,50,75,100,3,6",952\n',
                 encoding="utf-8",
             )
 

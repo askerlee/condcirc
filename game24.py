@@ -116,15 +116,15 @@ def load_puzzles(path: Path) -> tuple[tuple[int, int, int, int], ...]:
 def load_countdown_puzzles(path: Path) -> tuple[tuple[int, tuple[int, ...]], ...]:
     with path.open(newline="", encoding="utf-8") as file:
         rows = csv.DictReader(file)
-        if rows.fieldnames is None or not {"Numbers", "Target"} <= set(rows.fieldnames):
+        if rows.fieldnames is None or not {"numbers", "target"} <= set(rows.fieldnames):
             raise ValueError(
-                f"{path} must be a Countdown CSV with Numbers and Target columns."
+                f"{path} must be a Countdown CSV with numbers and target columns."
             )
         puzzles = []
         for row in rows:
             try:
-                target = int(row["Target"])
-                numbers = tuple(map(int, row["Numbers"].split()))
+                target = int(row["target"])
+                numbers = tuple(map(int, row["numbers"].split(",")))
             except (KeyError, TypeError, ValueError) as error:
                 raise ValueError(f"{path} contains an invalid Countdown puzzle.") from error
             validate_countdown_puzzle(target, numbers)

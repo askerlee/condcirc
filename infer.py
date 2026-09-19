@@ -46,6 +46,9 @@ import torch  # noqa: E402
 from torch import Tensor, nn  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # noqa: E402
 
+from game24 import format_prompt as format_game24_prompt  # noqa: E402
+from game24 import is_solution as is_game24_solution  # noqa: E402
+from game24 import load_puzzles as load_game24_puzzles  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
@@ -76,7 +79,7 @@ EXAMPLE_QUERIES = (
     "A family must choose between caring for an aging relative at home, hiring in-home support, or moving them to assisted living. Build a respectful decision process that considers autonomy, safety, finances, caregiver capacity, and how the plan should be revisited over time.",
     "A news platform wants to reduce misinformation without suppressing legitimate disagreement or breaking-news updates that later change. Design a moderation approach that combines labels, distribution rules, appeals, and evidence standards, then explain its likely failure modes.",
     "A manufacturer can lower emissions by replacing equipment now, purchasing cleaner electricity, or waiting for a promising technology still under development. Recommend a staged strategy using plausible assumptions about cost, risk, and regulation, and specify signals that would trigger a change in course.",
-    r"> Using each of the numbers $2,3,4,6$ exactly once, together with $+,-,\times,\div$ and parentheses, make 24. Give exactly one solution and explain your reasoning.",
+    # r"> Using each of the numbers $2,3,4,6$ exactly once, together with $+,-,\times,\div$ and parentheses, make 24. Give exactly one solution and explain your reasoning.",
 )
 
 REJECTION_GATES = (
@@ -411,6 +414,44 @@ def parse_query_indices(value: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(indices))
 
 
+def parse_game24_indices(value: str) -> tuple[int, ...]:
+    indices: list[int] = []
+    for part in value.split(","):
+        bounds = part.split("-", maxsplit=1)
+        try:
+            start = int(bounds[0])
+            end = int(bounds[-1])
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(
+                f"invalid Game24 index or range: {part!r}"
+            ) from error
+        if start > end:
+            raise argparse.ArgumentTypeError(
+                f"Game24 index range must be ascending: {part!r}"
+            )
+        if start < 1:
+            raise argparse.ArgumentTypeError(
+                "Game24 indices must be positive."
+            )
+        indices.extend(range(start, end + 1))
+    return tuple(dict.fromkeys(indices))
+
+
+def format_index_ranges(indices: Sequence[int]) -> str:
+    if not indices:
+        return ""
+    ranges: list[str] = []
+    start = previous = indices[0]
+    for index in indices[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = index
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
 def query_index_signature(argv: Sequence[str]) -> str:
     signature = "all"
     for index, argument in enumerate(argv):
@@ -446,6 +487,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--list-queries",
         action="store_true",
         help="Print the built-in queries and exit.",
+    )
+    game24_group = parser.add_mutually_exclusive_group()
+    game24_group.add_argument(
+        "--game24-puzzle",
+        type=int,
+        nargs=4,
+        metavar=("NUMBER", "NUMBER", "NUMBER", "NUMBER"),
+        help="Run one Game24 puzzle using the four supplied numbers.",
+    )
+    game24_group.add_argument(
+        "--game24-file",
+        type=Path,
+        help="Run puzzles from a tree-of-thought-llm-compatible Game24 CSV.",
+    )
+    parser.add_argument(
+        "--game24-index",
+        type=parse_game24_indices,
+        default=(1,),
+        metavar="INDEX[-INDEX][,...]",
+        help="1-based Game24 CSV puzzle indices (default: 1).",
     )
     parser.add_argument(
         "--eval-provider",
@@ -836,6 +897,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "evaluation_model",
         "evaluation_output",
         "gpu_memory",
+        "game24_file",
+        "game24_index",
+        "game24_puzzle",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1323,6 +1387,13 @@ def main() -> None:
             print(f"{index:2}. {query}")
         return 
 
+    if args.prompt is not None and (
+        args.game24_puzzle is not None or args.game24_file is not None
+    ):
+        raise ValueError("A free-form prompt cannot be combined with a Game24 task.")
+    if args.game24_puzzle is not None and args.game24_index != (1,):
+        raise ValueError("--game24-index requires --game24-file.")
+
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
     if (
@@ -1482,10 +1553,17 @@ def main() -> None:
         model_slug = args.model.rsplit("/", 1)[-1].lower()
         pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
+        game24_signature = (
+            f"-game24-{format_index_ranges(args.game24_index)}"
+            if args.game24_file is not None
+            else "-game24"
+            if args.game24_puzzle is not None
+            else ""
+        )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
-            f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
+            f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}{game24_signature}"
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
@@ -2422,6 +2500,7 @@ def main() -> None:
             "cosine_reject",
             "cosine_top_k",
             "repetition_penalty",
+            "seed",
         )
         baseline_arguments = format_run_arguments(args, baseline_options)
         runs = [(args, True, f"Baseline: {baseline_arguments}")]
@@ -2444,11 +2523,29 @@ def main() -> None:
             arguments = format_run_arguments(ablation_args, label_options)
             runs.append((ablation_args, True, f"Ablation: {arguments}"))
 
+    game24_puzzles = (
+        (tuple(args.game24_puzzle),)
+        if args.game24_puzzle is not None
+        else load_game24_puzzles(args.game24_file)
+        if args.game24_file is not None
+        else None
+    )
+    if game24_puzzles is not None and any(
+        index > len(game24_puzzles) for index in args.game24_index
+    ):
+        raise ValueError(
+            f"Game24 indices must be between 1 and {len(game24_puzzles)}."
+        )
     prompts = (
-        ((1, args.prompt),)
+        ((1, args.prompt, None),)
         if args.prompt is not None
         else tuple(
-            (index, EXAMPLE_QUERIES[index - 1]) for index in args.query_indices
+            (index, format_game24_prompt(game24_puzzles[index - 1]), game24_puzzles[index - 1])
+            for index in args.game24_index
+        )
+        if game24_puzzles is not None
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1], None) for index in args.query_indices
         )
     )
     output_file = args.output.open("w+", encoding="utf-8") if args.output else None
@@ -2472,12 +2569,14 @@ def main() -> None:
             output_file.flush()
 
     try:
-        for prompt_index, prompt in prompts:
+        for prompt_index, prompt, game24_puzzle in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
                 "prompt": prompt,
                 "runs": [],
             }
+            if game24_puzzle is not None:
+                query_record["game24_puzzle"] = list(game24_puzzle)
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
@@ -2509,6 +2608,10 @@ def main() -> None:
                     "output": output,
                     "stats": stats,
                 }
+                if game24_puzzle is not None:
+                    run_record["game24_solved"] = is_game24_solution(
+                        game24_puzzle, output
+                    )
                 if args.do_eval:
                     evaluation = evaluate_single_answer(
                         prompt,
@@ -2546,6 +2649,15 @@ def main() -> None:
             emit(f"\n{label} ({sum(run['seconds'] for run in completed_runs):.2f} s)")
             for line in format_run_stats(aggregate_stats):
                 emit(line)
+            game24_runs = [
+                run for run in completed_runs if "game24_solved" in run
+            ]
+            if game24_runs:
+                emit(
+                    "game24_solved = "
+                    f"{sum(run['game24_solved'] for run in game24_runs)}/"
+                    f"{len(game24_runs)}"
+                )
             if args.do_eval:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))
     finally:

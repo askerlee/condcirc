@@ -11,6 +11,8 @@ from infer import (
     configure_model_generation,
     enable_fp32_output_projection,
     format_average_eval_rating,
+    format_index_ranges,
+    format_run_arguments,
     format_run_stats,
     generated_cosine_reject,
     generated_noise_level_range,
@@ -76,6 +78,22 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
+
+    def test_parses_a_game24_puzzle(self) -> None:
+        args = parse_args(["--game24-puzzle", "2", "3", "4", "6"])
+
+        self.assertEqual(args.game24_puzzle, [2, 3, 4, 6])
+        self.assertEqual(args.game24_index, (1,))
+
+    def test_parses_game24_indices_beyond_builtin_queries(self) -> None:
+        args = parse_args(
+            ["--game24-file", "24.csv", "--game24-index", "21-23"]
+        )
+
+        self.assertEqual(args.game24_index, (21, 22, 23))
+
+    def test_compacts_contiguous_indices_for_filenames(self) -> None:
+        self.assertEqual(format_index_ranges((1, 2, 3, 7, 9, 10)), "1-3,7,9-10")
 
     def test_parses_startup_relaxation(self) -> None:
         args = parse_args(
@@ -196,6 +214,14 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.seed, 11)
         self.assertEqual(args.ablations, ((('alpha', 0.25),), (('seed', 17),)))
+
+    def test_run_signature_includes_seed(self) -> None:
+        args = parse_args(["--model", "openai/gpt-oss-20b", "--seed", "17"])
+
+        self.assertEqual(
+            format_run_arguments(args, ("model", "seed")),
+            "model=gpt-oss-20b, seed=17",
+        )
 
     def test_sets_gpt_oss_repetition_penalty(self) -> None:
         model = SimpleNamespace(generation_config=SimpleNamespace(repetition_penalty=1.0))

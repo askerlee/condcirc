@@ -46,12 +46,12 @@ import torch  # noqa: E402
 from torch import Tensor, nn  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # noqa: E402
 
-from game24 import format_prompt as format_game24_prompt  # noqa: E402
-from game24 import format_countdown_prompt  # noqa: E402
-from game24 import is_solution as is_game24_solution  # noqa: E402
-from game24 import load_countdown_puzzles  # noqa: E402
-from game24 import load_puzzles as load_game24_puzzles  # noqa: E402
-from game24 import score_countdown_output  # noqa: E402
+from tasks.game24 import format_prompt as format_game24_prompt  # noqa: E402
+from tasks.game24 import format_countdown_prompt  # noqa: E402
+from tasks.game24 import is_solution as is_game24_solution  # noqa: E402
+from tasks.game24 import load_countdown_puzzles  # noqa: E402
+from tasks.game24 import load_puzzles as load_game24_puzzles  # noqa: E402
+from tasks.game24 import score_countdown_output  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
@@ -59,6 +59,9 @@ from recirculation import (  # noqa: E402
     _narrow_top1_top2_logit_gap,
     recirculate,
 )
+from tasks.sudoku import format_prompt as format_sudoku_prompt  # noqa: E402
+from tasks.sudoku import is_solution as is_sudoku_solution  # noqa: E402
+from tasks.sudoku import load_puzzles as load_sudoku_puzzles  # noqa: E402
 
 
 EXAMPLE_QUERIES = (
@@ -425,40 +428,54 @@ def parse_query_indices(value: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(indices))
 
 
-def parse_game24_indices(value: str) -> tuple[int, ...]:
+def parse_benchmark_indices(value: str, task_name: str) -> tuple[int, ...]:
     indices: list[int] = []
     for part in value.split(","):
         match = re.fullmatch(r"(-?\d+)(?:-(-?\d+))?", part)
         if match is None:
             raise argparse.ArgumentTypeError(
-                f"invalid Game24 index or range: {part!r}"
+                f"invalid {task_name} index or range: {part!r}"
             )
         start = int(match.group(1))
         end = int(match.group(2) or start)
         if start > end:
             raise argparse.ArgumentTypeError(
-                f"Game24 index range must be ascending: {part!r}"
+                f"{task_name} index range must be ascending: {part!r}"
             )
         if start == 0:
             raise argparse.ArgumentTypeError(
-                "Game24 indices cannot be zero."
+                f"{task_name} indices cannot be zero."
             )
         indices.extend(range(start, end + 1))
     return tuple(dict.fromkeys(indices))
 
 
-def resolve_game24_indices(
-    indices: Sequence[int], puzzle_count: int
+def parse_game24_indices(value: str) -> tuple[int, ...]:
+    return parse_benchmark_indices(value, "Game24")
+
+
+def parse_sudoku_indices(value: str) -> tuple[int, ...]:
+    return parse_benchmark_indices(value, "Sudoku")
+
+
+def resolve_benchmark_indices(
+    indices: Sequence[int], puzzle_count: int, task_name: str
 ) -> tuple[int, ...]:
     resolved = tuple(
         index if index > 0 else puzzle_count + index + 1 for index in indices
     )
     if any(not 1 <= index <= puzzle_count for index in resolved):
         raise ValueError(
-            f"Game24 indices must be between 1 and {puzzle_count}, or between "
+            f"{task_name} indices must be between 1 and {puzzle_count}, or between "
             f"-{puzzle_count} and -1."
         )
     return resolved
+
+
+def resolve_game24_indices(
+    indices: Sequence[int], puzzle_count: int
+) -> tuple[int, ...]:
+    return resolve_benchmark_indices(indices, puzzle_count, "Game24")
 
 
 def format_index_ranges(indices: Sequence[int]) -> str:
@@ -493,7 +510,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     while argument_index < len(argv):
         argument = argv[argument_index]
         if (
-            argument in ("--game24-index", "--countdown-index")
+            argument in ("--game24-index", "--countdown-index", "--sudoku-index")
             and argument_index + 1 < len(argv)
             and argv[argument_index + 1].startswith("-")
         ):
@@ -552,6 +569,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="Run puzzles from a Countdown CSV with numbers and target columns.",
     )
+    task_group.add_argument(
+        "--sudoku-file",
+        type=Path,
+        help="Run puzzles from a Sudoku4LLM JSONL file.",
+    )
     parser.add_argument(
         "--game24-index",
         type=parse_game24_indices,
@@ -570,6 +592,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "1-based Countdown CSV indices; negative values count from the end "
             "(default: all)."
+        ),
+    )
+    parser.add_argument(
+        "--sudoku-index",
+        type=parse_sudoku_indices,
+        default=(),
+        metavar="INDEX[-INDEX][,...]",
+        help=(
+            "1-based Sudoku4LLM JSONL indices; negative values count from the "
+            "end (default: all)."
         ),
     )
     parser.add_argument(
@@ -986,6 +1018,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "countdown_puzzle",
         "countdown_file",
         "countdown_index",
+        "sudoku_file",
+        "sudoku_index",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1745,12 +1779,15 @@ def main() -> None:
         or args.game24_file is not None
         or args.countdown_puzzle is not None
         or args.countdown_file is not None
+        or args.sudoku_file is not None
     ):
         raise ValueError("A free-form prompt cannot be combined with a benchmark task.")
     if args.game24_puzzle is not None and args.game24_index:
         raise ValueError("--game24-index requires --game24-file.")
     if args.countdown_puzzle is not None and args.countdown_index:
         raise ValueError("--countdown-index requires --countdown-file.")
+    if args.sudoku_index and args.sudoku_file is None:
+        raise ValueError("--sudoku-index requires --sudoku-file.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -1931,11 +1968,16 @@ def main() -> None:
                 else ""
             )
         )
+        sudoku_signature = (
+            f"-sudoku-{format_index_ranges(args.sudoku_index) or 'all'}"
+            if args.sudoku_file is not None
+            else ""
+        )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
             f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
-            f"{game24_signature}{countdown_signature}"
+            f"{game24_signature}{countdown_signature}{sudoku_signature}"
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
@@ -2417,6 +2459,10 @@ def main() -> None:
                     f"{sum(adaptive_rejected_flags or [])}, "
                     f"average_adaptive_recirculations = {average_count:.2f}"
                 )
+            print(
+                "forced_recirculation_tool_calls = "
+                f"{forced_recirculation_call_count}"
+            )
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
                 formatted = ", ".join(
@@ -3155,21 +3201,37 @@ def main() -> None:
         else None
     )
     countdown_indices = (
-        resolve_game24_indices(
+        resolve_benchmark_indices(
             args.countdown_index or tuple(range(1, len(countdown_puzzles) + 1)),
             len(countdown_puzzles),
+            "Countdown",
         )
         if countdown_puzzles is not None
         else ()
     )
+    sudoku_puzzles = (
+        load_sudoku_puzzles(args.sudoku_file)
+        if args.sudoku_file is not None
+        else None
+    )
+    sudoku_indices = (
+        resolve_benchmark_indices(
+            args.sudoku_index or tuple(range(1, len(sudoku_puzzles) + 1)),
+            len(sudoku_puzzles),
+            "Sudoku",
+        )
+        if sudoku_puzzles is not None
+        else ()
+    )
     prompts = (
-        ((1, args.prompt, None, None),)
+        ((1, args.prompt, None, None, None),)
         if args.prompt is not None
         else tuple(
             (
                 index,
                 format_game24_prompt(game24_puzzles[index - 1]),
                 game24_puzzles[index - 1],
+                None,
                 None,
             )
             for index in game24_indices
@@ -3181,12 +3243,24 @@ def main() -> None:
                 format_countdown_prompt(*countdown_puzzles[index - 1]),
                 None,
                 countdown_puzzles[index - 1],
+                None,
             )
             for index in countdown_indices
         )
         if countdown_puzzles is not None
         else tuple(
-            (index, EXAMPLE_QUERIES[index - 1], None, None)
+            (
+                index,
+                format_sudoku_prompt(sudoku_puzzles[index - 1]),
+                None,
+                None,
+                sudoku_puzzles[index - 1],
+            )
+            for index in sudoku_indices
+        )
+        if sudoku_puzzles is not None
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1], None, None, None)
             for index in args.query_indices
         )
     )
@@ -3210,7 +3284,7 @@ def main() -> None:
             output_file.flush()
 
     try:
-        for prompt_index, prompt, game24_puzzle, countdown_puzzle in prompts:
+        for prompt_index, prompt, game24_puzzle, countdown_puzzle, sudoku_puzzle in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
                 "prompt": prompt,
@@ -3222,6 +3296,8 @@ def main() -> None:
                 target, numbers = countdown_puzzle
                 query_record["countdown_target"] = target
                 query_record["countdown_numbers"] = list(numbers)
+            if sudoku_puzzle is not None:
+                query_record["sudoku_puzzle"] = [list(row) for row in sudoku_puzzle]
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
@@ -3279,6 +3355,10 @@ def main() -> None:
                         run_record["countdown_value"] = str(value)
                         run_record["countdown_distance"] = float(abs(value - target))
                         run_record["countdown_exact"] = value == target
+                if sudoku_puzzle is not None:
+                    run_record["sudoku_solved"] = is_sudoku_solution(
+                        sudoku_puzzle, output
+                    )
                 if args.do_eval:
                     evaluation = evaluate_single_answer(
                         prompt,
@@ -3343,6 +3423,13 @@ def main() -> None:
                     else "countdown_valid = 0/"
                     f"{len(countdown_runs)}, exact = 0/{len(countdown_runs)}, "
                     "average_distance = n/a"
+                )
+            sudoku_runs = [run for run in completed_runs if "sudoku_solved" in run]
+            if sudoku_runs:
+                emit(
+                    "sudoku_solved = "
+                    f"{sum(run['sudoku_solved'] for run in sudoku_runs)}/"
+                    f"{len(sudoku_runs)}"
                 )
             if args.do_eval:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))

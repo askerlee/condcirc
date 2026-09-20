@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from game24 import (
+from tasks.game24 import (
     _evaluate_expression,
     format_countdown_prompt,
     format_prompt,

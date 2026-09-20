@@ -155,6 +155,20 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.countdown_index, (1, 2, 3))
         self.assertEqual(last.countdown_index, (-1,))
 
+    def test_parses_sudoku_file_and_indices(self) -> None:
+        default = parse_args(["--sudoku-file", "sudoku.jsonl"])
+        args = parse_args(
+            ["--sudoku-file", "sudoku.jsonl", "--sudoku-index", "1-3"]
+        )
+        last = parse_args(
+            ["--sudoku-file", "sudoku.jsonl", "--sudoku-index", "-1"]
+        )
+
+        self.assertEqual(default.sudoku_index, ())
+        self.assertEqual(args.sudoku_file, Path("sudoku.jsonl"))
+        self.assertEqual(args.sudoku_index, (1, 2, 3))
+        self.assertEqual(last.sudoku_index, (-1,))
+
     def test_parses_game24_indices_beyond_builtin_queries(self) -> None:
         args = parse_args(
             ["--game24-file", "24.csv", "--game24-index", "21-23"]

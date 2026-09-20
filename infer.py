@@ -764,7 +764,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--ada-recirculate",
         type=int,
-        default=0,
+        default=2,
         metavar="X",
         help=(
             "Run at most X additional passes; with a post-margin gate, stop "
@@ -1299,10 +1299,29 @@ def apply_repetition_penalty(
 
 
 REPETITION_RECOVERY_TOKEN_COUNT = 2
+REPETITION_TEXT_WINDOW_WORD_COUNT = 1024
 
 
 def repetition_recovery_penalty(recovery_pending: bool) -> float:
     return 1.1 if recovery_pending else 1.0
+
+
+def repetition_text_window(
+    text: str, maximum_word_count: int = REPETITION_TEXT_WINDOW_WORD_COUNT
+) -> str:
+    """Return the recent word-bounded portion of decoded text for detection."""
+    word_matches = list(re.finditer(r"\S+", text))
+    if len(word_matches) <= maximum_word_count:
+        return text
+    return text[word_matches[-maximum_word_count].start() :]
+
+
+def effective_adaptive_recirculation(
+    configured_passes: int,
+    conditional_recirculation: bool,
+    forced_recovery: bool = False,
+) -> int:
+    return configured_passes if conditional_recirculation or forced_recovery else 0
 
 
 def set_random_seed(seed: int) -> None:
@@ -1392,15 +1411,30 @@ def has_third_repeated_text_suffix(
     maximum_word_count: int = 32,
 ) -> bool:
     """Whether a substantial normalized word span appears at least three times."""
+    return bool(
+        repeated_text_signature_counts(
+            text, minimum_word_count, maximum_word_count
+        )
+    )
+
+
+def repeated_text_signature_counts(
+    text: str,
+    minimum_word_count: int = 8,
+    maximum_word_count: int = 32,
+) -> dict[tuple[str, ...], int]:
+    """Count substantial normalized patterns occurring at least three times."""
     lines = [
         re.sub(r"^let's try:\s*", "", re.sub(r"^\d+[.)]\s*", "", line.strip()).lower())
         for line in text.splitlines()
         if line.strip()
     ]
+    signature_counts: dict[tuple[str, ...], int] = {}
     for line in lines:
         words = re.findall(r"\S+", line)
-        if len(words) >= minimum_word_count and lines.count(line) >= 3:
-            return True
+        line_count = lines.count(line)
+        if len(words) >= minimum_word_count and line_count >= 3:
+            signature_counts[("line", line)] = line_count
         maximum_length = min(maximum_word_count, len(words) // 3)
         for word_count in range(minimum_word_count, maximum_length + 1):
             spans: dict[tuple[str, ...], list[int]] = {}
@@ -1410,8 +1444,11 @@ def has_third_repeated_text_suffix(
                 if not starts or start - starts[-1] >= word_count:
                     starts.append(start)
                     if len(starts) >= 3:
-                        return True
-    return False
+                        signature = ("span", *span)
+                        signature_counts[signature] = max(
+                            signature_counts.get(signature, 0), len(starts)
+                        )
+    return signature_counts
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1461,12 +1498,12 @@ def repetition_recovery_settings(
         (0.1, 0.2) if noise_level_range == (0.0, 0.0) else noise_level_range
     )
     recovery_noise_level_range = tuple(
-        min(1.0, level * 2 ** (consecutive_repetition_count - 1))
+        min(0.4, level * 2 ** (consecutive_repetition_count - 1))
         for level in recovery_noise_level_range
     )
     return RepetitionRecoverySettings(
         recovery_noise_level_range,
-        None,
+        min(cosine_reject, 0.3) if cosine_reject is not None else None,
         None,
         None,
         None,
@@ -2332,7 +2369,10 @@ def main() -> None:
                     pre_margin_threshold=run_args.pre_margin_thres,
                     post_margin_threshold=run_args.post_margin_thres,
                     post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
-                    adaptive_recirculation=run_args.ada_recirculate,
+                    adaptive_recirculation=effective_adaptive_recirculation(
+                        run_args.ada_recirculate,
+                        run_args.cond_recirculate,
+                    ),
                     recirculation_allowed=True,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
@@ -2359,7 +2399,7 @@ def main() -> None:
                 next_logits = prompt_logits[:, -1, :]
 
             generated_ids = input_ids.clone()
-            repetition_detection_active = False
+            active_repetition_counts: dict[tuple[str, ...], int] = {}
             repetition_recovery_tokens_remaining = 0
             repetition_recovery_penalty_tokens_remaining = 0
             consecutive_repetition_count = 0
@@ -2389,13 +2429,17 @@ def main() -> None:
                     generated_ids[0, input_ids.shape[1] :],
                     skip_special_tokens=True,
                 )
-                repetition_present = has_third_repeated_text_suffix(generated_text)
-                repetition_detected = (
-                    repetition_present and not repetition_detection_active
+                repetition_counts = repeated_text_signature_counts(
+                    repetition_text_window(generated_text)
                 )
-                if repetition_detected and not repetition_detection_active:
+                repetition_present = bool(repetition_counts)
+                repetition_detected = any(
+                    count > active_repetition_counts.get(signature, 0)
+                    for signature, count in repetition_counts.items()
+                )
+                if repetition_detected:
                     print("\nrepetition detected", flush=True)
-                repetition_detection_active = repetition_present
+                active_repetition_counts = repetition_counts
                 consecutive_repetition_count += int(repetition_detected)
                 if repetition_detected and run_args.repetition_recovery:
                     repetition_recovery_tokens_remaining = (
@@ -2462,7 +2506,11 @@ def main() -> None:
                         post_margin_ratio_threshold=(
                             recovery_settings.post_margin_ratio_threshold
                         ),
-                        adaptive_recirculation=run_args.ada_recirculate,
+                        adaptive_recirculation=effective_adaptive_recirculation(
+                            run_args.ada_recirculate,
+                            run_args.cond_recirculate,
+                            repetition_recovery_active,
+                        ),
                         recirculation_allowed=recovery_settings.recirculation_allowed,
                         force_recirculation=recovery_settings.force_recirculation,
                         cosine_reject=recovery_settings.cosine_reject,
@@ -2533,7 +2581,10 @@ def main() -> None:
             pre_margin_threshold=run_args.pre_margin_thres,
             post_margin_threshold=run_args.post_margin_thres,
             post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
-            adaptive_recirculation=run_args.ada_recirculate,
+            adaptive_recirculation=effective_adaptive_recirculation(
+                run_args.ada_recirculate,
+                run_args.cond_recirculate,
+            ),
             recirculation_allowed=True,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
@@ -2569,7 +2620,7 @@ def main() -> None:
         student_next_logits = student_logits[:, -1, :]
         current_token = input_ids[:, -1:]
         student_run_config = run_config
-        repetition_detection_active = False
+        active_repetition_counts: dict[tuple[str, ...], int] = {}
         repetition_recovery_active = False
         repetition_recovery_tokens_remaining = 0
         repetition_recovery_penalty_tokens_remaining = 0
@@ -2687,11 +2738,17 @@ def main() -> None:
                 generated_ids[0, input_ids.shape[1] :],
                 skip_special_tokens=True,
             )
-            repetition_present = has_third_repeated_text_suffix(generated_text)
-            repetition_detected = repetition_present and not repetition_detection_active
-            if repetition_detected and not repetition_detection_active:
+            repetition_counts = repeated_text_signature_counts(
+                repetition_text_window(generated_text)
+            )
+            repetition_present = bool(repetition_counts)
+            repetition_detected = any(
+                count > active_repetition_counts.get(signature, 0)
+                for signature, count in repetition_counts.items()
+            )
+            if repetition_detected:
                 print("\nrepetition detected", flush=True)
-            repetition_detection_active = repetition_present
+            active_repetition_counts = repetition_counts
             consecutive_repetition_count += int(repetition_detected)
             if repetition_detected and run_args.repetition_recovery:
                 repetition_recovery_tokens_remaining = REPETITION_RECOVERY_TOKEN_COUNT
@@ -2776,7 +2833,11 @@ def main() -> None:
                 post_margin_ratio_threshold=(
                     recovery_settings.post_margin_ratio_threshold
                 ),
-                adaptive_recirculation=run_args.ada_recirculate,
+                adaptive_recirculation=effective_adaptive_recirculation(
+                    run_args.ada_recirculate,
+                    run_args.cond_recirculate,
+                    repetition_recovery_active,
+                ),
                 recirculation_allowed=recovery_settings.recirculation_allowed,
                 force_recirculation=recovery_settings.force_recirculation,
                 cosine_reject=recovery_settings.cosine_reject,

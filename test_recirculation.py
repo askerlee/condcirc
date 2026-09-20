@@ -14,9 +14,11 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
-    def test_force_recirculation_allows_noise_without_post_margin_gate(self) -> None:
+    def test_force_recirculation_adds_noisy_pass_without_configured_passes(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         recirculated_flags: list[bool] = []
+        adaptive_recirculation_counts: list[int] = []
+        injected_noise_levels: list[list[float]] = []
 
         def step(token: torch.Tensor, cache: list[int]):
             hidden = torch.ones((1, 1, 2))
@@ -35,15 +37,84 @@ class RecirculationCacheTest(unittest.TestCase):
                 pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
             ),
             passes=1,
-            adaptive_recirculation=1,
+            adaptive_recirculation=0,
             force_recirculation=True,
             decode_injected_source_latent=lambda *_args: {"margin": 0.0},
             capture_cached_token=lambda cache: cache[-1],
             restore_cached_token=lambda _cache, _cached_token: None,
             recirculated_flags=recirculated_flags,
+            adaptive_recirculation_counts=adaptive_recirculation_counts,
+            injected_noise_levels=injected_noise_levels,
         )
 
         self.assertEqual(recirculated_flags, [True])
+        self.assertEqual(adaptive_recirculation_counts, [0])
+        self.assertEqual(injected_noise_levels, [[0.4]])
+
+    def test_forced_recirculation_retries_cosine_rejected_noise(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        cache: list[int] = []
+        pass_logits = (
+            torch.tensor([[[5.0, 0.0, 0.0]]]),
+            torch.tensor([[[0.0, 5.0, 0.0]]]),
+            torch.tensor([[[4.0, 0.0, 0.0]]]),
+        )
+        call_count = 0
+        rejected_flags: list[bool] = []
+        rejection_reasons: list[tuple[str, ...]] = []
+
+        def step(token: torch.Tensor, current_cache: list[int]):
+            nonlocal call_count
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            current_cache.append(call_count + 1)
+            logits = pass_logits[call_count]
+            call_count += 1
+            return logits, current_cache
+
+        def rewind_one(current_cache: list[int]) -> list[int]:
+            current_cache.pop()
+            return current_cache
+
+        def restore_cached_token(
+            current_cache: list[int], cached_token: int
+        ) -> None:
+            current_cache[-1] = cached_token
+
+        with patch(
+            "recirculation._distribution_cosine_similarity",
+            side_effect=(0.2, 0.4),
+        ) as cosine_similarity:
+            logits, final_cache = recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=cache,
+                step=step,
+                rewind_one=rewind_one,
+                config=RecirculationConfig(
+                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+                ),
+                passes=1,
+                force_recirculation=True,
+                condition_thresholds=(2.0,),
+                pre_margin_threshold=-1.0,
+                post_margin_threshold=(1.0, 1.0),
+                post_margin_ratio_threshold=99.0,
+                cosine_reject=0.8,
+                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
+                capture_cached_token=lambda current_cache: current_cache[-1],
+                restore_cached_token=restore_cached_token,
+                rejected_flags=rejected_flags,
+                rejection_reasons=rejection_reasons,
+            )
+
+        torch.testing.assert_close(logits, pass_logits[2])
+        self.assertEqual(final_cache, [1])
+        self.assertEqual(call_count, 3)
+        self.assertEqual(cosine_similarity.call_count, 2)
+        self.assertEqual(rejected_flags, [False])
+        self.assertEqual(rejection_reasons, [()])
 
     def test_accepts_noise_level_one(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

@@ -12,6 +12,7 @@ from infer import (
     aggregate_recirculation_stats,
     apply_repetition_penalty,
     configure_model_generation,
+    effective_adaptive_recirculation,
     enable_fp32_output_projection,
     format_average_eval_rating,
     format_index_ranges,
@@ -25,6 +26,8 @@ from infer import (
     output_recirculation_pairs,
     parse_args,
     REPETITION_RECOVERY_TOKEN_COUNT,
+    repeated_text_signature_counts,
+    repetition_text_window,
     repetition_recovery_penalty,
     repetition_recovery_settings,
     resolve_game24_indices,
@@ -36,6 +39,11 @@ from infer import (
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_adaptive_recirculation_requires_condition_or_forced_recovery(self) -> None:
+        self.assertEqual(effective_adaptive_recirculation(2, False), 0)
+        self.assertEqual(effective_adaptive_recirculation(2, True), 2)
+        self.assertEqual(effective_adaptive_recirculation(2, False, True), 2)
+
     def test_streams_valid_similarity_json_after_each_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "debug.json"
@@ -256,6 +264,30 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertTrue(has_third_repeated_text_suffix(text))
 
+    def test_repetition_text_window_discards_distant_attempts(self) -> None:
+        repeated_attempt = "100 * (6 + 3) - (5 * 7 + 2 + 6)... no."
+        text = "\n".join(
+            (repeated_attempt, repeated_attempt, repeated_attempt, "later " * 10)
+        )
+
+        self.assertTrue(
+            has_third_repeated_text_suffix(repetition_text_window(text, 64))
+        )
+        self.assertFalse(
+            has_third_repeated_text_suffix(repetition_text_window(text, 10))
+        )
+
+    def test_repeated_signature_count_increases_after_the_third_attempt(self) -> None:
+        repeated_attempt = "858 = (100 + 25 + 3 * 6) * 6 ... no."
+        third_attempt = "\n".join(repeated_attempt for _ in range(3))
+        fourth_attempt = f"{third_attempt}\n{repeated_attempt}"
+
+        third_counts = repeated_text_signature_counts(third_attempt)
+        fourth_counts = repeated_text_signature_counts(fourth_attempt)
+
+        self.assertEqual(list(third_counts.values()), [3])
+        self.assertEqual(list(fourth_counts.values()), [4])
+
     def test_detects_a_repeated_text_span_before_later_text(self) -> None:
         repeated_attempt = (
             "Let's try: $100 \\times (6 + 3) - (5 \\times 7 + 2 + 6)$... no."
@@ -358,7 +390,7 @@ class RecirculationStatsTest(unittest.TestCase):
         )
 
         self.assertEqual(settings.noise_level_range, (0.1, 0.2))
-        self.assertIsNone(settings.cosine_reject)
+        self.assertEqual(settings.cosine_reject, 0.3)
         self.assertIsNone(settings.pre_margin_threshold)
         self.assertIsNone(settings.post_margin_threshold)
         self.assertIsNone(settings.post_margin_ratio_threshold)
@@ -462,7 +494,7 @@ class RecirculationStatsTest(unittest.TestCase):
             consecutive_repetition_count=2,
         )
 
-        self.assertEqual(settings.noise_level_range, (1.0, 1.0))
+        self.assertEqual(settings.noise_level_range, (0.4, 0.4))
 
     def test_can_disable_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(

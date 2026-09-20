@@ -43,6 +43,9 @@ import torch
 from torch import Tensor, nn
 
 
+FORCED_NOISE_MAX_ATTEMPTS = 32
+
+
 @dataclass(frozen=True)
 class RecirculationConfig:
     pairs: tuple[tuple[int, int], ...]
@@ -557,12 +560,19 @@ def recirculate(
         raise ValueError("passes must be at least 1.")
     if adaptive_recirculation < 0:
         raise ValueError("adaptive_recirculation must be nonnegative.")
-    if passes == 1 and not adaptive_recirculation:
+    if passes == 1 and not adaptive_recirculation and not force_recirculation:
         condition_thresholds = None
         pre_margin_threshold = None
         post_margin_threshold = None
         post_margin_ratio_threshold = None
         cosine_reject = None
+    if force_recirculation:
+        condition_thresholds = None
+        pre_margin_threshold = None
+        post_margin_threshold = None
+        post_margin_ratio_threshold = None
+        if cosine_reject is not None:
+            cosine_reject = min(cosine_reject, 0.3)
     if post_margin_threshold is not None:
         post_margin_min, post_margin_max = post_margin_threshold
         if post_margin_min < 0 or post_margin_max < 0:
@@ -580,9 +590,10 @@ def recirculate(
         raise ValueError(
             "noise_level_range requires decode_injected_source_latent."
         )
+    multi_pass = passes >= 2 or adaptive_recirculation > 0 or force_recirculation
     if (
         config.narrowing_grad_level > 0
-        and (passes >= 2 or adaptive_recirculation)
+        and multi_pass
         and narrow_margin is None
     ):
         raise ValueError("narrowing_grad_level requires narrow_margin.")
@@ -599,7 +610,7 @@ def recirculate(
         raise ValueError(
             "average_cached_token requires capture_cached_token."
         )
-    if (passes >= 2 or adaptive_recirculation) and config.mode == "source" and (
+    if multi_pass and config.mode == "source" and (
         capture_cached_token is None or restore_cached_token is None
     ):
         raise ValueError(
@@ -709,6 +720,7 @@ def recirculate(
             hooks.mode = "capture"
             first_logits, cache = step(token, cache)
             hooks.mode = "off"
+            first_pass_residuals = hooks.residuals.copy()
             if first_pass_logits is not None:
                 first_pass_logits.append(first_logits)
             first_margin = (
@@ -716,6 +728,7 @@ def recirculate(
                 if pre_margin_threshold is not None
                 or passes >= 2
                 or adaptive_recirculation
+                or force_recirculation
                 or pass_probability_margins is not None
                 else None
             )
@@ -786,8 +799,13 @@ def recirculate(
             final_pass_same_top1 = False
             final_pass_rejection_reasons: list[str] = []
             final_pass_cosine_similarity = None
-            max_passes = passes + adaptive_recirculation
+            max_passes = max(
+                passes + adaptive_recirculation,
+                2 if force_recirculation else 1,
+            )
             adaptive_recirculation_count = 0
+            forced_noise_attempt_count = 0
+            retrying_forced_noise = False
             previous_pass_margin = first_margin
             token_injected_noise_levels: list[float] = []
             token_injected_narrowing_grad_levels: list[float] = []
@@ -795,9 +813,15 @@ def recirculate(
             token_decoded_injected_source_latents: list[Any] = []
             if hooks.injected_source_latents is not None:
                 hooks.injected_source_latents.clear()
-            for pass_index in range(1, max_passes if should_recirculate else 1):
-                if pass_index >= passes:
+            pass_index = 1
+            while pass_index < (max_passes if should_recirculate else 1):
+                if (
+                    adaptive_recirculation > 0
+                    and pass_index >= passes
+                    and not retrying_forced_noise
+                ):
                     adaptive_recirculation_count += 1
+                retrying_forced_noise = False
                 hooks.injection_sources = {
                     source: hooks.residuals[source] for source in hooks.sources
                 }
@@ -820,6 +844,8 @@ def recirculate(
                     hooks.noise_level
                     * (config.noise_decay_per_pass ** (pass_index - 1))
                 )
+                if force_recirculation and token_injected_noise_levels[-1] > 0:
+                    forced_noise_attempt_count += 1
                 prepared_debug_latents: list[tuple[int, Tensor]] = []
                 if (
                     config.narrowing_grad_level > 0
@@ -974,7 +1000,11 @@ def recirculate(
                 )
                 if pass_margin is not None:
                     previous_pass_margin = pass_margin
-                if (margin_narrowed and not has_margin_gate) or adaptive_margin_narrowed or (
+                if (
+                    margin_narrowed
+                    and not has_margin_gate
+                    and not force_recirculation
+                ) or adaptive_margin_narrowed or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
                     final_pass_cosine_similarity = _distribution_cosine_similarity(
@@ -1004,6 +1034,18 @@ def recirculate(
                         restore_cached_token(cache, cached_token_passes[0])
                         cache_restored = True
                         final_logits = first_logits
+                        if (
+                            force_recirculation
+                            and final_pass_rejection_reasons == ["cosine"]
+                            and token_injected_noise_levels[-1] > 0
+                            and forced_noise_attempt_count < FORCED_NOISE_MAX_ATTEMPTS
+                        ):
+                            final_pass_rejection_reasons.clear()
+                            hooks.residuals = first_pass_residuals.copy()
+                            previous_pass_margin = first_margin
+                            cache_restored = False
+                            retrying_forced_noise = True
+                            continue
                         break
                     final_pass_same_top1 = _top1_tokens_match(
                         first_logits, final_logits
@@ -1018,6 +1060,7 @@ def recirculate(
                     break
                 if cached_token_passes is not None:
                     cached_token_passes.append(capture_cached_token(cache))
+                pass_index += 1
             if (
                 cached_token_passes is not None
                 and average_cached_token is not None
@@ -1030,7 +1073,7 @@ def recirculate(
                 pass_probability_margins.append(token_pass_probability_margins)
             if recirculated_flags is not None:
                 recirculated_flags.append(
-                    (passes >= 2 or adaptive_recirculation > 0)
+                    multi_pass
                     and should_recirculate
                     and final_pass_accepted
                 )

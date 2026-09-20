@@ -1381,22 +1381,29 @@ def has_third_repeated_suffix(
 
 def has_third_repeated_text_suffix(
     text: str,
-    minimum_word_count: int = 4,
+    minimum_word_count: int = 8,
     maximum_word_count: int = 32,
 ) -> bool:
     """Whether a substantial normalized word span appears at least three times."""
-    normalized = re.sub(r"(?m)^\s*\d+[.)]\s*", "", text).lower()
-    words = re.findall(r"\S+", normalized)
-    maximum_length = min(maximum_word_count, len(words) // 3)
-    for word_count in range(minimum_word_count, maximum_length + 1):
-        spans: dict[tuple[str, ...], list[int]] = {}
-        for start in range(len(words) - word_count + 1):
-            span = tuple(words[start : start + word_count])
-            starts = spans.setdefault(span, [])
-            if not starts or start - starts[-1] >= word_count:
-                starts.append(start)
-                if len(starts) >= 3:
-                    return True
+    lines = [
+        re.sub(r"^let's try:\s*", "", re.sub(r"^\d+[.)]\s*", "", line.strip()).lower())
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    for line in lines:
+        words = re.findall(r"\S+", line)
+        if len(words) >= minimum_word_count and lines.count(line) >= 3:
+            return True
+        maximum_length = min(maximum_word_count, len(words) // 3)
+        for word_count in range(minimum_word_count, maximum_length + 1):
+            spans: dict[tuple[str, ...], list[int]] = {}
+            for start in range(len(words) - word_count + 1):
+                span = tuple(words[start : start + word_count])
+                starts = spans.setdefault(span, [])
+                if not starts or start - starts[-1] >= word_count:
+                    starts.append(start)
+                    if len(starts) >= 3:
+                        return True
     return False
 
 
@@ -1445,7 +1452,7 @@ def repetition_recovery_settings(
         (0.1, 0.2) if noise_level_range == (0.0, 0.0) else noise_level_range
     )
     recovery_noise_level_range = tuple(
-        min(10.0, level * 2 ** (consecutive_repetition_count - 1))
+        min(1.0, level * 2 ** (consecutive_repetition_count - 1))
         for level in recovery_noise_level_range
     )
     return RepetitionRecoverySettings(
@@ -2365,13 +2372,14 @@ def main() -> None:
                     generated_ids[0, input_ids.shape[1] :],
                     skip_special_tokens=True,
                 )
-                repetition_detected = has_third_repeated_text_suffix(generated_text)
+                repetition_present = has_third_repeated_text_suffix(generated_text)
+                repetition_detected = (
+                    repetition_present and not repetition_detection_active
+                )
                 if repetition_detected and not repetition_detection_active:
                     print("\nrepetition detected", flush=True)
-                repetition_detection_active = repetition_detected
-                consecutive_repetition_count = (
-                    consecutive_repetition_count + 1 if repetition_detected else 0
-                )
+                repetition_detection_active = repetition_present
+                consecutive_repetition_count += int(repetition_detected)
                 if next_token.item() in eos_token_ids:
                     break
                 if use_recirculation:
@@ -2641,13 +2649,12 @@ def main() -> None:
                 generated_ids[0, input_ids.shape[1] :],
                 skip_special_tokens=True,
             )
-            repetition_detected = has_third_repeated_text_suffix(generated_text)
+            repetition_present = has_third_repeated_text_suffix(generated_text)
+            repetition_detected = repetition_present and not repetition_detection_active
             if repetition_detected and not repetition_detection_active:
                 print("\nrepetition detected", flush=True)
-            repetition_detection_active = repetition_detected
-            consecutive_repetition_count = (
-                consecutive_repetition_count + 1 if repetition_detected else 0
-            )
+            repetition_detection_active = repetition_present
+            consecutive_repetition_count += int(repetition_detected)
             repetition_recovery_active = (
                 repetition_detected and run_args.repetition_recovery
             )

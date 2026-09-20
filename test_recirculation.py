@@ -55,21 +55,21 @@ class RecirculationCacheTest(unittest.TestCase):
             ),
         )
 
-    def test_forced_recirculation_allows_noise_above_one(self) -> None:
+    def test_forced_recirculation_allows_noise_at_one(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
 
         _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.6)
+                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.0)
             ),
             force_recirculation=True,
         )
 
-    def test_forced_recirculation_rejects_noise_above_ten(self) -> None:
+    def test_forced_recirculation_rejects_noise_above_one(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
 
-        with self.assertRaisesRegex(ValueError, "MAX <= 10"):
+        with self.assertRaisesRegex(ValueError, "MAX <= 1"):
             _Hooks(
                 blocks,
                 RecirculationConfig(

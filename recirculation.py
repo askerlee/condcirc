@@ -216,7 +216,7 @@ class _Hooks:
                 "Expected 0 <= destination < source < number of blocks for every pair."
             )
         noise_min, noise_max = cfg.noise_level_range
-        maximum_noise_level = 10.0 if force_recirculation else 1.0
+        maximum_noise_level = 1.0
         if not 0.0 <= noise_min <= noise_max <= maximum_noise_level:
             raise ValueError(
                 "noise_level_range requires 0 <= MIN <= MAX"

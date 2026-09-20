@@ -244,11 +244,11 @@ class RecirculationStatsTest(unittest.TestCase):
     def test_detects_a_repeated_decoded_text_suffix(self) -> None:
         text = "\n".join(
             (
-                "10. $106 \\times 8 = 848$.",
+                "10. $106 \\times 8 = 848$, leaving 52 to construct.",
                 "11. $848 - (9 - 6 + 1)$... No.",
-                "12. $106 \\times 8 = 848$.",
+                "12. $106 \\times 8 = 848$, leaving 52 to construct.",
                 "13. $848 - (9 - 3 - 2)$... No.",
-                "14. $106 \\times 8 = 848$.",
+                "14. $106 \\times 8 = 848$, leaving 52 to construct.",
             )
         )
 
@@ -268,6 +268,29 @@ class RecirculationStatsTest(unittest.TestCase):
         )
 
         self.assertTrue(has_third_repeated_text_suffix(text))
+
+    def test_ignores_shared_prefix_of_distinct_attempts(self) -> None:
+        text = "\n".join(
+            (
+                "12. Let's try: $6 \\times (100 + 3 \\times 7 \\times 2) = 852$.",
+                "13. Let's try: $100 \\times (2 + 7) - (6 \\times 7 + 1)$... no.",
+                "14. Let's try: $(100 - 5) \\times (3 \\times 3)$... no.",
+                "15. Let's try: $100 \\times",
+            )
+        )
+
+        self.assertFalse(has_third_repeated_text_suffix(text))
+
+    def test_ignores_long_shared_prefix_of_distinct_attempts(self) -> None:
+        text = "\n".join(
+            (
+                "28. Let's try: $100 \\times (6 + 3) - (5 \\times 7 + 2 \\times 4)$... no.",
+                "29. Let's try: $100 \\times (6 + 3) - (5 \\times 7 + 2 \\times 3)$... no.",
+                "30. Let's try: $100 \\times (6 + 3) - (5 - 2) \\times (7 + 7)$... no.",
+            )
+        )
+
+        self.assertFalse(has_third_repeated_text_suffix(text))
 
     def test_ignores_repeated_short_prose_fragments(self) -> None:
         text = "\n".join(
@@ -370,6 +393,33 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(settings.noise_level_range, (0.2, 0.4))
 
+    def test_escalates_noise_after_a_second_failed_recovery(self) -> None:
+        first_recovery = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            consecutive_repetition_count=1,
+        )
+        second_recovery = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            consecutive_repetition_count=2,
+        )
+
+        self.assertEqual(first_recovery.noise_level_range, (0.1, 0.2))
+        self.assertEqual(second_recovery.noise_level_range, (0.2, 0.4))
+
     def test_caps_noise_for_consecutive_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(
             (3.0, 6.0),
@@ -383,7 +433,7 @@ class RecirculationStatsTest(unittest.TestCase):
             consecutive_repetition_count=2,
         )
 
-        self.assertEqual(settings.noise_level_range, (6.0, 10.0))
+        self.assertEqual(settings.noise_level_range, (1.0, 1.0))
 
     def test_can_disable_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(

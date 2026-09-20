@@ -1382,16 +1382,22 @@ def has_third_repeated_suffix(
 def has_third_repeated_text_suffix(
     text: str,
     minimum_word_count: int = 4,
+    maximum_word_count: int = 32,
 ) -> bool:
-    """Whether the current normalized line is appearing for the third time."""
-    lines = [
-        re.sub(r"^\d+[.)]\s*", "", line.strip())
-        for line in text.splitlines()
-        if line.strip()
-    ]
-    if not lines or len(re.findall(r"\S+", lines[-1])) < minimum_word_count:
-        return False
-    return lines.count(lines[-1]) >= 3
+    """Whether a substantial normalized word span appears at least three times."""
+    normalized = re.sub(r"(?m)^\s*\d+[.)]\s*", "", text).lower()
+    words = re.findall(r"\S+", normalized)
+    maximum_length = min(maximum_word_count, len(words) // 3)
+    for word_count in range(minimum_word_count, maximum_length + 1):
+        spans: dict[tuple[str, ...], list[int]] = {}
+        for start in range(len(words) - word_count + 1):
+            span = tuple(words[start : start + word_count])
+            starts = spans.setdefault(span, [])
+            if not starts or start - starts[-1] >= word_count:
+                starts.append(start)
+                if len(starts) >= 3:
+                    return True
+    return False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1956,8 +1962,11 @@ def main() -> None:
         }
         if margin == 0.0 and projection_inputs and projection_outputs:
             token_indices = top_two.indices[0]
-            projection_input = projection_inputs[-1][0].float()
-            weight_indices = token_indices.to(output_embeddings.weight.device)
+            projection_device = output_embeddings.weight.device
+            projection_input = projection_inputs[-1][0].to(
+                device=projection_device, dtype=torch.float32
+            )
+            weight_indices = token_indices.to(projection_device)
             selected_weight = output_embeddings.weight[weight_indices].float()
             fp32_logits = torch.mv(selected_weight, projection_input)
             bias = getattr(output_embeddings, "bias", None)

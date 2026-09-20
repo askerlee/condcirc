@@ -254,6 +254,21 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertTrue(has_third_repeated_text_suffix(text))
 
+    def test_detects_a_repeated_text_span_before_later_text(self) -> None:
+        repeated_attempt = (
+            "Let's try: $100 \\times (6 + 3) - (5 \\times 7 + 2 + 6)$... no."
+        )
+        text = "\n".join(
+            (
+                f"43. {repeated_attempt}",
+                f"44. {repeated_attempt}",
+                f"45. {repeated_attempt}",
+                "(Wait, 100 times 9 is 900. Can we make 43 with 2, 5, 7?)",
+            )
+        )
+
+        self.assertTrue(has_third_repeated_text_suffix(text))
+
     def test_ignores_repeated_short_prose_fragments(self) -> None:
         text = "\n".join(
             (

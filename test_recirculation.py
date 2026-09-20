@@ -55,6 +55,28 @@ class RecirculationCacheTest(unittest.TestCase):
             ),
         )
 
+    def test_forced_recirculation_allows_noise_above_one(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+
+        _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.6)
+            ),
+            force_recirculation=True,
+        )
+
+    def test_normal_recirculation_rejects_noise_above_one(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+
+        with self.assertRaisesRegex(ValueError, "MAX <= 1"):
+            _Hooks(
+                blocks,
+                RecirculationConfig(
+                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.6)
+                ),
+            )
+
     def test_gradient_narrowing_is_only_applied_on_first_recirculation_pass(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         cache: list[int] = []

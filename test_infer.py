@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from infer import (
+    FORCED_RECIRCULATION_SYSTEM_PROMPT,
     FORCED_RECIRCULATION_TOOL,
     aggregate_recirculation_stats,
     apply_repetition_penalty,
@@ -262,6 +263,11 @@ class RecirculationStatsTest(unittest.TestCase):
         )
         self.assertEqual((call_count, tokens_remaining), (1, 4))
 
+        call_count, tokens_remaining = update_forced_recirculation_budget(
+            {}, call_count, 3, 7
+        )
+        self.assertEqual((call_count, tokens_remaining), (1, 3))
+
     def test_rejects_negative_forced_recirculation_budget(self) -> None:
         args = parse_args(["--forced-recirculation-budget", "-1", "prompt"])
 
@@ -274,6 +280,8 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(FORCED_RECIRCULATION_TOOL["type"], "function")
         self.assertEqual(function["name"], "forced_recirculation")
         self.assertEqual(function["parameters"]["properties"], {})
+        self.assertIn("call the forced_recirculation tool", FORCED_RECIRCULATION_SYSTEM_PROMPT)
+        self.assertIn("twice without making progress", FORCED_RECIRCULATION_SYSTEM_PROMPT)
 
     def test_parses_generated_response_with_tool_schema(self) -> None:
         parsed_response = {
@@ -796,6 +804,7 @@ class RecirculationStatsTest(unittest.TestCase):
             [1, 2, 2] + [0] * 297,
             [True] * 2 + [False] * 298,
             rejection_reasons,
+            forced_recirculation_tool_calls=2,
         )
 
         self.assertEqual(
@@ -815,6 +824,7 @@ class RecirculationStatsTest(unittest.TestCase):
                 "adaptive_recirculated_tokens": {"count": 3, "total": 300},
                 "adaptive_rejected": 2,
                 "average_adaptive_recirculations": 1.67,
+                "forced_recirculation_tool_calls": 2,
             },
         )
 
@@ -834,6 +844,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "adaptive_recirculated_tokens": {"count": 3, "total": 300},
             "adaptive_rejected": 2,
             "average_adaptive_recirculations": 1.67,
+            "forced_recirculation_tool_calls": 2,
         }
         second = {
             "recirculated_tokens": {"count": 5, "total": 200},
@@ -850,6 +861,7 @@ class RecirculationStatsTest(unittest.TestCase):
             "adaptive_recirculated_tokens": {"count": 2, "total": 200},
             "adaptive_rejected": 1,
             "average_adaptive_recirculations": 2.5,
+            "forced_recirculation_tool_calls": 1,
         }
 
         lines = format_run_stats(aggregate_recirculation_stats([first, second]))
@@ -862,6 +874,7 @@ class RecirculationStatsTest(unittest.TestCase):
                 "post-margin-max=8, cosine=9, rank=2",
                 "adaptive_recirculated_tokens = 5/500, rejected = 3, "
                 "average_adaptive_recirculations = 2.00",
+                "forced_recirculation_tool_calls = 3",
             ),
         )
 

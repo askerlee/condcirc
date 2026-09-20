@@ -103,6 +103,7 @@ def summarize_recirculation_stats(
     adaptive_recirculation_counts: Sequence[int],
     final_pass_same_top1_flags: Sequence[bool],
     rejection_reasons: Sequence[Sequence[str]],
+    forced_recirculation_tool_calls: int = 0,
 ) -> dict[str, Any]:
     total_tokens = len(recirculated_flags)
     adaptive_counts = [count for count in adaptive_recirculation_counts if count > 0]
@@ -128,10 +129,11 @@ def summarize_recirculation_stats(
         "average_adaptive_recirculations": round(
             average_adaptive_recirculations, 2
         ),
+        "forced_recirculation_tool_calls": forced_recirculation_tool_calls,
     }
 
 
-def format_run_stats(stats: dict[str, Any]) -> tuple[str, str]:
+def format_run_stats(stats: dict[str, Any]) -> tuple[str, ...]:
     recirculated = stats["recirculated_tokens"]
     rejected_by_gate = stats["rejected_by_gate"]
     adaptive = stats["adaptive_recirculated_tokens"]
@@ -146,6 +148,8 @@ def format_run_stats(stats: dict[str, Any]) -> tuple[str, str]:
         f"rejected = {stats['adaptive_rejected']}, "
         "average_adaptive_recirculations = "
         f"{stats['average_adaptive_recirculations']:.2f}",
+        "forced_recirculation_tool_calls = "
+        f"{stats['forced_recirculation_tool_calls']}",
     )
 
 
@@ -197,6 +201,10 @@ def aggregate_recirculation_stats(
         "average_adaptive_recirculations": round(
             adaptive_recirculation_total / adaptive_count if adaptive_count else 0.0,
             2,
+        ),
+        "forced_recirculation_tool_calls": sum(
+            stats.get("forced_recirculation_tool_calls", 0)
+            for stats in stats_records
         ),
     }
 
@@ -1466,7 +1474,9 @@ FORCED_RECIRCULATION_TOOL = {
     "function": {
         "name": "forced_recirculation",
         "description": (
-            "Enable forced recirculation when you feel stuck in a reasoning loop."
+            "Request a temporary forced-recirculation decoding phase. Call this "
+            "function immediately when your reasoning repeats the same steps or "
+            "failed approach without making progress."
         ),
         "parameters": {
             "type": "object",
@@ -1475,6 +1485,12 @@ FORCED_RECIRCULATION_TOOL = {
         },
     },
 }
+FORCED_RECIRCULATION_SYSTEM_PROMPT = (
+    "Monitor whether your reasoning is making progress. If you repeat the same "
+    "reasoning, calculation, or failed approach twice without making progress, "
+    "call the forced_recirculation tool immediately. Continue answering normally "
+    "otherwise. Do not write the tool call as plain text."
+)
 
 
 def parse_generated_response(tokenizer: Any, generated_token_ids: Tensor) -> Mapping[str, Any]:
@@ -1508,7 +1524,7 @@ def update_forced_recirculation_budget(
     call_count = forced_recirculation_call_count(parsed_response)
     if call_count > detected_call_count:
         tokens_remaining = max(tokens_remaining, budget)
-    return call_count, tokens_remaining
+    return max(call_count, detected_call_count), tokens_remaining
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2330,6 +2346,7 @@ def main() -> None:
                 generated_adaptive_recirculation_counts,
                 generated_final_pass_same_top1_flags,
                 generated_rejection_reasons,
+                forced_recirculation_call_count,
             )
 
         def allow_generated_recirculation(generated_token_count: int) -> bool:
@@ -3199,7 +3216,13 @@ def main() -> None:
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
             encoded_prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                [
+                    {
+                        "role": "system",
+                        "content": FORCED_RECIRCULATION_SYSTEM_PROMPT,
+                    },
+                    {"role": "user", "content": prompt},
+                ],
                 tools=[FORCED_RECIRCULATION_TOOL],
                 tokenize=True,
                 add_generation_prompt=True,

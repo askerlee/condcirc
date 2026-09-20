@@ -541,6 +541,7 @@ def recirculate(
     injected_noise_levels: list[list[float]] | None = None,
     injected_narrowing_grad_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
+    source_latents: list[dict[int, Tensor]] | None = None,
     narrow_margin: Callable[[Tensor, int, Tensor, Any, float, Any], Tensor]
     | None = None,
     decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any, Any], Any]
@@ -721,6 +722,14 @@ def recirculate(
             first_logits, cache = step(token, cache)
             hooks.mode = "off"
             first_pass_residuals = hooks.residuals.copy()
+            if source_latents is not None:
+                source_latents.append(
+                    {
+                        source: latent[:, -1, :].detach().clone()
+                        for source, latent in first_pass_residuals.items()
+                        if source in hooks.sources
+                    }
+                )
             if first_pass_logits is not None:
                 first_pass_logits.append(first_logits)
             first_margin = (

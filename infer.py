@@ -107,6 +107,7 @@ def summarize_recirculation_stats(
     final_pass_same_top1_flags: Sequence[bool],
     rejection_reasons: Sequence[Sequence[str]],
     forced_recirculation_tool_calls: int = 0,
+    latent_stagnation_events: int = 0,
 ) -> dict[str, Any]:
     total_tokens = len(recirculated_flags)
     adaptive_counts = [count for count in adaptive_recirculation_counts if count > 0]
@@ -133,6 +134,7 @@ def summarize_recirculation_stats(
             average_adaptive_recirculations, 2
         ),
         "forced_recirculation_tool_calls": forced_recirculation_tool_calls,
+        "latent_stagnation_events": latent_stagnation_events,
     }
 
 
@@ -153,6 +155,7 @@ def format_run_stats(stats: dict[str, Any]) -> tuple[str, ...]:
         f"{stats['average_adaptive_recirculations']:.2f}",
         "forced_recirculation_tool_calls = "
         f"{stats['forced_recirculation_tool_calls']}",
+        f"latent_stagnation_events = {stats.get('latent_stagnation_events', 0)}",
     )
 
 
@@ -208,6 +211,9 @@ def aggregate_recirculation_stats(
         "forced_recirculation_tool_calls": sum(
             stats.get("forced_recirculation_tool_calls", 0)
             for stats in stats_records
+        ),
+        "latent_stagnation_events": sum(
+            stats.get("latent_stagnation_events", 0) for stats in stats_records
         ),
     }
 
@@ -847,8 +853,52 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="TOKENS",
         help=(
             "Force recirculation for this many tokens after the model calls "
-            "the forced_recirculation tool (default: 20)."
+            "the forced_recirculation tool or latent stagnation is detected "
+            "(default: 20)."
         ),
+    )
+    parser.add_argument(
+        "--latent-stagnation-recovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Force recirculation when a repeated token window also follows a "
+            "near-identical source-latent trajectory (default: enabled)."
+        ),
+    )
+    parser.add_argument(
+        "--latent-stagnation-lag-tokens",
+        type=int,
+        default=8,
+        metavar="TOKENS",
+        help=(
+            "Center lag for comparing repeated source-latent trajectories "
+            "(default: 8)."
+        ),
+    )
+    parser.add_argument(
+        "--latent-stagnation-lag-radius",
+        type=int,
+        default=2,
+        metavar="TOKENS",
+        help=(
+            "Check source-latent/token pairs within this many tokens of "
+            "--latent-stagnation-lag-tokens (default: 2)."
+        ),
+    )
+    parser.add_argument(
+        "--latent-stagnation-token-window",
+        type=int,
+        default=4,
+        metavar="TOKENS",
+        help="Repeated generated-token window required for stagnation (default: 4).",
+    )
+    parser.add_argument(
+        "--latent-stagnation-cosine-thres",
+        type=float,
+        default=0.3,
+        metavar="THRESHOLD",
+        help="Minimum lagged source-latent cosine for stagnation (default: 0.3).",
     )
     parser.add_argument(
         "--cosine-top-k",
@@ -1439,6 +1489,81 @@ def generated_cosine_reject(
     return cosine_reject
 
 
+def latent_stagnation_detected(
+    source_latents: Sequence[Tensor],
+    token_ids: Sequence[int],
+    lag: int,
+    token_window: int,
+    cosine_threshold: float,
+    lag_radius: int = 0,
+) -> bool:
+    """Detect a repeated local trajectory before a third textual repetition."""
+    return (
+        latent_stagnation_match(
+            source_latents,
+            token_ids,
+            lag,
+            token_window,
+            cosine_threshold,
+            lag_radius,
+        )
+        is not None
+    )
+
+
+def latent_stagnation_match(
+    source_latents: Sequence[Tensor],
+    token_ids: Sequence[int],
+    lag: int,
+    token_window: int,
+    cosine_threshold: float,
+    lag_radius: int,
+) -> tuple[int, float] | None:
+    """Return the highest-cosine repeated local latent/token trajectory pair."""
+    matches: list[tuple[int, float]] = []
+    for candidate_lag in range(
+        max(token_window, lag - lag_radius), lag + lag_radius + 1
+    ):
+        if len(source_latents) <= candidate_lag or len(token_ids) < (
+            candidate_lag + token_window
+        ):
+            continue
+        if token_ids[-token_window:] != token_ids[
+            -candidate_lag - token_window : -candidate_lag
+        ]:
+            continue
+        cosine = lagged_source_latent_cosine(source_latents, candidate_lag)
+        if cosine is not None and cosine >= cosine_threshold:
+            matches.append((candidate_lag, cosine))
+    return max(matches, key=lambda match: match[1]) if matches else None
+
+
+def best_lagged_source_latent_cosine(
+    source_latents: Sequence[Tensor], lag: int, lag_radius: int
+) -> tuple[int, float] | None:
+    """Return the strongest source-latent cosine in the local lag range."""
+    candidates = [
+        (candidate_lag, cosine)
+        for candidate_lag in range(max(1, lag - lag_radius), lag + lag_radius + 1)
+        if (cosine := lagged_source_latent_cosine(source_latents, candidate_lag))
+        is not None
+    ]
+    return max(candidates, key=lambda match: match[1]) if candidates else None
+
+
+def lagged_source_latent_cosine(
+    source_latents: Sequence[Tensor], lag: int
+) -> float | None:
+    """Return the cosine between the current source latent and a lagged one."""
+    if len(source_latents) <= lag:
+        return None
+    current = source_latents[-1].detach().float().flatten(start_dim=1)
+    previous = source_latents[-lag - 1].detach().float().to(current.device)
+    previous = previous.flatten(start_dim=1)
+    cosine = torch.nn.functional.cosine_similarity(current, previous, dim=-1)
+    return float(cosine.mean().item())
+
+
 def has_third_repeated_suffix(
     token_ids: Sequence[int],
     minimum_sequence_length: int = 8,
@@ -1683,6 +1808,23 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--repetition-penalty must be positive.")
     if args.forced_recirculation_budget < 0:
         raise ValueError("--forced-recirculation-budget must be nonnegative.")
+    if args.latent_stagnation_lag_tokens < 1:
+        raise ValueError("--latent-stagnation-lag-tokens must be at least 1.")
+    if args.latent_stagnation_lag_radius < 0:
+        raise ValueError("--latent-stagnation-lag-radius must be nonnegative.")
+    if args.latent_stagnation_token_window < 1:
+        raise ValueError("--latent-stagnation-token-window must be at least 1.")
+    if args.latent_stagnation_token_window > (
+        args.latent_stagnation_lag_tokens + args.latent_stagnation_lag_radius
+    ):
+        raise ValueError(
+            "--latent-stagnation-token-window cannot exceed the maximum "
+            "latent-stagnation lag."
+        )
+    if not -1.0 <= args.latent_stagnation_cosine_thres <= 1.0:
+        raise ValueError(
+            "--latent-stagnation-cosine-thres must be between -1 and 1."
+        )
     if args.startup_relax_tokens < 0:
         raise ValueError("--startup-relax-tokens must be nonnegative.")
     if args.pre_margin_relax_factor < 1.0:
@@ -2359,6 +2501,7 @@ def main() -> None:
         generated_adaptive_recirculation_counts: list[int] = []
         generated_final_pass_same_top1_flags: list[bool] = []
         generated_rejection_reasons: list[tuple[str, ...]] = []
+        generated_source_latents: list[dict[int, Tensor]] = []
 
         def record_generated_token_stats() -> None:
             generated_recirculated_flags.append(
@@ -2399,6 +2542,7 @@ def main() -> None:
                 generated_final_pass_same_top1_flags,
                 generated_rejection_reasons,
                 forced_recirculation_call_count,
+                latent_stagnation_events,
             )
 
         def allow_generated_recirculation(generated_token_count: int) -> bool:
@@ -2463,6 +2607,7 @@ def main() -> None:
                 "forced_recirculation_tool_calls = "
                 f"{forced_recirculation_call_count}"
             )
+            print(f"latent_stagnation_events = {latent_stagnation_events}")
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
                 formatted = ", ".join(
@@ -2540,6 +2685,7 @@ def main() -> None:
             consecutive_repetition_count = 0
             forced_recirculation_call_count = 0
             forced_recirculation_tokens_remaining = 0
+            latent_stagnation_events = 0
             for _ in range(run_args.max_new_tokens):
                 effective_repetition_penalty = repetition_recovery_penalty(
                     repetition_recovery_penalty_tokens_remaining > 0
@@ -2682,6 +2828,7 @@ def main() -> None:
                         adaptive_recirculation_counts=adaptive_recirculation_counts,
                         final_pass_same_top1_flags=final_pass_same_top1_flags,
                         rejection_reasons=rejection_reasons,
+                        source_latents=generated_source_latents,
                         narrow_margin=narrow_margin,
                         decode_injected_source_latent=(
                             decoded_latent_stats
@@ -2697,6 +2844,62 @@ def main() -> None:
                 else:
                     token_logits, student_cache = plain_step(
                         next_token, student_cache
+                    )
+                maximum_source_latent_history = (
+                    run_args.latent_stagnation_lag_tokens
+                    + run_args.latent_stagnation_lag_radius
+                    + 1
+                )
+                if len(generated_source_latents) > maximum_source_latent_history:
+                    del generated_source_latents[:-maximum_source_latent_history]
+                source_index, _destination_index = run_config.pairs[
+                    run_args.gating_pair_index
+                ]
+                source_latent_history = [
+                    latents[source_index]
+                    for latents in generated_source_latents
+                    if source_index in latents
+                ]
+                best_latent_pair = best_lagged_source_latent_cosine(
+                    source_latent_history,
+                    run_args.latent_stagnation_lag_tokens,
+                    run_args.latent_stagnation_lag_radius,
+                )
+                if repetition_detected:
+                    pair_text = (
+                        "unavailable"
+                        if best_latent_pair is None
+                        else (
+                            f"{best_latent_pair[1]:.3f} "
+                            f"(lag={best_latent_pair[0]})"
+                        )
+                    )
+                    print(
+                        f"latent-stagnation best cosine = {pair_text}",
+                        flush=True,
+                    )
+                latent_match = latent_stagnation_match(
+                    source_latent_history,
+                    generated_token_ids.tolist(),
+                    run_args.latent_stagnation_lag_tokens,
+                    run_args.latent_stagnation_token_window,
+                    run_args.latent_stagnation_cosine_thres,
+                    run_args.latent_stagnation_lag_radius,
+                )
+                if (
+                    run_args.latent_stagnation_recovery
+                    and forced_recirculation_tokens_remaining == 0
+                    and latent_match is not None
+                ):
+                    latent_stagnation_events += 1
+                    forced_recirculation_tokens_remaining = (
+                        run_args.forced_recirculation_budget
+                    )
+                    print(
+                        "\nlatent stagnation detected "
+                        f"(source-latent cosine={latent_match[1]:.3f}, "
+                        f"lag={latent_match[0]})",
+                        flush=True,
                     )
                 repetition_recovery_tokens_remaining = max(
                     0, repetition_recovery_tokens_remaining - 1
@@ -2789,6 +2992,7 @@ def main() -> None:
         consecutive_repetition_count = 0
         forced_recirculation_call_count = 0
         forced_recirculation_tokens_remaining = 0
+        latent_stagnation_events = 0
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -3042,6 +3246,7 @@ def main() -> None:
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
                 injected_noise_levels=injected_noise_levels,
                 injected_narrowing_grad_levels=injected_narrowing_grad_levels,
+                source_latents=generated_source_latents,
                 narrow_margin=narrow_margin,
                 decode_injected_source_latent=decoded_latent_stats,
                 initial_decoded_noise_source_latents=(
@@ -3054,6 +3259,61 @@ def main() -> None:
                 restore_rewind_state=restore_dynamic_cache_rewind_state,
                 finalize_token_cache=finalize_dynamic_cache_token,
             )
+            maximum_source_latent_history = (
+                run_args.latent_stagnation_lag_tokens
+                + run_args.latent_stagnation_lag_radius
+                + 1
+            )
+            if len(generated_source_latents) > maximum_source_latent_history:
+                del generated_source_latents[:-maximum_source_latent_history]
+            source_index, _destination_index = run_config.pairs[
+                run_args.gating_pair_index
+            ]
+            source_latent_history = [
+                latents[source_index]
+                for latents in generated_source_latents
+                if source_index in latents
+            ]
+            best_latent_pair = best_lagged_source_latent_cosine(
+                source_latent_history,
+                run_args.latent_stagnation_lag_tokens,
+                run_args.latent_stagnation_lag_radius,
+            )
+            if repetition_detected:
+                pair_text = (
+                    "unavailable"
+                    if best_latent_pair is None
+                    else (
+                        f"{best_latent_pair[1]:.6f} "
+                        f"(lag={best_latent_pair[0]})"
+                    )
+                )
+                print(
+                    f"latent-stagnation best cosine = {pair_text}", flush=True
+                )
+            latent_match = latent_stagnation_match(
+                source_latent_history,
+                generated_token_ids,
+                run_args.latent_stagnation_lag_tokens,
+                run_args.latent_stagnation_token_window,
+                run_args.latent_stagnation_cosine_thres,
+                run_args.latent_stagnation_lag_radius,
+            )
+            if (
+                run_args.latent_stagnation_recovery
+                and forced_recirculation_tokens_remaining == 0
+                and latent_match is not None
+            ):
+                latent_stagnation_events += 1
+                forced_recirculation_tokens_remaining = (
+                    run_args.forced_recirculation_budget
+                )
+                print(
+                    "\nlatent stagnation detected "
+                    f"(source-latent cosine={latent_match[1]:.6f}, "
+                    f"lag={latent_match[0]})",
+                    flush=True,
+                )
             repetition_recovery_tokens_remaining = max(
                 0, repetition_recovery_tokens_remaining - 1
             )
@@ -3148,6 +3408,10 @@ def main() -> None:
             "cosine_top_k",
             "repetition_recovery",
             "forced_recirculation_budget",
+            "latent_stagnation_lag_tokens",
+            "latent_stagnation_lag_radius",
+            "latent_stagnation_token_window",
+            "latent_stagnation_cosine_thres",
             "repetition_penalty",
             "seed",
         )

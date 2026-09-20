@@ -1445,7 +1445,7 @@ def repetition_recovery_settings(
         (0.1, 0.2) if noise_level_range == (0.0, 0.0) else noise_level_range
     )
     recovery_noise_level_range = tuple(
-        level * 2 ** (consecutive_repetition_count - 1)
+        min(10.0, level * 2 ** (consecutive_repetition_count - 1))
         for level in recovery_noise_level_range
     )
     return RepetitionRecoverySettings(

@@ -66,6 +66,18 @@ class RecirculationCacheTest(unittest.TestCase):
             force_recirculation=True,
         )
 
+    def test_forced_recirculation_rejects_noise_above_ten(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+
+        with self.assertRaisesRegex(ValueError, "MAX <= 10"):
+            _Hooks(
+                blocks,
+                RecirculationConfig(
+                    pairs=((2, 0),), alpha=0.5, noise_level_range=(8.0, 12.0)
+                ),
+                force_recirculation=True,
+            )
+
     def test_normal_recirculation_rejects_noise_above_one(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
 

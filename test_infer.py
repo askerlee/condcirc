@@ -370,6 +370,21 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(settings.noise_level_range, (0.2, 0.4))
 
+    def test_caps_noise_for_consecutive_repetition_recovery(self) -> None:
+        settings = repetition_recovery_settings(
+            (3.0, 6.0),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            consecutive_repetition_count=2,
+        )
+
+        self.assertEqual(settings.noise_level_range, (6.0, 10.0))
+
     def test_can_disable_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(
             (0.1, 0.2),

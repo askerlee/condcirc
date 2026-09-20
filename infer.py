@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from types import MethodType
@@ -801,6 +801,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--forced-recirculation-budget",
+        type=int,
+        default=20,
+        metavar="TOKENS",
+        help=(
+            "Force recirculation for this many tokens after the model calls "
+            "the forced_recirculation tool (default: 20)."
+        ),
+    )
+    parser.add_argument(
         "--cosine-top-k",
         type=int,
         default=5,
@@ -1298,7 +1308,7 @@ def apply_repetition_penalty(
     return logits.scatter(1, previous_token_ids, previous_scores)
 
 
-REPETITION_RECOVERY_TOKEN_COUNT = 2
+REPETITION_RECOVERY_TOKEN_COUNT = 4
 REPETITION_TEXT_WINDOW_WORD_COUNT = 1024
 
 
@@ -1451,6 +1461,56 @@ def repeated_text_signature_counts(
     return signature_counts
 
 
+FORCED_RECIRCULATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "forced_recirculation",
+        "description": (
+            "Enable forced recirculation when you feel stuck in a reasoning loop."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+
+def parse_generated_response(tokenizer: Any, generated_token_ids: Tensor) -> Mapping[str, Any]:
+    try:
+        response = tokenizer.parse_response(
+            generated_token_ids,
+            prefix="",
+            tools=[FORCED_RECIRCULATION_TOOL],
+        )
+    except (KeyError, TypeError, ValueError):
+        return {}
+    return response if isinstance(response, Mapping) else {}
+
+
+def forced_recirculation_call_count(response: Mapping[str, Any]) -> int:
+    return sum(
+        isinstance(call, Mapping)
+        and isinstance(call.get("function"), Mapping)
+        and call["function"].get("name") == "forced_recirculation"
+        and call["function"].get("arguments") in ({}, None)
+        for call in response.get("tool_calls", ())
+    )
+
+
+def update_forced_recirculation_budget(
+    parsed_response: Mapping[str, Any],
+    detected_call_count: int,
+    tokens_remaining: int,
+    budget: int,
+) -> tuple[int, int]:
+    call_count = forced_recirculation_call_count(parsed_response)
+    if call_count > detected_call_count:
+        tokens_remaining = max(tokens_remaining, budget)
+    return call_count, tokens_remaining
+
+
 @dataclasses.dataclass(frozen=True)
 class RepetitionRecoverySettings:
     noise_level_range: tuple[float, float]
@@ -1561,6 +1621,8 @@ class StreamingSimilarityWriter:
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
+    if args.forced_recirculation_budget < 0:
+        raise ValueError("--forced-recirculation-budget must be nonnegative.")
     if args.startup_relax_tokens < 0:
         raise ValueError("--startup-relax-tokens must be nonnegative.")
     if args.pre_margin_relax_factor < 1.0:
@@ -2403,6 +2465,8 @@ def main() -> None:
             repetition_recovery_tokens_remaining = 0
             repetition_recovery_penalty_tokens_remaining = 0
             consecutive_repetition_count = 0
+            forced_recirculation_call_count = 0
+            forced_recirculation_tokens_remaining = 0
             for _ in range(run_args.max_new_tokens):
                 effective_repetition_penalty = repetition_recovery_penalty(
                     repetition_recovery_penalty_tokens_remaining > 0
@@ -2425,10 +2489,22 @@ def main() -> None:
                 if on_generated_token is not None:
                     on_generated_token(next_token)
                 record_generated_token_stats()
+                generated_token_ids = generated_ids[0, input_ids.shape[1] :]
                 generated_text = tokenizer.decode(
-                    generated_ids[0, input_ids.shape[1] :],
-                    skip_special_tokens=True,
+                    generated_token_ids, skip_special_tokens=True
                 )
+                previous_call_count = forced_recirculation_call_count
+                (
+                    forced_recirculation_call_count,
+                    forced_recirculation_tokens_remaining,
+                ) = update_forced_recirculation_budget(
+                    parse_generated_response(tokenizer, generated_token_ids),
+                    forced_recirculation_call_count,
+                    forced_recirculation_tokens_remaining,
+                    run_args.forced_recirculation_budget,
+                )
+                if forced_recirculation_call_count > previous_call_count:
+                    print("\nforced recirculation requested", flush=True)
                 repetition_counts = repeated_text_signature_counts(
                     repetition_text_window(generated_text)
                 )
@@ -2451,6 +2527,9 @@ def main() -> None:
                 if next_token.item() in eos_token_ids:
                     break
                 repetition_recovery_active = repetition_recovery_tokens_remaining > 0
+                forced_recirculation_active = (
+                    forced_recirculation_tokens_remaining > 0
+                )
                 if use_recirculation:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
                     pre_margin_threshold = generated_pre_margin_threshold(
@@ -2509,10 +2588,17 @@ def main() -> None:
                         adaptive_recirculation=effective_adaptive_recirculation(
                             run_args.ada_recirculate,
                             run_args.cond_recirculate,
-                            repetition_recovery_active,
+                            repetition_recovery_active
+                            or forced_recirculation_active,
                         ),
-                        recirculation_allowed=recovery_settings.recirculation_allowed,
-                        force_recirculation=recovery_settings.force_recirculation,
+                        recirculation_allowed=(
+                            recovery_settings.recirculation_allowed
+                            or forced_recirculation_active
+                        ),
+                        force_recirculation=(
+                            recovery_settings.force_recirculation
+                            or forced_recirculation_active
+                        ),
                         cosine_reject=recovery_settings.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
                         gating_pair_index=run_args.gating_pair_index,
@@ -2541,6 +2627,9 @@ def main() -> None:
                     )
                 repetition_recovery_tokens_remaining = max(
                     0, repetition_recovery_tokens_remaining - 1
+                )
+                forced_recirculation_tokens_remaining = max(
+                    0, forced_recirculation_tokens_remaining - 1
                 )
                 next_logits = token_logits[:, -1, :]
 
@@ -2625,6 +2714,8 @@ def main() -> None:
         repetition_recovery_tokens_remaining = 0
         repetition_recovery_penalty_tokens_remaining = 0
         consecutive_repetition_count = 0
+        forced_recirculation_call_count = 0
+        forced_recirculation_tokens_remaining = 0
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -2733,11 +2824,23 @@ def main() -> None:
                     on_debug_comparison(comparison)
                 break
 
-            generated_token_ids = generated_ids[0, -(token_index + 1) :].tolist()
+            generated_token_tensor = generated_ids[0, input_ids.shape[1] :]
+            generated_token_ids = generated_token_tensor.tolist()
             generated_text = tokenizer.decode(
-                generated_ids[0, input_ids.shape[1] :],
-                skip_special_tokens=True,
+                generated_token_tensor, skip_special_tokens=True
             )
+            previous_call_count = forced_recirculation_call_count
+            (
+                forced_recirculation_call_count,
+                forced_recirculation_tokens_remaining,
+            ) = update_forced_recirculation_budget(
+                parse_generated_response(tokenizer, generated_token_tensor),
+                forced_recirculation_call_count,
+                forced_recirculation_tokens_remaining,
+                run_args.forced_recirculation_budget,
+            )
+            if forced_recirculation_call_count > previous_call_count:
+                print("\nforced recirculation requested", flush=True)
             repetition_counts = repeated_text_signature_counts(
                 repetition_text_window(generated_text)
             )
@@ -2756,6 +2859,7 @@ def main() -> None:
                     REPETITION_RECOVERY_TOKEN_COUNT
                 )
             repetition_recovery_active = repetition_recovery_tokens_remaining > 0
+            forced_recirculation_active = forced_recirculation_tokens_remaining > 0
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,
@@ -2809,6 +2913,9 @@ def main() -> None:
             comparison["repetition_recovery_forces_recirculation"] = (
                 repetition_recovery_active
             )
+            comparison["forced_recirculation_tool_active"] = (
+                forced_recirculation_active
+            )
             similarities.append(comparison)
             if on_debug_comparison is not None:
                 on_debug_comparison(comparison)
@@ -2836,10 +2943,16 @@ def main() -> None:
                 adaptive_recirculation=effective_adaptive_recirculation(
                     run_args.ada_recirculate,
                     run_args.cond_recirculate,
-                    repetition_recovery_active,
+                    repetition_recovery_active or forced_recirculation_active,
                 ),
-                recirculation_allowed=recovery_settings.recirculation_allowed,
-                force_recirculation=recovery_settings.force_recirculation,
+                recirculation_allowed=(
+                    recovery_settings.recirculation_allowed
+                    or forced_recirculation_active
+                ),
+                force_recirculation=(
+                    recovery_settings.force_recirculation
+                    or forced_recirculation_active
+                ),
                 cosine_reject=recovery_settings.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
                 gating_pair_index=run_args.gating_pair_index,
@@ -2870,6 +2983,9 @@ def main() -> None:
             )
             repetition_recovery_tokens_remaining = max(
                 0, repetition_recovery_tokens_remaining - 1
+            )
+            forced_recirculation_tokens_remaining = max(
+                0, forced_recirculation_tokens_remaining - 1
             )
             current_token = next_token
             teacher_logits = first_pass_logits[-1]
@@ -2958,6 +3074,7 @@ def main() -> None:
             "cosine_reject",
             "cosine_top_k",
             "repetition_recovery",
+            "forced_recirculation_budget",
             "repetition_penalty",
             "seed",
         )
@@ -3083,6 +3200,7 @@ def main() -> None:
             emit(prompt)
             encoded_prompt = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
+                tools=[FORCED_RECIRCULATION_TOOL],
                 tokenize=True,
                 add_generation_prompt=True,
                 enable_thinking=False,

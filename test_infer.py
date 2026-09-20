@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from infer import (
+    FORCED_RECIRCULATION_TOOL,
     aggregate_recirculation_stats,
     apply_repetition_penalty,
     configure_model_generation,
@@ -25,6 +26,7 @@ from infer import (
     has_third_repeated_text_suffix,
     output_recirculation_pairs,
     parse_args,
+    parse_generated_response,
     REPETITION_RECOVERY_TOKEN_COUNT,
     repeated_text_signature_counts,
     repetition_text_window,
@@ -33,6 +35,7 @@ from infer import (
     resolve_game24_indices,
     StreamingSimilarityWriter,
     summarize_recirculation_stats,
+    update_forced_recirculation_budget,
     set_random_seed,
     validate_run_arguments,
 )
@@ -231,6 +234,73 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertFalse(
             parse_args(["--no-repetition-recovery", "prompt"]).repetition_recovery
         )
+
+    def test_parses_forced_recirculation_budget(self) -> None:
+        args = parse_args(["--forced-recirculation-budget", "7", "prompt"])
+
+        self.assertEqual(args.forced_recirculation_budget, 7)
+
+    def test_forced_recirculation_call_activates_budget_once(self) -> None:
+        response = {
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "forced_recirculation",
+                        "arguments": {},
+                    },
+                }
+            ]
+        }
+        call_count, tokens_remaining = update_forced_recirculation_budget(
+            response, 0, 0, 7
+        )
+        self.assertEqual((call_count, tokens_remaining), (1, 7))
+
+        call_count, tokens_remaining = update_forced_recirculation_budget(
+            response, call_count, 4, 7
+        )
+        self.assertEqual((call_count, tokens_remaining), (1, 4))
+
+    def test_rejects_negative_forced_recirculation_budget(self) -> None:
+        args = parse_args(["--forced-recirculation-budget", "-1", "prompt"])
+
+        with self.assertRaisesRegex(ValueError, "must be nonnegative"):
+            validate_run_arguments(args)
+
+    def test_forced_recirculation_uses_standard_tool_schema(self) -> None:
+        function = FORCED_RECIRCULATION_TOOL["function"]
+
+        self.assertEqual(FORCED_RECIRCULATION_TOOL["type"], "function")
+        self.assertEqual(function["name"], "forced_recirculation")
+        self.assertEqual(function["parameters"]["properties"], {})
+
+    def test_parses_generated_response_with_tool_schema(self) -> None:
+        parsed_response = {
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "forced_recirculation",
+                        "arguments": {},
+                    },
+                }
+            ]
+        }
+        parse_arguments = {}
+
+        def parse_response(*_args, **kwargs):
+            parse_arguments.update(kwargs)
+            return parsed_response
+
+        tokenizer = SimpleNamespace(parse_response=parse_response)
+
+        self.assertEqual(
+            parse_generated_response(tokenizer, torch.tensor([1, 2])),
+            parsed_response,
+        )
+        self.assertEqual(parse_arguments["prefix"], "")
+        self.assertEqual(parse_arguments["tools"], [FORCED_RECIRCULATION_TOOL])
 
     def test_detects_a_third_repeated_generated_token_sequence(self) -> None:
         repeated = list(range(8)) * 3

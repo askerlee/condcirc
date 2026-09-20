@@ -43,7 +43,7 @@ import torch
 from torch import Tensor, nn
 
 
-FORCED_NOISE_MAX_ATTEMPTS = 32
+FORCED_NOISE_MAX_ATTEMPTS = 16
 
 
 @dataclass(frozen=True)
@@ -572,7 +572,7 @@ def recirculate(
         post_margin_threshold = None
         post_margin_ratio_threshold = None
         if cosine_reject is not None:
-            cosine_reject = min(cosine_reject, 0.3)
+            cosine_reject = min(cosine_reject, 0.2)
     if post_margin_threshold is not None:
         post_margin_min, post_margin_max = post_margin_threshold
         if post_margin_min < 0 or post_margin_max < 0:

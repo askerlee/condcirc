@@ -305,7 +305,7 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertFalse(settings.recirculation_allowed)
         self.assertFalse(settings.force_recirculation)
 
-    def test_recovers_from_repetition_with_more_noise_and_lower_cosine_gate(self) -> None:
+    def test_preserves_configured_noise_during_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(
             (0.1, 0.2),
             0.8,
@@ -317,7 +317,7 @@ class RecirculationStatsTest(unittest.TestCase):
             list(range(8)) * 3,
         )
 
-        self.assertEqual(settings.noise_level_range, (0.2, 0.4))
+        self.assertEqual(settings.noise_level_range, (0.1, 0.2))
         self.assertIsNone(settings.cosine_reject)
         self.assertIsNone(settings.pre_margin_threshold)
         self.assertIsNone(settings.post_margin_threshold)
@@ -325,6 +325,35 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertIsNone(settings.condition_thresholds)
         self.assertTrue(settings.recirculation_allowed)
         self.assertTrue(settings.force_recirculation)
+
+    def test_enables_noise_during_repetition_recovery_when_disabled(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.0, 0.0),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+        )
+
+        self.assertEqual(settings.noise_level_range, (0.1, 0.2))
+
+    def test_doubles_noise_for_consecutive_repetition_recovery(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            consecutive_repetition_count=2,
+        )
+
+        self.assertEqual(settings.noise_level_range, (0.2, 0.4))
 
     def test_can_disable_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(

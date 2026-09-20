@@ -1417,6 +1417,7 @@ def repetition_recovery_settings(
     token_ids: Sequence[int],
     enabled: bool = True,
     decoded_text: str | None = None,
+    consecutive_repetition_count: int = 1,
 ) -> RepetitionRecoverySettings:
     repetition_detected = (
         has_third_repeated_text_suffix(decoded_text)
@@ -1434,8 +1435,15 @@ def repetition_recovery_settings(
             recirculation_allowed,
             False,
         )
+    recovery_noise_level_range = (
+        (0.1, 0.2) if noise_level_range == (0.0, 0.0) else noise_level_range
+    )
+    recovery_noise_level_range = tuple(
+        level * 2 ** (consecutive_repetition_count - 1)
+        for level in recovery_noise_level_range
+    )
     return RepetitionRecoverySettings(
-        tuple(level * 2 for level in noise_level_range),
+        recovery_noise_level_range,
         None,
         None,
         None,
@@ -2327,6 +2335,7 @@ def main() -> None:
 
             generated_ids = input_ids.clone()
             repetition_detection_active = False
+            consecutive_repetition_count = 0
             for _ in range(run_args.max_new_tokens):
                 next_token = sample_token(
                     apply_repetition_penalty(
@@ -2351,6 +2360,9 @@ def main() -> None:
                 if repetition_detected and not repetition_detection_active:
                     print("\nrepetition detected", flush=True)
                 repetition_detection_active = repetition_detected
+                consecutive_repetition_count = (
+                    consecutive_repetition_count + 1 if repetition_detected else 0
+                )
                 if next_token.item() in eos_token_ids:
                     break
                 if use_recirculation:
@@ -2384,6 +2396,7 @@ def main() -> None:
                         generated_ids[0, -generated_token_count:].tolist(),
                         enabled=run_args.repetition_recovery,
                         decoded_text=generated_text,
+                        consecutive_repetition_count=consecutive_repetition_count,
                     )
                     token_run_config = dataclasses.replace(
                         run_config,
@@ -2512,6 +2525,7 @@ def main() -> None:
         student_run_config = run_config
         repetition_detection_active = False
         repetition_recovery_active = False
+        consecutive_repetition_count = 0
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -2622,6 +2636,9 @@ def main() -> None:
             if repetition_detected and not repetition_detection_active:
                 print("\nrepetition detected", flush=True)
             repetition_detection_active = repetition_detected
+            consecutive_repetition_count = (
+                consecutive_repetition_count + 1 if repetition_detected else 0
+            )
             repetition_recovery_active = (
                 repetition_detected and run_args.repetition_recovery
             )
@@ -2648,6 +2665,7 @@ def main() -> None:
                 generated_token_ids,
                 enabled=run_args.repetition_recovery,
                 decoded_text=generated_text,
+                consecutive_repetition_count=consecutive_repetition_count,
             )
             comparison["repetition_detected"] = repetition_detected
             comparison["repetition_recovery_active"] = repetition_recovery_active

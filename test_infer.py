@@ -20,6 +20,7 @@ from infer import (
     format_index_ranges,
     format_run_arguments,
     format_run_stats,
+    forced_recirculation_messages,
     generated_cosine_reject,
     generated_noise_level_range,
     generated_pre_margin_threshold,
@@ -282,6 +283,17 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(function["parameters"]["properties"], {})
         self.assertIn("call the forced_recirculation tool", FORCED_RECIRCULATION_SYSTEM_PROMPT)
         self.assertIn("twice without making progress", FORCED_RECIRCULATION_SYSTEM_PROMPT)
+
+    def test_forced_recirculation_instruction_survives_system_message_discard(self) -> None:
+        messages = forced_recirculation_messages("Solve the puzzle.")
+
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertIn(
+            FORCED_RECIRCULATION_SYSTEM_PROMPT,
+            messages[1]["content"],
+        )
+        self.assertIn("Solve the puzzle.", messages[1]["content"])
 
     def test_parses_generated_response_with_tool_schema(self) -> None:
         parsed_response = {

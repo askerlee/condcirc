@@ -1493,6 +1493,16 @@ FORCED_RECIRCULATION_SYSTEM_PROMPT = (
 )
 
 
+def forced_recirculation_messages(prompt: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": FORCED_RECIRCULATION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"{FORCED_RECIRCULATION_SYSTEM_PROMPT}\n\n{prompt}",
+        },
+    ]
+
+
 def parse_generated_response(tokenizer: Any, generated_token_ids: Tensor) -> Mapping[str, Any]:
     try:
         response = tokenizer.parse_response(
@@ -3216,13 +3226,7 @@ def main() -> None:
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
             encoded_prompt = tokenizer.apply_chat_template(
-                [
-                    {
-                        "role": "system",
-                        "content": FORCED_RECIRCULATION_SYSTEM_PROMPT,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                forced_recirculation_messages(prompt),
                 tools=[FORCED_RECIRCULATION_TOOL],
                 tokenize=True,
                 add_generation_prompt=True,

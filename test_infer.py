@@ -24,6 +24,8 @@ from infer import (
     has_third_repeated_text_suffix,
     output_recirculation_pairs,
     parse_args,
+    REPETITION_RECOVERY_TOKEN_COUNT,
+    repetition_recovery_penalty,
     repetition_recovery_settings,
     resolve_game24_indices,
     StreamingSimilarityWriter,
@@ -420,6 +422,33 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(first_recovery.noise_level_range, (0.1, 0.2))
         self.assertEqual(second_recovery.noise_level_range, (0.2, 0.4))
 
+    def test_recovery_attempt_is_absent_without_a_new_trigger(self) -> None:
+        repetition_present = True
+        repetition_detection_active = True
+        repetition_detected = repetition_present and not repetition_detection_active
+        attempt = 2 if repetition_detected else None
+
+        self.assertFalse(repetition_detected)
+        self.assertIsNone(attempt)
+
+    def test_historical_repetition_does_not_force_recovery_without_new_trigger(self) -> None:
+        settings = repetition_recovery_settings(
+            (0.1, 0.2),
+            0.8,
+            0.2,
+            (0.1, 0.2),
+            1.2,
+            (0.7,),
+            False,
+            list(range(8)) * 3,
+            decoded_text="eight repeated words appear here exactly as before\n" * 3,
+            repetition_detected=False,
+        )
+
+        self.assertFalse(settings.force_recirculation)
+        self.assertEqual(settings.noise_level_range, (0.1, 0.2))
+        self.assertEqual(settings.cosine_reject, 0.8)
+
     def test_caps_noise_for_consecutive_repetition_recovery(self) -> None:
         settings = repetition_recovery_settings(
             (3.0, 6.0),
@@ -570,6 +599,13 @@ class RecirculationStatsTest(unittest.TestCase):
         torch.testing.assert_close(
             penalized_logits, torch.tensor([[-2.2, 2.0 / 1.1, 4.0]])
         )
+
+    def test_uses_two_token_repetition_recovery_penalty(self) -> None:
+        self.assertEqual(repetition_recovery_penalty(False), 1.0)
+        self.assertEqual(REPETITION_RECOVERY_TOKEN_COUNT, 2)
+        self.assertEqual(repetition_recovery_penalty(True), 1.1)
+        self.assertEqual(repetition_recovery_penalty(True), 1.1)
+        self.assertEqual(repetition_recovery_penalty(False), 1.0)
 
     def test_skips_repetition_penalty_after_accepted_recirculation(self) -> None:
         logits = torch.tensor([[-2.0, 2.0, 4.0]])

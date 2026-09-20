@@ -1298,6 +1298,13 @@ def apply_repetition_penalty(
     return logits.scatter(1, previous_token_ids, previous_scores)
 
 
+REPETITION_RECOVERY_TOKEN_COUNT = 2
+
+
+def repetition_recovery_penalty(recovery_pending: bool) -> float:
+    return 1.1 if recovery_pending else 1.0
+
+
 def set_random_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -1431,12 +1438,14 @@ def repetition_recovery_settings(
     enabled: bool = True,
     decoded_text: str | None = None,
     consecutive_repetition_count: int = 1,
+    repetition_detected: bool | None = None,
 ) -> RepetitionRecoverySettings:
-    repetition_detected = (
-        has_third_repeated_text_suffix(decoded_text)
-        if decoded_text is not None
-        else has_third_repeated_suffix(token_ids)
-    )
+    if repetition_detected is None:
+        repetition_detected = (
+            has_third_repeated_text_suffix(decoded_text)
+            if decoded_text is not None
+            else has_third_repeated_suffix(token_ids)
+        )
     if not enabled or not repetition_detected:
         return RepetitionRecoverySettings(
             noise_level_range,
@@ -2351,18 +2360,26 @@ def main() -> None:
 
             generated_ids = input_ids.clone()
             repetition_detection_active = False
+            repetition_recovery_tokens_remaining = 0
+            repetition_recovery_penalty_tokens_remaining = 0
             consecutive_repetition_count = 0
             for _ in range(run_args.max_new_tokens):
+                effective_repetition_penalty = repetition_recovery_penalty(
+                    repetition_recovery_penalty_tokens_remaining > 0
+                )
                 next_token = sample_token(
                     apply_repetition_penalty(
                         next_logits,
                         generated_ids,
-                        model.generation_config.repetition_penalty,
+                        effective_repetition_penalty,
                         recirculated=bool(
                             recirculated_flags and recirculated_flags[-1]
-                        ),
+                        ) and repetition_recovery_penalty_tokens_remaining == 0,
                     ),
                     run_args.temperature,
+                )
+                repetition_recovery_penalty_tokens_remaining = max(
+                    0, repetition_recovery_penalty_tokens_remaining - 1
                 )
                 generated_ids = torch.cat((generated_ids, next_token), dim=1)
                 if on_generated_token is not None:
@@ -2380,8 +2397,16 @@ def main() -> None:
                     print("\nrepetition detected", flush=True)
                 repetition_detection_active = repetition_present
                 consecutive_repetition_count += int(repetition_detected)
+                if repetition_detected and run_args.repetition_recovery:
+                    repetition_recovery_tokens_remaining = (
+                        REPETITION_RECOVERY_TOKEN_COUNT
+                    )
+                    repetition_recovery_penalty_tokens_remaining = (
+                        REPETITION_RECOVERY_TOKEN_COUNT
+                    )
                 if next_token.item() in eos_token_ids:
                     break
+                repetition_recovery_active = repetition_recovery_tokens_remaining > 0
                 if use_recirculation:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
                     pre_margin_threshold = generated_pre_margin_threshold(
@@ -2414,6 +2439,7 @@ def main() -> None:
                         enabled=run_args.repetition_recovery,
                         decoded_text=generated_text,
                         consecutive_repetition_count=consecutive_repetition_count,
+                        repetition_detected=repetition_recovery_active,
                     )
                     token_run_config = dataclasses.replace(
                         run_config,
@@ -2465,6 +2491,9 @@ def main() -> None:
                     token_logits, student_cache = plain_step(
                         next_token, student_cache
                     )
+                repetition_recovery_tokens_remaining = max(
+                    0, repetition_recovery_tokens_remaining - 1
+                )
                 next_logits = token_logits[:, -1, :]
 
             print()
@@ -2542,6 +2571,8 @@ def main() -> None:
         student_run_config = run_config
         repetition_detection_active = False
         repetition_recovery_active = False
+        repetition_recovery_tokens_remaining = 0
+        repetition_recovery_penalty_tokens_remaining = 0
         consecutive_repetition_count = 0
 
         for token_index in range(run_args.max_new_tokens):
@@ -2619,20 +2650,27 @@ def main() -> None:
                 comparison["narrowing_grad_injected_source_top2_token"] = [
                     stats["top2_token"] for stats in decoded_noise_latents
                 ]
+            effective_repetition_penalty = repetition_recovery_penalty(
+                repetition_recovery_penalty_tokens_remaining > 0
+            )
             next_token = sample_token(
                 apply_repetition_penalty(
                     student_next_logits,
                     generated_ids,
-                    model.generation_config.repetition_penalty,
+                    effective_repetition_penalty,
                     recirculated=bool(
                         recirculated_flags and recirculated_flags[-1]
-                    ),
+                    ) and repetition_recovery_penalty_tokens_remaining == 0,
                 ),
                 run_args.temperature,
+            )
+            repetition_recovery_penalty_tokens_remaining = max(
+                0, repetition_recovery_penalty_tokens_remaining - 1
             )
             comparison.update(
                 token_index=token_index,
                 selected_token=tokenizer.decode(next_token[0]),
+                repetition_penalty=effective_repetition_penalty,
             )
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
             if on_generated_token is not None:
@@ -2655,9 +2693,12 @@ def main() -> None:
                 print("\nrepetition detected", flush=True)
             repetition_detection_active = repetition_present
             consecutive_repetition_count += int(repetition_detected)
-            repetition_recovery_active = (
-                repetition_detected and run_args.repetition_recovery
-            )
+            if repetition_detected and run_args.repetition_recovery:
+                repetition_recovery_tokens_remaining = REPETITION_RECOVERY_TOKEN_COUNT
+                repetition_recovery_penalty_tokens_remaining = (
+                    REPETITION_RECOVERY_TOKEN_COUNT
+                )
+            repetition_recovery_active = repetition_recovery_tokens_remaining > 0
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,
@@ -2682,8 +2723,13 @@ def main() -> None:
                 enabled=run_args.repetition_recovery,
                 decoded_text=generated_text,
                 consecutive_repetition_count=consecutive_repetition_count,
+                repetition_detected=repetition_recovery_active,
             )
+            comparison["repetition_present"] = repetition_present
             comparison["repetition_detected"] = repetition_detected
+            comparison["repetition_recovery_attempt"] = (
+                consecutive_repetition_count if repetition_detected else None
+            )
             comparison["repetition_recovery_active"] = repetition_recovery_active
             comparison["repetition_recovery_noise_level_range"] = (
                 recovery_settings.noise_level_range
@@ -2760,6 +2806,9 @@ def main() -> None:
                 capture_rewind_state=capture_dynamic_cache_rewind_state,
                 restore_rewind_state=restore_dynamic_cache_rewind_state,
                 finalize_token_cache=finalize_dynamic_cache_token,
+            )
+            repetition_recovery_tokens_remaining = max(
+                0, repetition_recovery_tokens_remaining - 1
             )
             current_token = next_token
             teacher_logits = first_pass_logits[-1]

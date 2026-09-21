@@ -26,8 +26,6 @@ from infer import (
     generated_pre_margin_threshold,
     has_third_repeated_suffix,
     has_third_repeated_text_suffix,
-    latent_stagnation_match,
-    latent_stagnation_detected,
     output_recirculation_pairs,
     parse_args,
     parse_generated_response,
@@ -158,16 +156,24 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(last.countdown_index, (-1,))
 
     def test_parses_sudoku_file_and_indices(self) -> None:
-        default = parse_args(["--sudoku-file", "sudoku.jsonl"])
+        default = parse_args([])
         args = parse_args(
-            ["--sudoku-file", "sudoku.jsonl", "--sudoku-index", "1-3"]
+            [
+                "--do-sudoku",
+                "--sudoku-file",
+                "sudoku.jsonl",
+                "--sudoku-index",
+                "1-3",
+            ]
         )
         last = parse_args(
-            ["--sudoku-file", "sudoku.jsonl", "--sudoku-index", "-1"]
+            ["--do-sudoku", "--sudoku-file", "sudoku.jsonl", "--sudoku-index", "-1"]
         )
 
         self.assertEqual(default.sudoku_index, ())
+        self.assertFalse(default.do_sudoku)
         self.assertEqual(args.sudoku_file, Path("sudoku.jsonl"))
+        self.assertTrue(args.do_sudoku)
         self.assertEqual(args.sudoku_index, (1, 2, 3))
         self.assertEqual(last.sudoku_index, (-1,))
 
@@ -356,62 +362,6 @@ class RecirculationStatsTest(unittest.TestCase):
         )
 
         self.assertTrue(has_third_repeated_suffix(token_ids))
-
-    def test_detects_repeated_source_latent_trajectory(self) -> None:
-        source_latents = [torch.tensor([[1.0, 2.0]]) for _ in range(8)]
-
-        self.assertTrue(
-            latent_stagnation_detected(
-                source_latents,
-                [1, 2, 3, 4, 1, 2, 3, 4],
-                lag=4,
-                token_window=2,
-                cosine_threshold=0.995,
-            )
-        )
-
-    def test_requires_token_progress_stall_for_latent_stagnation(self) -> None:
-        source_latents = [torch.tensor([[1.0, 2.0]]) for _ in range(8)]
-
-        self.assertFalse(
-            latent_stagnation_detected(
-                source_latents,
-                [1, 2, 3, 4, 1, 2, 5, 6],
-                lag=4,
-                token_window=2,
-                cosine_threshold=0.995,
-            )
-        )
-
-    def test_requires_latent_similarity_for_stagnation(self) -> None:
-        source_latents = [torch.tensor([[1.0, 0.0]]) for _ in range(8)]
-        source_latents[-1] = torch.tensor([[0.0, 1.0]])
-
-        self.assertFalse(
-            latent_stagnation_detected(
-                source_latents,
-                [1, 2, 3, 4, 1, 2, 3, 4],
-                lag=4,
-                token_window=2,
-                cosine_threshold=0.995,
-            )
-        )
-
-    def test_detects_nearby_lag_with_aligned_token_window(self) -> None:
-        source_latents = [torch.tensor([[1.0, 0.0]]) for _ in range(10)]
-        source_latents[-1] = torch.tensor([[0.0, 1.0]])
-        source_latents[-8] = torch.tensor([[0.0, 1.0]])
-
-        match = latent_stagnation_match(
-            source_latents,
-            [0, 6, 5, 3, 4, 5, 6, 7, 6, 5],
-            lag=6,
-            token_window=2,
-            cosine_threshold=0.995,
-            lag_radius=2,
-        )
-
-        self.assertEqual(match, (7, 1.0))
 
     def test_detects_a_repeated_decoded_text_suffix(self) -> None:
         text = "\n".join(

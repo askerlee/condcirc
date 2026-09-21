@@ -848,6 +848,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--perturb-every-n-tokens",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Force one recirculation pass every N generated tokens, regardless "
+            "of repetition or eligibility gates (default: 0, disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--perturb-for-n-tokens",
+        type=int,
+        default=6,
+        metavar="K",
+        help=(
+            "Force recirculation for K consecutive generated tokens after each "
+            "--perturb-every-n-tokens interval (default: 6)."
+        ),
+    )
+    parser.add_argument(
         "--forced-recirculation-budget",
         type=int,
         default=20,
@@ -1388,6 +1408,19 @@ def repetition_recovery_penalty(recovery_pending: bool) -> float:
     return 1.1 if recovery_pending else 1.0
 
 
+def periodic_perturbation_active(
+    perturb_every_n_tokens: int,
+    perturb_for_n_tokens: int,
+    generated_token_count: int,
+) -> bool:
+    if perturb_every_n_tokens <= 0 or perturb_for_n_tokens <= 0:
+        return False
+    position_in_interval = generated_token_count % perturb_every_n_tokens
+    return generated_token_count >= perturb_every_n_tokens and (
+        position_in_interval == 0 or position_in_interval < perturb_for_n_tokens
+    )
+
+
 def repetition_text_window(
     text: str, maximum_word_count: int = REPETITION_TEXT_WINDOW_WORD_COUNT
 ) -> str:
@@ -1712,6 +1745,10 @@ class StreamingSimilarityWriter:
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
+    if args.perturb_every_n_tokens < 0:
+        raise ValueError("--perturb-every-n-tokens must be nonnegative.")
+    if args.perturb_for_n_tokens < 1:
+        raise ValueError("--perturb-for-n-tokens must be at least 1.")
     if args.forced_recirculation_budget < 0:
         raise ValueError("--forced-recirculation-budget must be nonnegative.")
     if args.startup_relax_tokens < 0:
@@ -2640,6 +2677,11 @@ def main() -> None:
                 )
                 if use_recirculation:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
+                    periodic_perturbation = periodic_perturbation_active(
+                        run_args.perturb_every_n_tokens,
+                        run_args.perturb_for_n_tokens,
+                        generated_token_count,
+                    )
                     pre_margin_threshold = generated_pre_margin_threshold(
                         run_args.pre_margin_thres,
                         run_args.startup_relax_tokens,
@@ -2697,15 +2739,18 @@ def main() -> None:
                             run_args.ada_recirculate,
                             run_args.cond_recirculate,
                             repetition_recovery_active
-                            or forced_recirculation_active,
+                            or forced_recirculation_active
+                            or periodic_perturbation,
                         ),
                         recirculation_allowed=(
                             recovery_settings.recirculation_allowed
                             or forced_recirculation_active
+                            or periodic_perturbation
                         ),
                         force_recirculation=(
                             recovery_settings.force_recirculation
                             or forced_recirculation_active
+                            or periodic_perturbation
                         ),
                         cosine_reject=recovery_settings.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
@@ -2968,6 +3013,11 @@ def main() -> None:
                 )
             repetition_recovery_active = repetition_recovery_tokens_remaining > 0
             forced_recirculation_active = forced_recirculation_tokens_remaining > 0
+            periodic_perturbation = periodic_perturbation_active(
+                run_args.perturb_every_n_tokens,
+                run_args.perturb_for_n_tokens,
+                token_index + 1,
+            )
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,
@@ -3024,6 +3074,7 @@ def main() -> None:
             comparison["forced_recirculation_tool_active"] = (
                 forced_recirculation_active
             )
+            comparison["periodic_perturbation_active"] = periodic_perturbation
             similarities.append(comparison)
             if on_debug_comparison is not None:
                 on_debug_comparison(comparison)
@@ -3051,15 +3102,19 @@ def main() -> None:
                 adaptive_recirculation=effective_adaptive_recirculation(
                     run_args.ada_recirculate,
                     run_args.cond_recirculate,
-                    repetition_recovery_active or forced_recirculation_active,
+                    repetition_recovery_active
+                    or forced_recirculation_active
+                    or periodic_perturbation,
                 ),
                 recirculation_allowed=(
                     recovery_settings.recirculation_allowed
                     or forced_recirculation_active
+                    or periodic_perturbation
                 ),
                 force_recirculation=(
                     recovery_settings.force_recirculation
                     or forced_recirculation_active
+                    or periodic_perturbation
                 ),
                 cosine_reject=recovery_settings.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
@@ -3182,6 +3237,8 @@ def main() -> None:
             "cosine_reject",
             "cosine_top_k",
             "repetition_recovery",
+            "perturb_every_n_tokens",
+            "perturb_for_n_tokens",
             "forced_recirculation_budget",
             "repetition_penalty",
             "seed",

@@ -30,6 +30,7 @@ from infer import (
     parse_args,
     parse_generated_response,
     REPETITION_RECOVERY_TOKEN_COUNT,
+    periodic_perturbation_active,
     repeated_text_signature_counts,
     repetition_text_window,
     repetition_recovery_penalty,
@@ -146,6 +147,28 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.noise_level_range, [0.1, 0.25])
         self.assertEqual(args.noise_decay_per_pass, 0.75)
+
+    def test_parses_periodic_perturbation_interval_and_duration(self) -> None:
+        args = parse_args(
+            [
+                "--perturb-every-n-tokens",
+                "4",
+                "--perturb-for-n-tokens",
+                "2",
+                "prompt",
+            ]
+        )
+
+        self.assertEqual(args.perturb_every_n_tokens, 4)
+        self.assertEqual(args.perturb_for_n_tokens, 2)
+
+    def test_periodic_perturbation_activates_at_the_configured_interval(self) -> None:
+        self.assertFalse(periodic_perturbation_active(0, 2, 4))
+        self.assertFalse(periodic_perturbation_active(3, 2, 1))
+        self.assertTrue(periodic_perturbation_active(3, 2, 3))
+        self.assertTrue(periodic_perturbation_active(3, 2, 4))
+        self.assertFalse(periodic_perturbation_active(3, 2, 5))
+        self.assertTrue(periodic_perturbation_active(3, 2, 6))
 
     def test_parses_a_game24_puzzle(self) -> None:
         args = parse_args(["--game24-puzzle", "2", "3", "4", "6"])

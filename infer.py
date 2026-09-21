@@ -868,6 +868,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--perturb-recent-m-tokens",
+        type=int,
+        default=32,
+        metavar="M",
+        help=(
+            "Average the most recent M token embeddings to form the negative "
+            "direction injected during periodic perturbation (default: 32)."
+        ),
+    )
+    parser.add_argument(
         "--forced-recirculation-budget",
         type=int,
         default=20,
@@ -1749,6 +1759,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--perturb-every-n-tokens must be nonnegative.")
     if args.perturb_for_k_tokens < 1:
         raise ValueError("--perturb-for-k-tokens must be at least 1.")
+    if args.perturb_recent_m_tokens < 1:
+        raise ValueError("--perturb-recent-m-tokens must be at least 1.")
     if args.forced_recirculation_budget < 0:
         raise ValueError("--forced-recirculation-budget must be nonnegative.")
     if args.startup_relax_tokens < 0:
@@ -2682,11 +2694,20 @@ def main() -> None:
                         run_args.perturb_for_k_tokens,
                         generated_token_count,
                     )
+                    periodic_perturbation_direction = None
                     if (
                         periodic_perturbation
                         and generated_token_count % run_args.perturb_every_n_tokens == 0
                     ):
                         print(f"perturb at {generated_token_count}", flush=True)
+                    if periodic_perturbation:
+                        recent_token_ids = generated_ids[
+                            :, -run_args.perturb_recent_m_tokens :
+                        ]
+                        with torch.inference_mode():
+                            periodic_perturbation_direction = -model.get_input_embeddings()(
+                                recent_token_ids
+                            ).mean(dim=1)
                     pre_margin_threshold = generated_pre_margin_threshold(
                         run_args.pre_margin_thres,
                         run_args.startup_relax_tokens,
@@ -2721,7 +2742,13 @@ def main() -> None:
                     )
                     token_run_config = dataclasses.replace(
                         run_config,
-                        noise_level_range=recovery_settings.noise_level_range,
+                        noise_level_range=(
+                            recovery_settings.noise_level_range
+                            if recovery_settings.noise_level_range[1] > 0
+                            or not periodic_perturbation
+                            else (0.1, 0.2)
+                        ),
+                        perturbation_direction=periodic_perturbation_direction,
                     )
                     token_logits, student_cache = recirculate(
                         next_token,
@@ -3023,11 +3050,20 @@ def main() -> None:
                 run_args.perturb_for_k_tokens,
                 token_index + 1,
             )
+            periodic_perturbation_direction = None
             if (
                 periodic_perturbation
                 and (token_index + 1) % run_args.perturb_every_n_tokens == 0
             ):
                 print(f"perturb at {token_index + 1}", flush=True)
+            if periodic_perturbation:
+                recent_token_ids = generated_ids[
+                    :, -run_args.perturb_recent_m_tokens :
+                ]
+                with torch.inference_mode():
+                    periodic_perturbation_direction = -model.get_input_embeddings()(
+                        recent_token_ids
+                    ).mean(dim=1)
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,
@@ -3090,7 +3126,13 @@ def main() -> None:
                 on_debug_comparison(comparison)
             student_run_config = dataclasses.replace(
                 run_config,
-                noise_level_range=recovery_settings.noise_level_range,
+                noise_level_range=(
+                    recovery_settings.noise_level_range
+                    if recovery_settings.noise_level_range[1] > 0
+                    or not periodic_perturbation
+                    else (0.1, 0.2)
+                ),
+                perturbation_direction=periodic_perturbation_direction,
             )
             student_logits, student_cache = recirculate(
                 next_token,
@@ -3249,6 +3291,7 @@ def main() -> None:
             "repetition_recovery",
             "perturb_every_n_tokens",
             "perturb_for_k_tokens",
+            "perturb_recent_m_tokens",
             "forced_recirculation_budget",
             "repetition_penalty",
             "seed",

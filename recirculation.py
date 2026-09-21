@@ -52,6 +52,7 @@ class RecirculationConfig:
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
+    perturbation_direction: Tensor | None = None
     narrowing_grad_level: float = 0.0
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
@@ -374,7 +375,23 @@ class _Hooks:
                         self.injected_source_latents
                     )
                     self.injected_source_latents.append((source_index, debug_latent))
+                # Inject noise into the normalized source latent
                 normalized_source = normalized_source + normalized_perturbation
+            # perturbation_direction is provided as the negative average latent direction of the previous tokens.
+            if self.cfg.perturbation_direction is not None:
+                direction = self.cfg.perturbation_direction.to(
+                    device=source.device, dtype=torch.float32
+                )
+                direction = direction / torch.linalg.vector_norm(
+                    direction, dim=-1, keepdim=True
+                ).clamp_min(self.cfg.eps)
+                direction_weight = self.noise_level * (
+                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
+                )
+                # Inject the negative average latent direction of the previous tokens.
+                normalized_source = normalized_source + (
+                    direction_weight * destination_norm * direction
+                )
             self.prepared_sources[pair_index] = normalized_source
         return debug_latents
 

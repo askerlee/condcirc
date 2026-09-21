@@ -14,6 +14,46 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_forced_recirculation_adds_configured_direction_to_noisy_pass(self) -> None:
+        block_one_inputs: list[torch.Tensor] = []
+
+        class CaptureBlock(nn.Module):
+            def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+                block_one_inputs.append(hidden_states.detach().clone())
+                return hidden_states
+
+        blocks = nn.ModuleList([nn.Identity(), CaptureBlock(), nn.Identity()])
+
+        def step(token: torch.Tensor, cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            cache.append(len(cache))
+            return torch.tensor([[[2.0, 1.0, 0.0]]]), cache
+
+        with patch("recirculation.torch.randn_like", return_value=torch.zeros((1, 1, 2))):
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=[],
+                step=step,
+                rewind_one=lambda cache: cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),),
+                    alpha=0.5,
+                    noise_level_range=(0.2, 0.2),
+                    perturbation_direction=torch.tensor([[-1.0, 0.0]]),
+                ),
+                passes=1,
+                force_recirculation=True,
+                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
+                capture_cached_token=lambda cache: cache[-1],
+                restore_cached_token=lambda _cache, _cached_token: None,
+            )
+
+        expected = torch.tensor([[[1.0 - 0.1 * 2**0.5, 1.0]]])
+        torch.testing.assert_close(block_one_inputs[-1], expected)
+
     def test_force_recirculation_adds_noisy_pass_without_configured_passes(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         recirculated_flags: list[bool] = []

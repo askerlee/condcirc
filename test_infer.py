@@ -153,14 +153,14 @@ class RecirculationStatsTest(unittest.TestCase):
             [
                 "--perturb-every-n-tokens",
                 "4",
-                "--perturb-for-n-tokens",
+                "--perturb-for-k-tokens",
                 "2",
                 "prompt",
             ]
         )
 
         self.assertEqual(args.perturb_every_n_tokens, 4)
-        self.assertEqual(args.perturb_for_n_tokens, 2)
+        self.assertEqual(args.perturb_for_k_tokens, 2)
 
     def test_periodic_perturbation_activates_at_the_configured_interval(self) -> None:
         self.assertFalse(periodic_perturbation_active(0, 2, 4))

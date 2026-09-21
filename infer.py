@@ -858,7 +858,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--perturb-for-n-tokens",
+        "--perturb-for-k-tokens",
         type=int,
         default=6,
         metavar="K",
@@ -1410,14 +1410,14 @@ def repetition_recovery_penalty(recovery_pending: bool) -> float:
 
 def periodic_perturbation_active(
     perturb_every_n_tokens: int,
-    perturb_for_n_tokens: int,
+    perturb_for_k_tokens: int,
     generated_token_count: int,
 ) -> bool:
-    if perturb_every_n_tokens <= 0 or perturb_for_n_tokens <= 0:
+    if perturb_every_n_tokens <= 0 or perturb_for_k_tokens <= 0:
         return False
     position_in_interval = generated_token_count % perturb_every_n_tokens
     return generated_token_count >= perturb_every_n_tokens and (
-        position_in_interval == 0 or position_in_interval < perturb_for_n_tokens
+        position_in_interval == 0 or position_in_interval < perturb_for_k_tokens
     )
 
 
@@ -1747,8 +1747,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--repetition-penalty must be positive.")
     if args.perturb_every_n_tokens < 0:
         raise ValueError("--perturb-every-n-tokens must be nonnegative.")
-    if args.perturb_for_n_tokens < 1:
-        raise ValueError("--perturb-for-n-tokens must be at least 1.")
+    if args.perturb_for_k_tokens < 1:
+        raise ValueError("--perturb-for-k-tokens must be at least 1.")
     if args.forced_recirculation_budget < 0:
         raise ValueError("--forced-recirculation-budget must be nonnegative.")
     if args.startup_relax_tokens < 0:
@@ -2679,7 +2679,7 @@ def main() -> None:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
                     periodic_perturbation = periodic_perturbation_active(
                         run_args.perturb_every_n_tokens,
-                        run_args.perturb_for_n_tokens,
+                        run_args.perturb_for_k_tokens,
                         generated_token_count,
                     )
                     if (
@@ -3020,7 +3020,7 @@ def main() -> None:
             forced_recirculation_active = forced_recirculation_tokens_remaining > 0
             periodic_perturbation = periodic_perturbation_active(
                 run_args.perturb_every_n_tokens,
-                run_args.perturb_for_n_tokens,
+                run_args.perturb_for_k_tokens,
                 token_index + 1,
             )
             if (
@@ -3248,7 +3248,7 @@ def main() -> None:
             "cosine_top_k",
             "repetition_recovery",
             "perturb_every_n_tokens",
-            "perturb_for_n_tokens",
+            "perturb_for_k_tokens",
             "forced_recirculation_budget",
             "repetition_penalty",
             "seed",

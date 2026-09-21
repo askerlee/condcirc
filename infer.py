@@ -96,6 +96,7 @@ REJECTION_GATES = (
     "cosine",
     "rank",
 )
+GPU_MEMORY_RESERVE_BYTES = 4 * 1024**3
 
 
 def summarize_recirculation_stats(
@@ -941,8 +942,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--gpu-memory",
-        default="46GiB",
-        help="Maximum model memory per GPU when sharding (default: 46GiB).",
+        default="auto",
+        help=(
+            "Maximum model memory per GPU when sharding, or 'auto' to use free "
+            "memory minus 4 GiB per GPU (default: auto)."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -1093,6 +1097,25 @@ def choose_device(requested: str) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def resolve_gpu_memory_limits(requested: str) -> dict[int, str]:
+    if requested != "auto":
+        return {
+            gpu: requested for gpu in range(torch.cuda.device_count())
+        }
+
+    limits: dict[int, str] = {}
+    for gpu in range(torch.cuda.device_count()):
+        free_memory, _ = torch.cuda.mem_get_info(gpu)
+        usable_memory = free_memory - GPU_MEMORY_RESERVE_BYTES
+        if usable_memory <= 0:
+            raise RuntimeError(
+                f"GPU {gpu} has less than 4 GiB free; specify --gpu-memory "
+                "explicitly or free GPU memory."
+            )
+        limits[gpu] = f"{usable_memory // 1024**2}MiB"
+    return limits
 
 
 def enable_fp32_output_projection(model: nn.Module) -> None:
@@ -1845,9 +1868,7 @@ def main() -> None:
     if use_device_map:
         load_kwargs.update(
             device_map=args.device_map,
-            max_memory={
-                gpu: args.gpu_memory for gpu in range(torch.cuda.device_count())
-            },
+            max_memory=resolve_gpu_memory_limits(args.gpu_memory),
         )
     model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
     if not use_device_map:

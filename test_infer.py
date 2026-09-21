@@ -34,6 +34,7 @@ from infer import (
     repetition_text_window,
     repetition_recovery_penalty,
     repetition_recovery_settings,
+    resolve_gpu_memory_limits,
     resolve_game24_indices,
     StreamingSimilarityWriter,
     summarize_recirculation_stats,
@@ -112,6 +113,24 @@ class RecirculationStatsTest(unittest.TestCase):
         python_seed.assert_called_once_with(42)
         torch_seed.assert_called_once_with(42)
         deterministic.assert_called_once_with(True)
+
+    def test_resolves_automatic_gpu_memory_with_reserve(self) -> None:
+        with (
+            patch("infer.torch.cuda.device_count", return_value=2),
+            patch(
+                "infer.torch.cuda.mem_get_info",
+                side_effect=[(140 * 1024**3, 141 * 1024**3), (80 * 1024**3, 81 * 1024**3)],
+            ),
+        ):
+            limits = resolve_gpu_memory_limits("auto")
+
+        self.assertEqual(limits, {0: "139264MiB", 1: "77824MiB"})
+
+    def test_preserves_explicit_gpu_memory_limit(self) -> None:
+        with patch("infer.torch.cuda.device_count", return_value=2):
+            limits = resolve_gpu_memory_limits("46GiB")
+
+        self.assertEqual(limits, {0: "46GiB", 1: "46GiB"})
 
     def test_parses_noise_level_range(self) -> None:
         args = parse_args(

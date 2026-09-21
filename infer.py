@@ -2682,6 +2682,11 @@ def main() -> None:
                         run_args.perturb_for_n_tokens,
                         generated_token_count,
                     )
+                    if (
+                        periodic_perturbation
+                        and generated_token_count % run_args.perturb_every_n_tokens == 0
+                    ):
+                        print(f"perturb at {generated_token_count}", flush=True)
                     pre_margin_threshold = generated_pre_margin_threshold(
                         run_args.pre_margin_thres,
                         run_args.startup_relax_tokens,
@@ -3018,6 +3023,11 @@ def main() -> None:
                 run_args.perturb_for_n_tokens,
                 token_index + 1,
             )
+            if (
+                periodic_perturbation
+                and (token_index + 1) % run_args.perturb_every_n_tokens == 0
+            ):
+                print(f"perturb at {token_index + 1}", flush=True)
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,

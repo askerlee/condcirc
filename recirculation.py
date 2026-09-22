@@ -43,7 +43,8 @@ import torch
 from torch import Tensor, nn
 
 
-FORCED_NOISE_MAX_ATTEMPTS = 16
+FORCED_NOISE_MAX_ATTEMPTS = 8
+PERIODIC_PERTURBATION_CANDIDATE_COUNT = 4
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class RecirculationConfig:
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
     perturbation_direction: Tensor | None = None
+    perturbation_direction_scale: float = 1.0
     narrowing_grad_level: float = 0.0
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
@@ -325,7 +327,10 @@ class _Hooks:
 
         return hook
 
-    def prepare_injections(self) -> list[tuple[int, Tensor]]:
+    def prepare_injections(
+        self,
+        perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor] | None = None,
+    ) -> list[tuple[int, Tensor]]:
         self.prepared_sources.clear()
         self.noise_perturbations.clear()
         self.noise_debug_positions.clear()
@@ -350,7 +355,14 @@ class _Hooks:
             normalized_source = source * destination_norm / source_norm.clamp_min(
                 self.cfg.eps
             )
-            if self.noise_level > 0:
+            select_perturbation_sign = (
+                perturbation_probe is not None
+                and self.cfg.perturbation_direction is not None
+            )
+            direction_weight = self.noise_level * (
+                self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
+            )
+            if self.noise_level > 0 and not select_perturbation_sign:
                 gaussian_noise = torch.randn_like(source)
                 gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
@@ -377,21 +389,66 @@ class _Hooks:
                     self.injected_source_latents.append((source_index, debug_latent))
                 # Inject noise into the normalized source latent
                 normalized_source = normalized_source + normalized_perturbation
-            # perturbation_direction is provided as the negative average latent direction of the previous tokens.
-            if self.cfg.perturbation_direction is not None:
+            if select_perturbation_sign:
+                assert perturbation_probe is not None
+                assert self.cfg.perturbation_direction is not None
+                downstream_direction = self.cfg.perturbation_direction.to(
+                    device=source.device, dtype=torch.float32
+                )
+                baseline_output = source[:, -1, :]
+                candidates = []
+                scores = []
+                for _ in range(PERIODIC_PERTURBATION_CANDIDATE_COUNT):
+                    epsilon = (
+                        direction_weight
+                        * self.cfg.perturbation_direction_scale
+                        * destination_norm
+                        * torch.randn_like(source)
+                        / source.shape[-1] ** 0.5
+                    )
+                    candidate = normalized_source + epsilon
+                    candidate_output = perturbation_probe(
+                        source_index, destination_index, destination, candidate
+                    )
+                    direction = downstream_direction.reshape_as(candidate_output)
+                    candidates.append(candidate)
+                    scores.append(
+                        torch.sum(
+                            (candidate_output - baseline_output) * direction,
+                            dim=-1,
+                        )
+                    )
+                candidate_tensor = torch.stack(candidates, dim=0)
+                score_tensor = torch.stack(scores, dim=0)
+                best_index = score_tensor.argmin(dim=0)
+                normalized_source = candidate_tensor.gather(
+                    0,
+                    best_index.view(1, -1, 1, 1).expand(
+                        1, *candidate_tensor.shape[1:]
+                    ),
+                ).squeeze(0)
+            # Without a downstream probe, preserve the original direct-direction behavior.
+            elif self.cfg.perturbation_direction is not None:
                 direction = self.cfg.perturbation_direction.to(
                     device=source.device, dtype=torch.float32
                 )
                 direction = direction / torch.linalg.vector_norm(
                     direction, dim=-1, keepdim=True
                 ).clamp_min(self.cfg.eps)
-                direction_weight = self.noise_level * (
-                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
-                )
                 # Inject the negative average latent direction of the previous tokens.
                 normalized_source = normalized_source + (
-                    direction_weight * destination_norm * direction
+                    direction_weight
+                    * self.cfg.perturbation_direction_scale
+                    * destination_norm
+                    * direction
                 )
+            normalized_source = (
+                normalized_source
+                * destination_norm
+                / torch.linalg.vector_norm(
+                    normalized_source, dim=-1, keepdim=True
+                ).clamp_min(self.cfg.eps)
+            )
             self.prepared_sources[pair_index] = normalized_source
         return debug_latents
 
@@ -565,6 +622,10 @@ def recirculate(
     | None = None,
     initial_decoded_noise_source_latents: list[list[Any]] | None = None,
     decoded_injected_source_latents: list[list[Any]] | None = None,
+    perturbation_probe: Callable[
+        [Tensor, int, int, Tensor, Tensor, Any, Any, RecirculationConfig], Tensor
+    ]
+    | None = None,
     capture_cached_token: Callable[[Any], Any] | None = None,
     average_cached_token: Callable[[Any, Sequence[Any]], None] | None = None,
     restore_cached_token: Callable[[Any, Any], None] | None = None,
@@ -910,7 +971,24 @@ def recirculate(
                         prepared_debug_latents.append(
                             (source_index, narrowed.detach().clone())
                         )
-                noise_debug_latents = hooks.prepare_injections()
+                noise_debug_latents = hooks.prepare_injections(
+                    (
+                        lambda source_index, destination_index, destination, candidate: (
+                            perturbation_probe(
+                                token,
+                                source_index,
+                                destination_index,
+                                destination,
+                                candidate,
+                                cache,
+                                rewind_state,
+                                config,
+                            )
+                        )
+                        if perturbation_probe is not None
+                        else None
+                    )
+                )
                 if not prepared_debug_latents:
                     prepared_debug_latents = noise_debug_latents
                 if decode_injected_source_latent is not None:

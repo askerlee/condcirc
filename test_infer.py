@@ -31,6 +31,9 @@ from infer import (
     parse_generated_response,
     REPETITION_RECOVERY_TOKEN_COUNT,
     periodic_perturbation_active,
+    periodic_perturbation_direction_scale,
+    periodic_perturbation_history_direction,
+    periodic_perturbation_noise_level_range,
     repeated_text_signature_counts,
     repetition_text_window,
     repetition_recovery_penalty,
@@ -157,6 +160,8 @@ class RecirculationStatsTest(unittest.TestCase):
                 "2",
                 "--perturb-recent-m-tokens",
                 "12",
+                "--perturb-history-decay",
+                "0.6",
                 "prompt",
             ]
         )
@@ -164,6 +169,30 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_every_n_tokens, 4)
         self.assertEqual(args.perturb_for_k_tokens, 2)
         self.assertEqual(args.perturb_recent_m_tokens, 12)
+        self.assertEqual(args.perturb_history_decay, 0.6)
+
+    def test_parses_periodic_perturbation_noise_override(self) -> None:
+        default = parse_args(["prompt"])
+        args = parse_args(
+            ["--perturb-noise-level-range", "0.05", "0.15", "prompt"]
+        )
+
+        self.assertIsNone(default.perturb_noise_level_range)
+        self.assertEqual(args.perturb_noise_level_range, [0.05, 0.15])
+
+    def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:
+        self.assertEqual(
+            periodic_perturbation_noise_level_range((0.0, 0.0), None),
+            (0.1, 0.2),
+        )
+        self.assertEqual(
+            periodic_perturbation_noise_level_range((0.2, 0.3), None),
+            (0.2, 0.3),
+        )
+        self.assertEqual(
+            periodic_perturbation_noise_level_range((0.2, 0.3), (0.0, 0.0)),
+            (0.0, 0.0),
+        )
 
     def test_periodic_perturbation_activates_at_the_configured_interval(self) -> None:
         self.assertFalse(periodic_perturbation_active(0, 2, 4))
@@ -172,6 +201,19 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertTrue(periodic_perturbation_active(3, 2, 4))
         self.assertFalse(periodic_perturbation_active(3, 2, 5))
         self.assertTrue(periodic_perturbation_active(3, 2, 6))
+
+    def test_periodic_perturbation_direction_decays_within_interval(self) -> None:
+        self.assertEqual(periodic_perturbation_direction_scale(6, 6), 1.0)
+        self.assertEqual(periodic_perturbation_direction_scale(6, 7), 0.5)
+        self.assertEqual(periodic_perturbation_direction_scale(6, 8), 0.25)
+        self.assertEqual(periodic_perturbation_direction_scale(6, 12), 1.0)
+
+    def test_periodic_perturbation_direction_includes_decayed_history(self) -> None:
+        direction = periodic_perturbation_history_direction(
+            [torch.tensor([[1.0, 2.0]]), torch.tensor([[3.0, 5.0]])], 0.7
+        )
+
+        torch.testing.assert_close(direction, torch.tensor([[-3.7, -6.4]]))
 
     def test_parses_a_game24_puzzle(self) -> None:
         args = parse_args(["--game24-puzzle", "2", "3", "4", "6"])

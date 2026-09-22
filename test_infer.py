@@ -261,6 +261,21 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.sudoku_index, (1, 2, 3))
         self.assertEqual(last.sudoku_index, (-1,))
 
+    def test_parses_bbeh_file_and_indices(self) -> None:
+        default = parse_args([])
+        args = parse_args(
+            ["--bbeh-file", "bbeh/mini/data.json", "--bbeh-index", "1-3"]
+        )
+        last = parse_args(
+            ["--bbeh-file", "bbeh/mini/data.json", "--bbeh-index", "-1"]
+        )
+
+        self.assertEqual(default.bbeh_index, ())
+        self.assertIsNone(default.bbeh_file)
+        self.assertEqual(args.bbeh_file, Path("bbeh/mini/data.json"))
+        self.assertEqual(args.bbeh_index, (1, 2, 3))
+        self.assertEqual(last.bbeh_index, (-1,))
+
     def test_parses_game24_indices_beyond_builtin_queries(self) -> None:
         args = parse_args(
             ["--game24-file", "24.csv", "--game24-index", "21-23"]

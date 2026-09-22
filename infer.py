@@ -46,6 +46,9 @@ import torch  # noqa: E402
 from torch import Tensor, nn  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache  # noqa: E402
 
+from tasks.bbeh import format_prompt as format_bbeh_prompt  # noqa: E402
+from tasks.bbeh import is_correct as is_bbeh_correct  # noqa: E402
+from tasks.bbeh import load_examples as load_bbeh_examples  # noqa: E402
 from tasks.game24 import format_prompt as format_game24_prompt  # noqa: E402
 from tasks.game24 import format_countdown_prompt  # noqa: E402
 from tasks.game24 import is_solution as is_game24_solution  # noqa: E402
@@ -458,6 +461,10 @@ def parse_sudoku_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "Sudoku")
 
 
+def parse_bbeh_indices(value: str) -> tuple[int, ...]:
+    return parse_benchmark_indices(value, "BBEH")
+
+
 def resolve_benchmark_indices(
     indices: Sequence[int], puzzle_count: int, task_name: str
 ) -> tuple[int, ...]:
@@ -510,7 +517,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     while argument_index < len(argv):
         argument = argv[argument_index]
         if (
-            argument in ("--game24-index", "--countdown-index", "--sudoku-index")
+            argument
+            in ("--game24-index", "--countdown-index", "--sudoku-index", "--bbeh-index")
             and argument_index + 1 < len(argv)
             and argv[argument_index + 1].startswith("-")
         ):
@@ -575,6 +583,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="tasks/grid-9_diff-30_placeholder-0_enforce-non_unique.jsonl",
         help="Run puzzles from a Sudoku4LLM JSONL file.",
     )
+    task_group.add_argument(
+        "--bbeh-file",
+        type=Path,
+        help=(
+            "Run examples from a BBEH benchmark_tasks directory, task.json, "
+            "or mini/data.json file."
+        ),
+    )
     parser.add_argument(
         "--do-sudoku",
         action="store_true",
@@ -608,6 +624,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "1-based Sudoku4LLM JSONL indices; negative values count from the "
             "end (default: all)."
+        ),
+    )
+    parser.add_argument(
+        "--bbeh-index",
+        type=parse_bbeh_indices,
+        default=(),
+        metavar="INDEX[-INDEX][,...]",
+        help=(
+            "1-based BBEH JSON indices; negative values count from the end "
+            "(default: all)."
         ),
     )
     parser.add_argument(
@@ -1032,6 +1058,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "sudoku_file",
         "sudoku_index",
         "do_sudoku",
+        "bbeh_file",
+        "bbeh_index",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1833,6 +1861,7 @@ def main() -> None:
         or args.countdown_puzzle is not None
         or args.countdown_file is not None
         or args.do_sudoku
+        or args.bbeh_file is not None
     ):
         raise ValueError("A free-form prompt cannot be combined with a benchmark task.")
     if args.do_sudoku and (
@@ -1840,6 +1869,7 @@ def main() -> None:
         or args.game24_file is not None
         or args.countdown_puzzle is not None
         or args.countdown_file is not None
+        or args.bbeh_file is not None
     ):
         raise ValueError("--do-sudoku cannot be combined with another benchmark task.")
     if args.game24_puzzle is not None and args.game24_index:
@@ -1848,6 +1878,8 @@ def main() -> None:
         raise ValueError("--countdown-index requires --countdown-file.")
     if args.sudoku_index and not args.do_sudoku:
         raise ValueError("--sudoku-index requires --do-sudoku.")
+    if args.bbeh_index and args.bbeh_file is None:
+        raise ValueError("--bbeh-index requires --bbeh-file.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -2027,11 +2059,16 @@ def main() -> None:
             if args.do_sudoku
             else ""
         )
+        bbeh_signature = (
+            f"-bbeh-{format_index_ranges(args.bbeh_index) or 'all'}"
+            if args.bbeh_file is not None
+            else ""
+        )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
             f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
-            f"{game24_signature}{countdown_signature}{sudoku_signature}"
+            f"{game24_signature}{countdown_signature}{sudoku_signature}{bbeh_signature}"
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
@@ -3232,14 +3269,29 @@ def main() -> None:
         if sudoku_puzzles is not None
         else ()
     )
+    bbeh_examples = (
+        load_bbeh_examples(args.bbeh_file)
+        if args.bbeh_file is not None
+        else None
+    )
+    bbeh_indices = (
+        resolve_benchmark_indices(
+            args.bbeh_index or tuple(range(1, len(bbeh_examples) + 1)),
+            len(bbeh_examples),
+            "BBEH",
+        )
+        if bbeh_examples is not None
+        else ()
+    )
     prompts = (
-        ((1, args.prompt, None, None, None),)
+        ((1, args.prompt, None, None, None, None),)
         if args.prompt is not None
         else tuple(
             (
                 index,
                 format_game24_prompt(game24_puzzles[index - 1]),
                 game24_puzzles[index - 1],
+                None,
                 None,
                 None,
             )
@@ -3253,6 +3305,7 @@ def main() -> None:
                 None,
                 countdown_puzzles[index - 1],
                 None,
+                None,
             )
             for index in countdown_indices
         )
@@ -3264,12 +3317,25 @@ def main() -> None:
                 None,
                 None,
                 sudoku_puzzles[index - 1],
+                None,
             )
             for index in sudoku_indices
         )
         if sudoku_puzzles is not None
         else tuple(
-            (index, EXAMPLE_QUERIES[index - 1], None, None, None)
+            (
+                index,
+                format_bbeh_prompt(bbeh_examples[index - 1]),
+                None,
+                None,
+                None,
+                bbeh_examples[index - 1],
+            )
+            for index in bbeh_indices
+        )
+        if bbeh_examples is not None
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1], None, None, None, None)
             for index in args.query_indices
         )
     )
@@ -3293,7 +3359,14 @@ def main() -> None:
             output_file.flush()
 
     try:
-        for prompt_index, prompt, game24_puzzle, countdown_puzzle, sudoku_puzzle in prompts:
+        for (
+            prompt_index,
+            prompt,
+            game24_puzzle,
+            countdown_puzzle,
+            sudoku_puzzle,
+            bbeh_example,
+        ) in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
                 "prompt": prompt,
@@ -3307,6 +3380,9 @@ def main() -> None:
                 query_record["countdown_numbers"] = list(numbers)
             if sudoku_puzzle is not None:
                 query_record["sudoku_puzzle"] = [list(row) for row in sudoku_puzzle]
+            if bbeh_example is not None:
+                query_record["bbeh_task"] = bbeh_example.task
+                query_record["bbeh_target"] = bbeh_example.target
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
@@ -3367,6 +3443,10 @@ def main() -> None:
                 if sudoku_puzzle is not None:
                     run_record["sudoku_solved"] = is_sudoku_solution(
                         sudoku_puzzle, output
+                    )
+                if bbeh_example is not None:
+                    run_record["bbeh_correct"] = is_bbeh_correct(
+                        bbeh_example, output
                     )
                 if args.do_eval:
                     evaluation = evaluate_single_answer(
@@ -3439,6 +3519,13 @@ def main() -> None:
                     "sudoku_solved = "
                     f"{sum(run['sudoku_solved'] for run in sudoku_runs)}/"
                     f"{len(sudoku_runs)}"
+                )
+            bbeh_runs = [run for run in completed_runs if "bbeh_correct" in run]
+            if bbeh_runs:
+                emit(
+                    "bbeh_correct = "
+                    f"{sum(run['bbeh_correct'] for run in bbeh_runs)}/"
+                    f"{len(bbeh_runs)}"
                 )
             if args.do_eval:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))

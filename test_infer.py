@@ -463,6 +463,16 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertTrue(has_third_repeated_text_suffix(text))
 
+    def test_detects_three_consecutive_blank_lines(self) -> None:
+        text = "$286 = (100 + 4) \\times 3$\n\n\n\n"
+
+        self.assertTrue(has_third_repeated_text_suffix(text))
+
+    def test_detects_three_consecutive_single_symbol_lines(self) -> None:
+        text = "$286 = (100 + 4) \\times 3$\n$\n$\n$"
+
+        self.assertTrue(has_third_repeated_text_suffix(text))
+
     def test_repetition_text_window_discards_distant_attempts(self) -> None:
         repeated_attempt = "100 * (6 + 3) - (5 * 7 + 2 + 6)... no."
         text = "\n".join(

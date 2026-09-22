@@ -880,11 +880,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--perturb-history-decay",
         type=float,
-        default=0.7,
+        default=0,
         metavar="LAMBDA",
         help=(
             "Decay for earlier periodic-perturbation centroids in the injected "
-            "repulsion direction (0 to 1; default: 0.7)."
+            "repulsion direction (0 to 1; default: 0, disable history)."
         ),
     )
     parser.add_argument(
@@ -1606,13 +1606,38 @@ def repeated_text_signature_counts(
     minimum_word_count: int = 8,
     maximum_word_count: int = 32,
 ) -> dict[tuple[str, ...], int]:
-    """Count substantial normalized patterns occurring at least three times."""
+    """Count substantial normalized patterns and blank-line loops."""
+    signature_counts: dict[tuple[str, ...], int] = {}
+    blank_line_run = 0
+    previous_symbol_line: str | None = None
+    symbol_line_run = 0
+    for line in text.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line:
+            previous_symbol_line = None
+            symbol_line_run = 0
+            blank_line_run += 1
+            if blank_line_run >= 3:
+                signature_counts[("blank-lines",)] = blank_line_run
+            continue
+        blank_line_run = 0
+        if re.fullmatch(r"[^\w\s]{1,3}", stripped_line):
+            symbol_line_run = (
+                symbol_line_run + 1
+                if stripped_line == previous_symbol_line
+                else 1
+            )
+            previous_symbol_line = stripped_line
+            if symbol_line_run >= 3:
+                signature_counts[("symbol-line", stripped_line)] = symbol_line_run
+        else:
+            previous_symbol_line = None
+            symbol_line_run = 0
     lines = [
         re.sub(r"^let's try:\s*", "", re.sub(r"^\d+[.)]\s*", "", line.strip()).lower())
         for line in text.splitlines()
         if line.strip()
     ]
-    signature_counts: dict[tuple[str, ...], int] = {}
     for line in lines:
         words = re.findall(r"\S+", line)
         line_count = lines.count(line)

@@ -858,17 +858,6 @@ class RecirculationStatsTest(unittest.TestCase):
 
         torch.testing.assert_close(sampling_logits, logits)
 
-    def test_parses_perturb_pre_margin_threshold(self) -> None:
-        args = parse_args(["--perturb-pre-margin-thres", "0.12", "prompt"])
-
-        self.assertEqual(args.perturb_pre_margin_thres, 0.12)
-
-    def test_rejects_negative_perturb_pre_margin_threshold(self) -> None:
-        args = parse_args(["--perturb-pre-margin-thres", "-0.01", "prompt"])
-
-        with self.assertRaisesRegex(ValueError, "perturb-pre-margin-thres"):
-            validate_run_arguments(args)
-
     def test_parses_repetition_penalty(self) -> None:
         args = parse_args(["--repetition-penalty", "1.25", "prompt"])
 

@@ -56,7 +56,6 @@ from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
     SimilarityStats,
-    _narrow_top1_top2_logit_gap,
     recirculate,
 )
 from tasks.sudoku import format_prompt as format_sudoku_prompt  # noqa: E402
@@ -682,44 +681,34 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--noise-level-range",
         type=float,
         nargs=2,
-        default=(0.0, 0.0),
+        default=(0.1, 0.2),
         metavar=("MIN", "MAX"),
         help=(
             "Magnitude-matched Gaussian noise range. Each pass maps its "
             "normalized preceding margin from MIN to MAX "
-            "(0 <= MIN <= MAX <= 0.5; default: 0 0)."
+            "(0 <= MIN <= MAX <= 0.5; default: 0.1 0.2)."
         ),
     )
     parser.add_argument(
         "--startup-noise-level-range",
         type=float,
         nargs=2,
-        default=(0.0, 0.0),
+        default=(0.1, 0.2),
         metavar=("MIN", "MAX"),
         help=(
             "Use this noise range for generated startup tokens covered by "
-            "--startup-relax-tokens when MAX is positive (default: 0 0, "
+            "--startup-relax-tokens when MAX is positive (default: 0.1 0.2, "
             "which keeps --noise-level-range)."
         ),
     )
     parser.add_argument(
         "--noise-decay-per-pass",
         type=float,
-        default=0,
+        default=0.7,
         metavar="COEFFICIENT",
         help=(
             "Multiply the noise weight by this coefficient after each "
-            "recirculation pass (0 to 1; default: 0.8)."
-        ),
-    )
-    parser.add_argument(
-        "--narrowing-grad-level",
-        type=float,
-        default=0.0,
-        metavar="LEVEL",
-        help=(
-            "Scale the minimum-L2 gradient correction that narrows each "
-            "injected latent's top-1/top-2 logit gap (default: 0, disabled)."
+            "recirculation pass (0 to 1; default: 0.7)."
         ),
     )
     parser.add_argument(
@@ -728,7 +717,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0.1,
         metavar="THRESHOLD",
         help=(
-            "Apply narrowing gradients and noise only when the pre-pass "
+            "Apply noise only when the pre-pass "
             "top-1/top-2 probability margin is at least this threshold "
             "(default: 0.05)."
         ),
@@ -860,11 +849,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--perturb-for-k-tokens",
         type=int,
-        default=6,
+        default=30,
         metavar="K",
         help=(
             "Force recirculation for K consecutive generated tokens after each "
-            "--perturb-every-n-tokens interval (default: 6)."
+            "--perturb-every-n-tokens interval (default: 30)."
         ),
     )
     parser.add_argument(
@@ -891,7 +880,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--perturb-noise-level-range",
         type=float,
         nargs=2,
-        default=None,
+        default=(0.2, 0.4),
         metavar=("MIN", "MAX"),
         help=(
             "Override the noise range during periodic perturbation; when unset, "
@@ -1085,7 +1074,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "list_queries",
         "max_new_tokens",
         "model",
-        "narrowing_grad_level",
         "perturb_pre_margin_thres",
         "no_recirculate_after_tokens",
         "openai_base_url",
@@ -1881,16 +1869,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             )
     if not 0.0 <= args.noise_decay_per_pass <= 1.0:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
-    if args.narrowing_grad_level < 0:
-        raise ValueError("--narrowing-grad-level must be nonnegative.")
     if args.perturb_pre_margin_thres < 0:
         raise ValueError("--perturb-pre-margin-thres must be nonnegative.")
-    if args.narrowing_grad_level > 0 and max(noise_max, startup_noise_max) > 0:
-        raise ValueError(
-            "--narrowing-grad-level cannot be combined with a nonzero noise range."
-        )
-    if args.narrowing_grad_level > 0 and args.mode != "source":
-        raise ValueError("--narrowing-grad-level requires --mode source.")
     if max(noise_max, startup_noise_max) > 0 and args.mode != "source":
         raise ValueError("noise ranges require --mode source.")
     if max(noise_max, startup_noise_max) > 0 and (
@@ -2100,10 +2080,6 @@ def main() -> None:
                 f"-noise{args.noise_level_range[0]},{args.noise_level_range[1]}"
                 f"-ndecay{args.noise_decay_per_pass}",
             ),
-            (
-                args.narrowing_grad_level if args.narrowing_grad_level > 0 else None,
-                f"-ngrad{args.narrowing_grad_level}",
-            ),
         )
         if threshold is not None
     )
@@ -2195,90 +2171,6 @@ def main() -> None:
     if isinstance(eos_token_ids, int):
         eos_token_ids = [eos_token_ids]
     eos_token_ids = set(eos_token_ids or [])
-    gradient_suffixes: dict[int, tuple[nn.Module, ...]] = {}
-
-    def bf16_gradient_suffix(source_index: int) -> tuple[nn.Module, ...]:
-        cached = gradient_suffixes.get(source_index)
-        if cached is not None:
-            return cached
-
-        from transformers.integrations.finegrained_fp8 import (
-            Fp8Dequantize,
-        )
-
-        dequantizer = Fp8Dequantize(None)
-
-        def dequantize_weight(module: nn.Module, name: str) -> None:
-            weight = getattr(module, name)
-            scale = getattr(module, f"{name}_scale_inv")
-            setattr(
-                module,
-                name,
-                nn.Parameter(
-                    dequantizer._dequantize_one(weight, scale, torch.bfloat16),
-                    requires_grad=False,
-                ),
-            )
-
-        def dense_experts_forward(
-            module: nn.Module,
-            hidden_states: Tensor,
-            top_k_index: Tensor,
-            top_k_weights: Tensor,
-        ) -> Tensor:
-            final_hidden_states = torch.zeros_like(hidden_states, dtype=torch.float32)
-            num_experts = module.num_experts
-            with torch.no_grad():
-                expert_mask = torch.nn.functional.one_hot(
-                    top_k_index, num_classes=num_experts + 1
-                ).permute(2, 1, 0)
-                expert_hit = torch.greater(
-                    expert_mask.sum(dim=(-1, -2)), 0
-                ).nonzero(as_tuple=False).view(-1)
-            for expert_index in expert_hit:
-                if expert_index == num_experts:
-                    continue
-                top_k_position, token_index = torch.where(expert_mask[expert_index])
-                current_state = hidden_states[token_index]
-                gate_up = torch.nn.functional.linear(
-                    current_state, module.gate_up_proj[expert_index]
-                )
-                if module.has_gate:
-                    projected = module._apply_gate(gate_up)
-                else:
-                    projected = module.act_fn(gate_up)
-                projected = torch.nn.functional.linear(
-                    projected, module.down_proj[expert_index]
-                )
-                weighted = projected * top_k_weights[
-                    token_index, top_k_position, None
-                ].to(projected.dtype)
-                final_hidden_states.index_add_(
-                    0, token_index, weighted.to(final_hidden_states.dtype)
-                )
-            return final_hidden_states.to(hidden_states.dtype)
-
-        suffix = tuple(copy.deepcopy(block) for block in blocks[source_index + 1 :])
-        for block in suffix:
-            for module in block.modules():
-                for name in ("weight", "gate_up_proj", "up_proj", "down_proj"):
-                    weight = getattr(module, name, None)
-                    if (
-                        isinstance(weight, Tensor)
-                        and weight.element_size() == 1
-                        and hasattr(module, f"{name}_scale_inv")
-                    ):
-                        dequantize_weight(module, name)
-                if (
-                    hasattr(module, "gate_up_proj")
-                    and hasattr(module, "down_proj")
-                    and hasattr(module, "has_gate")
-                ):
-                    module.forward = dense_experts_forward.__get__(module, type(module))
-            block.to(dtype=torch.bfloat16)
-        gradient_suffixes[source_index] = suffix
-        return suffix
-
     def decoded_latent_stats(
         token: Tensor,
         source_index: int,
@@ -2393,88 +2285,6 @@ def main() -> None:
         if not captured_outputs:
             raise RuntimeError("Periodic perturbation probe did not capture a source residual.")
         return captured_outputs[-1]
-
-    def narrow_margin(
-        token: Tensor,
-        source_index: int,
-        latent: Tensor,
-        cache: DynamicCache,
-        level: float,
-        rewind_state: Any,
-    ) -> Tensor:
-        injected_latent = latent
-        suffix_start = source_index + 1
-        original_suffix = tuple(blocks[suffix_start:])
-
-        def make_gradient_cache() -> DynamicCache:
-            gradient_cache = rewind_dynamic_cache(copy.deepcopy(cache))
-            restore_dynamic_cache_rewind_state(gradient_cache, rewind_state)
-
-            def update_recurrent_state(
-                cache: DynamicCache,
-                recurrent_states: Tensor,
-                layer_index: int,
-                state_index: int = 0,
-                **_kwargs: Any,
-            ) -> Tensor:
-                cache.layers[layer_index].recurrent_states[state_index] = recurrent_states
-                return recurrent_states
-
-            gradient_cache.update_recurrent_state = MethodType(
-                update_recurrent_state, gradient_cache
-            )
-            return gradient_cache
-
-        def inject_source(_module: nn.Module, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
-            return (
-                injected_latent.to(device=inputs[0].device, dtype=inputs[0].dtype),
-                *inputs[1:],
-            )
-
-        def logits_from_latent(candidate: Tensor) -> Tensor:
-            nonlocal injected_latent
-            injected_latent = candidate
-            probe_cache = make_gradient_cache()
-            past_length = probe_cache.get_seq_length()
-            return model(
-                input_ids=token,
-                attention_mask=torch.ones(
-                    token.shape[0],
-                    past_length + token.shape[1],
-                    dtype=torch.long,
-                    device=token.device,
-                ),
-                past_key_values=probe_cache,
-                cache_position=torch.arange(
-                    past_length,
-                    past_length + token.shape[1],
-                    device=token.device,
-                ),
-                use_cache=True,
-                return_dict=True,
-            ).logits
-
-        handle = None
-        try:
-            with torch.inference_mode(False), torch.enable_grad():
-                for index, block in enumerate(
-                    bf16_gradient_suffix(source_index), suffix_start
-                ):
-                    blocks[index] = block
-                handle = blocks[source_index + 1].register_forward_pre_hook(
-                    inject_source
-                )
-                return _narrow_top1_top2_logit_gap(
-                    latent,
-                    logits_from_latent,
-                    level,
-                    1e-8,
-                )
-        finally:
-            if handle is not None:
-                handle.remove()
-            for index, block in enumerate(original_suffix, suffix_start):
-                blocks[index] = block
 
     def distribution_similarity(
         teacher_logits: Tensor, student_logits: Tensor
@@ -2740,7 +2550,6 @@ def main() -> None:
                     adaptive_recirculation_counts=adaptive_recirculation_counts,
                     final_pass_same_top1_flags=final_pass_same_top1_flags,
                     rejection_reasons=rejection_reasons,
-                    narrow_margin=narrow_margin,
                     decode_injected_source_latent=(
                         decoded_latent_stats
                         if run_config.noise_level_range[1] > 0
@@ -2962,7 +2771,6 @@ def main() -> None:
                         adaptive_recirculation_counts=adaptive_recirculation_counts,
                         final_pass_same_top1_flags=final_pass_same_top1_flags,
                         rejection_reasons=rejection_reasons,
-                        narrow_margin=narrow_margin,
                         decode_injected_source_latent=(
                             decoded_latent_stats
                             if token_run_config.noise_level_range[1] > 0
@@ -3007,7 +2815,6 @@ def main() -> None:
         pass_probability_margins: list[list[float]] = []
         final_pass_cosine_similarities: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
-        injected_narrowing_grad_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
         decoded_injected_source_latents: list[list[dict[str, Any]]] = []
         student_logits, student_cache = recirculate(
@@ -3045,8 +2852,6 @@ def main() -> None:
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
             injected_noise_levels=injected_noise_levels,
-            injected_narrowing_grad_levels=injected_narrowing_grad_levels,
-            narrow_margin=narrow_margin,
             decode_injected_source_latent=decoded_latent_stats,
             initial_decoded_noise_source_latents=(
                 initial_decoded_noise_source_latents
@@ -3130,21 +2935,6 @@ def main() -> None:
                     stats["top1_token"] for stats in decoded_noise_latents
                 ]
                 comparison["noise_injected_source_top2_token"] = [
-                    stats["top2_token"] for stats in decoded_noise_latents
-                ]
-            elif student_run_config.narrowing_grad_level > 0:
-                comparison["injected_narrowing_grad_levels"] = [
-                    f"{level:.6e}"
-                    for level in injected_narrowing_grad_levels[-1]
-                ]
-                comparison["narrowing_grad_injected_source_top1_top2_margin"] = [
-                    round(float(stats["margin"]), 3)
-                    for stats in decoded_noise_latents
-                ]
-                comparison["narrowing_grad_injected_source_top1_token"] = [
-                    stats["top1_token"] for stats in decoded_noise_latents
-                ]
-                comparison["narrowing_grad_injected_source_top2_token"] = [
                     stats["top2_token"] for stats in decoded_noise_latents
                 ]
             effective_repetition_penalty = repetition_recovery_penalty(
@@ -3383,8 +3173,6 @@ def main() -> None:
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
                 injected_noise_levels=injected_noise_levels,
-                injected_narrowing_grad_levels=injected_narrowing_grad_levels,
-                narrow_margin=narrow_margin,
                 decode_injected_source_latent=decoded_latent_stats,
                 perturbation_probe=probe_periodic_perturbation,
                 initial_decoded_noise_source_latents=(
@@ -3446,7 +3234,6 @@ def main() -> None:
             alpha=run_args.alpha,
             beta=run_args.beta,
             noise_level_range=tuple(run_args.noise_level_range),
-            narrowing_grad_level=run_args.narrowing_grad_level,
             perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
@@ -3479,7 +3266,6 @@ def main() -> None:
             "passes",
             "noise_level_range",
             "noise_decay_per_pass",
-            "narrowing_grad_level",
             "perturb_pre_margin_thres",
             "cond_recirculate",
             "act_sim_thres",

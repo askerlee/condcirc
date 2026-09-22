@@ -8,7 +8,6 @@ from recirculation import (
     RecirculationConfig,
     _Hooks,
     _adaptive_noise_level,
-    _narrow_top1_top2_logit_gap,
     recirculate,
 )
 
@@ -258,67 +257,6 @@ class RecirculationCacheTest(unittest.TestCase):
                 ),
             )
 
-    def test_gradient_narrowing_is_only_applied_on_first_recirculation_pass(self) -> None:
-        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
-        cache: list[int] = []
-        narrowed_at: list[int] = []
-
-        def step(token: torch.Tensor, current_cache: list[int]):
-            hidden = torch.ones((1, 1, 2))
-            for block in blocks:
-                hidden = block(hidden)
-            current_cache.append(len(current_cache))
-            return torch.tensor([[[2.0, 1.0, 0.0]]]), current_cache
-
-        recirculate(
-            torch.tensor([[1]]),
-            blocks=blocks,
-            cache=cache,
-            step=step,
-            rewind_one=lambda current_cache: current_cache[:-1],
-            config=RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, narrowing_grad_level=1.0
-            ),
-            passes=3,
-            narrow_margin=lambda _token, injection_index, latent, _cache, _level, _state: (
-                narrowed_at.append(injection_index) or latent
-            ),
-            capture_cached_token=lambda current_cache: current_cache[-1],
-            restore_cached_token=lambda current_cache, cached_token: None,
-        )
-
-        self.assertEqual(narrowed_at, [2])
-
-    def test_gradient_narrowing_skips_small_pre_margin(self) -> None:
-        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
-        narrowed: list[bool] = []
-
-        def step(token: torch.Tensor, current_cache: list[int]):
-            hidden = torch.ones((1, 1, 2))
-            for block in blocks:
-                hidden = block(hidden)
-            current_cache.append(len(current_cache))
-            return torch.tensor([[[0.1, 0.0, 0.0]]]), current_cache
-
-        recirculate(
-            torch.tensor([[1]]),
-            blocks=blocks,
-            cache=[],
-            step=step,
-            rewind_one=lambda current_cache: current_cache[:-1],
-            config=RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, narrowing_grad_level=1.0
-            ),
-            passes=2,
-            narrow_margin=lambda _token, _source, latent, _cache, _level, _state: (
-                narrowed.append(True) or latent
-            ),
-            capture_cached_token=lambda current_cache: current_cache[-1],
-            restore_cached_token=lambda current_cache, cached_token: None,
-        )
-
-        self.assertEqual(narrowed, [])
-
     def test_noise_injection_skips_small_pre_margin(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         injected_source_latents: list[tuple[int, torch.Tensor]] = []
@@ -389,86 +327,6 @@ class RecirculationCacheTest(unittest.TestCase):
 
         self.assertEqual(injected_noise_levels_for_decay(0.0), [0.2, 0.0])
         self.assertEqual(injected_noise_levels_for_decay(0.5), [0.2, 0.1])
-
-    def test_gradient_narrowing_receives_raw_source_before_normalization(self) -> None:
-        blocks = nn.ModuleList(
-            [nn.Identity(), nn.Identity(), nn.Linear(2, 2, bias=False)]
-        )
-        blocks[2].weight.data.copy_(2.0 * torch.eye(2))
-        captured_latents: list[torch.Tensor] = []
-
-        def step(token: torch.Tensor, current_cache: list[int]):
-            hidden = torch.ones((1, 1, 2))
-            for block in blocks:
-                hidden = block(hidden)
-            current_cache.append(len(current_cache))
-            return torch.tensor([[[2.0, 1.0]]]), current_cache
-
-        recirculate(
-            torch.tensor([[1]]),
-            blocks=blocks,
-            cache=[],
-            step=step,
-            rewind_one=lambda current_cache: current_cache[:-1],
-            config=RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, narrowing_grad_level=1e-8
-            ),
-            passes=2,
-            narrow_margin=(
-                lambda _token, _source, latent, _cache, _level, _state: (
-                    captured_latents.append(latent.clone()) or latent
-                )
-            ),
-            capture_cached_token=lambda current_cache: current_cache[-1],
-            restore_cached_token=lambda current_cache, cached_token: None,
-        )
-
-        torch.testing.assert_close(
-            captured_latents[0], torch.tensor([[[2.0, 2.0]]])
-        )
-
-    def test_gradient_narrowing_uses_minimum_l2_linearized_correction(self) -> None:
-        latent = torch.tensor([[[3.0, 1.0]]])
-
-        def logits_from_latent(hidden: torch.Tensor) -> torch.Tensor:
-            return torch.cat((hidden, torch.zeros_like(hidden[..., :1])), dim=-1)
-
-        narrowed = _narrow_top1_top2_logit_gap(
-            latent, logits_from_latent, level=1.0, eps=1e-8
-        )
-
-        torch.testing.assert_close(narrowed, torch.tensor([[[2.0, 2.0]]]))
-
-    @unittest.skipUnless(torch.cuda.device_count() >= 2, "requires two CUDA devices")
-    def test_gradient_narrowing_supports_model_sharding(self) -> None:
-        latent = torch.tensor([[[3.0, 1.0]]], device="cuda:0")
-
-        def logits_from_latent(hidden: torch.Tensor) -> torch.Tensor:
-            hidden = hidden.to("cuda:1")
-            return torch.cat((hidden, torch.zeros_like(hidden[..., :1])), dim=-1)
-
-        narrowed = _narrow_top1_top2_logit_gap(
-            latent, logits_from_latent, level=1.0, eps=1e-8
-        )
-
-        self.assertEqual(narrowed.device, latent.device)
-        torch.testing.assert_close(narrowed.cpu(), torch.tensor([[[2.0, 2.0]]]))
-
-    def test_gradient_narrowing_reports_unsupported_autograd_kernels(self) -> None:
-        latent = torch.tensor([[[1.0, 0.0]]])
-
-        with patch("torch.autograd.grad", side_effect=RuntimeError(
-            "no autograd formula was registered"
-        )):
-            with self.assertRaisesRegex(RuntimeError, "use a BF16 or FP16 checkpoint"):
-                _narrow_top1_top2_logit_gap(
-                    latent,
-                    lambda hidden: torch.cat(
-                        (hidden, torch.zeros_like(hidden[..., :1])), dim=-1
-                    ),
-                    level=1.0,
-                    eps=1e-8,
-                )
 
     def test_adaptive_noise_level_normalizes_and_caps_margin(self) -> None:
         levels = [
@@ -686,55 +544,6 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(decoded_initial, [[{"margin": 0.8}]])
         self.assertEqual(decoded_selected, [[{"margin": 0.1}]])
         self.assertLess(selected_latents[0][0][1][..., 0].item(), 1.0)
-
-    def test_narrowed_latents_are_decoded_and_levels_recorded(self) -> None:
-        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
-        cache: list[int] = []
-        injected_narrowing_grad_levels: list[list[float]] = []
-        decoded_injected_source_latents: list[list[float]] = []
-        call_count = 0
-
-        def step(token: torch.Tensor, current_cache: list[int]):
-            nonlocal call_count
-            hidden = torch.ones((1, 1, 2))
-            for block in blocks:
-                hidden = block(hidden)
-            call_count += 1
-            current_cache.append(call_count)
-            return torch.tensor([[[2.0, 1.0]]]), current_cache
-
-        recirculate(
-            torch.tensor([[1]]),
-            blocks=blocks,
-            cache=cache,
-            step=step,
-            rewind_one=lambda current_cache: current_cache[:-1],
-            config=RecirculationConfig(
-                pairs=((2, 0),),
-                alpha=0.5,
-                narrowing_grad_level=0.3,
-            ),
-            passes=2,
-            narrow_margin=(
-                lambda _token, _source_index, latent, _cache, _level, _state: latent
-                + torch.tensor([[[0.3, 0.4]]])
-            ),
-            decode_injected_source_latent=(
-                lambda _token, _source_index, latent, _cache, _state: float(
-                    latent.mean()
-                )
-            ),
-            decoded_injected_source_latents=decoded_injected_source_latents,
-            injected_narrowing_grad_levels=injected_narrowing_grad_levels,
-            capture_cached_token=lambda current_cache: current_cache[-1],
-            restore_cached_token=lambda current_cache, cached_token: None,
-        )
-
-        self.assertAlmostEqual(
-            injected_narrowing_grad_levels[0][0],
-            0.5 / (2.0**0.5),
-        )
-        self.assertAlmostEqual(decoded_injected_source_latents[0][0], 1.35, places=6)
 
     def test_finalizes_cache_after_each_token(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

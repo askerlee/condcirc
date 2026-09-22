@@ -1469,6 +1469,13 @@ def periodic_perturbation_history_direction(
     return -weighted_centroid
 
 
+def recent_token_centroid(
+    embeddings: nn.Module, token_ids: Tensor, token_count: int
+) -> Tensor:
+    with torch.inference_mode():
+        return embeddings(token_ids[:, -token_count:]).mean(dim=1).detach()
+
+
 def repetition_text_window(
     text: str, maximum_word_count: int = REPETITION_TEXT_WINDOW_WORD_COUNT
 ) -> str:
@@ -2801,18 +2808,17 @@ def main() -> None:
                         generated_token_count,
                     )
                     periodic_perturbation_direction = None
+                    repetition_recovery_direction = None
                     if (
                         periodic_perturbation
                         and generated_token_count % run_args.perturb_every_n_tokens == 0
                     ):
                         print(f"perturb at {generated_token_count}", flush=True)
-                        recent_token_ids = generated_ids[
-                            :, -run_args.perturb_recent_m_tokens :
-                        ]
-                        with torch.inference_mode():
-                            centroid = model.get_input_embeddings()(
-                                recent_token_ids
-                            ).mean(dim=1).detach()
+                        centroid = recent_token_centroid(
+                            model.get_input_embeddings(),
+                            generated_ids,
+                            run_args.perturb_recent_m_tokens,
+                        )
                         periodic_perturbation_centroids.append(centroid)
                     if periodic_perturbation:
                         periodic_perturbation_direction = (
@@ -2820,6 +2826,12 @@ def main() -> None:
                                 periodic_perturbation_centroids,
                                 run_args.perturb_history_decay,
                             )
+                        )
+                    elif repetition_recovery_active:
+                        repetition_recovery_direction = -recent_token_centroid(
+                            model.get_input_embeddings(),
+                            generated_ids,
+                            run_args.perturb_recent_m_tokens,
                         )
                     pre_margin_threshold = generated_pre_margin_threshold(
                         run_args.pre_margin_thres,
@@ -2867,7 +2879,11 @@ def main() -> None:
                             if periodic_perturbation
                             else recovery_settings.noise_level_range
                         ),
-                        perturbation_direction=periodic_perturbation_direction,
+                        perturbation_direction=(
+                            periodic_perturbation_direction
+                            if periodic_perturbation
+                            else repetition_recovery_direction
+                        ),
                         perturbation_direction_scale=(
                             periodic_perturbation_direction_scale(
                                 run_args.perturb_every_n_tokens,
@@ -3180,18 +3196,17 @@ def main() -> None:
                 token_index + 1,
             )
             periodic_perturbation_direction = None
+            repetition_recovery_direction = None
             if (
                 periodic_perturbation
                 and (token_index + 1) % run_args.perturb_every_n_tokens == 0
             ):
                 print(f"perturb at {token_index + 1}", flush=True)
-                recent_token_ids = generated_ids[
-                    :, -run_args.perturb_recent_m_tokens :
-                ]
-                with torch.inference_mode():
-                    centroid = model.get_input_embeddings()(
-                        recent_token_ids
-                    ).mean(dim=1).detach()
+                centroid = recent_token_centroid(
+                    model.get_input_embeddings(),
+                    generated_ids,
+                    run_args.perturb_recent_m_tokens,
+                )
                 periodic_perturbation_centroids.append(centroid)
             if periodic_perturbation:
                 periodic_perturbation_direction = (
@@ -3199,6 +3214,12 @@ def main() -> None:
                         periodic_perturbation_centroids,
                         run_args.perturb_history_decay,
                     )
+                )
+            elif repetition_recovery_active:
+                repetition_recovery_direction = -recent_token_centroid(
+                    model.get_input_embeddings(),
+                    generated_ids,
+                    run_args.perturb_recent_m_tokens,
                 )
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
@@ -3274,7 +3295,11 @@ def main() -> None:
                     if periodic_perturbation
                     else recovery_settings.noise_level_range
                 ),
-                perturbation_direction=periodic_perturbation_direction,
+                perturbation_direction=(
+                    periodic_perturbation_direction
+                    if periodic_perturbation
+                    else repetition_recovery_direction
+                ),
                 perturbation_direction_scale=(
                     periodic_perturbation_direction_scale(
                         run_args.perturb_every_n_tokens,

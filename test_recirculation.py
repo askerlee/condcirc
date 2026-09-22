@@ -54,6 +54,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 ),
                 passes=1,
                 force_recirculation=True,
+                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
                 perturbation_probe=lambda _token, _source, _destination, _target, candidate, *_args: candidate[:, -1, :],
                 capture_cached_token=lambda cache: cache[-1],
                 restore_cached_token=lambda _cache, _cached_token: None,
@@ -64,6 +65,7 @@ class RecirculationCacheTest(unittest.TestCase):
         expected = expected * 2**0.5 / torch.linalg.vector_norm(
             expected, dim=-1, keepdim=True
         )
+        expected = 0.5 * (torch.ones_like(expected) + expected)
         torch.testing.assert_close(block_one_inputs[-1], expected)
 
     def test_forced_recirculation_adds_configured_direction_to_noisy_pass(self) -> None:

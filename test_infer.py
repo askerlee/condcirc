@@ -21,9 +21,6 @@ from infer import (
     format_run_arguments,
     format_run_stats,
     forced_recirculation_messages,
-    generated_cosine_reject,
-    generated_noise_level_range,
-    generated_pre_margin_threshold,
     has_third_repeated_suffix,
     has_third_repeated_text_suffix,
     output_recirculation_pairs,
@@ -177,7 +174,7 @@ class RecirculationStatsTest(unittest.TestCase):
             ["--perturb-noise-level-range", "0.05", "0.15", "prompt"]
         )
 
-        self.assertIsNone(default.perturb_noise_level_range)
+        self.assertEqual(default.perturb_noise_level_range, (0.2, 0.4))
         self.assertEqual(args.perturb_noise_level_range, [0.05, 0.15])
 
     def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:
@@ -204,8 +201,8 @@ class RecirculationStatsTest(unittest.TestCase):
 
     def test_periodic_perturbation_direction_decays_within_interval(self) -> None:
         self.assertEqual(periodic_perturbation_direction_scale(6, 6), 1.0)
-        self.assertEqual(periodic_perturbation_direction_scale(6, 7), 0.5)
-        self.assertEqual(periodic_perturbation_direction_scale(6, 8), 0.25)
+        self.assertEqual(periodic_perturbation_direction_scale(6, 7), 0.9)
+        self.assertEqual(periodic_perturbation_direction_scale(6, 8), 0.81)
         self.assertEqual(periodic_perturbation_direction_scale(6, 12), 1.0)
 
     def test_periodic_perturbation_direction_includes_decayed_history(self) -> None:
@@ -285,60 +282,6 @@ class RecirculationStatsTest(unittest.TestCase):
 
     def test_compacts_contiguous_indices_for_filenames(self) -> None:
         self.assertEqual(format_index_ranges((1, 2, 3, 7, 9, 10)), "1-3,7,9-10")
-
-    def test_parses_startup_relaxation(self) -> None:
-        args = parse_args(
-            [
-                "--startup-relax-tokens",
-                "3",
-                "--startup-noise-level-range",
-                "0.2",
-                "0.4",
-                "--startup-cosine-reject",
-                "0.9",
-                "--pre-margin-relax-factor",
-                "1.5",
-                "prompt",
-            ]
-        )
-
-        self.assertEqual(args.startup_relax_tokens, 3)
-        self.assertEqual(args.startup_noise_level_range, [0.2, 0.4])
-        self.assertEqual(args.startup_cosine_reject, 0.9)
-        self.assertEqual(args.pre_margin_relax_factor, 1.5)
-
-    def test_relaxes_only_the_first_generated_tokens(self) -> None:
-        self.assertEqual(generated_pre_margin_threshold(0.2, 0, 1.5, 1), 0.2)
-        self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 1), 0.3)
-        self.assertAlmostEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 3), 0.3)
-        self.assertEqual(generated_pre_margin_threshold(0.2, 3, 1.5, 4), 0.2)
-
-    def test_uses_startup_noise_only_for_startup_tokens(self) -> None:
-        base_range = (0.1, 0.2)
-        startup_range = (0.3, 0.4)
-
-        self.assertEqual(
-            generated_noise_level_range(base_range, startup_range, 3, 1),
-            startup_range,
-        )
-        self.assertEqual(
-            generated_noise_level_range(base_range, startup_range, 3, 3),
-            startup_range,
-        )
-        self.assertEqual(
-            generated_noise_level_range(base_range, startup_range, 3, 4),
-            base_range,
-        )
-        self.assertEqual(
-            generated_noise_level_range(base_range, (0.0, 0.0), 3, 1),
-            base_range,
-        )
-
-    def test_uses_startup_cosine_rejection_only_for_startup_tokens(self) -> None:
-        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 1), 0.9)
-        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 3), 0.9)
-        self.assertEqual(generated_cosine_reject(0.8, 0.9, 3, 4), 0.8)
-        self.assertEqual(generated_cosine_reject(0.8, None, 3, 1), 0.8)
 
     def test_parses_repetition_recovery_toggle(self) -> None:
         self.assertTrue(parse_args(["prompt"]).repetition_recovery)
@@ -726,20 +669,6 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(settings.condition_thresholds, (0.7,))
         self.assertFalse(settings.recirculation_allowed)
         self.assertFalse(settings.force_recirculation)
-
-    def test_accepts_startup_noise_level_one(self) -> None:
-        args = parse_args(
-            [
-                "--startup-relax-tokens",
-                "1",
-                "--startup-noise-level-range",
-                "0.5",
-                "1",
-                "prompt",
-            ]
-        )
-
-        validate_run_arguments(args)
 
     def test_uses_gemma_specific_default_pair(self) -> None:
         args = parse_args(["--model", "google/gemma-4-26b-a4b-it", "prompt"])

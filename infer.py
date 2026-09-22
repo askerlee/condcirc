@@ -690,18 +690,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--startup-noise-level-range",
-        type=float,
-        nargs=2,
-        default=(0.1, 0.2),
-        metavar=("MIN", "MAX"),
-        help=(
-            "Use this noise range for generated startup tokens covered by "
-            "--startup-relax-tokens when MAX is positive (default: 0.1 0.2, "
-            "which keeps --noise-level-range)."
-        ),
-    )
-    parser.add_argument(
         "--noise-decay-per-pass",
         type=float,
         default=0.7,
@@ -759,23 +747,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--startup-relax-tokens",
-        type=int,
-        default=0,
-        metavar="M",
-        help=(
-            "For the first M generated tokens, multiply --pre-margin-thres "
-            "by --pre-margin-relax-factor (default: 0, disabled)."
-        ),
-    )
-    parser.add_argument(
-        "--pre-margin-relax-factor",
-        type=float,
-        default=2.0,
-        metavar="F",
-        help="Multiplier for the relaxed initial-token pre-margin threshold (default: 2).",
-    )
-    parser.add_argument(
         "--post-margin-thres",
         type=float,
         nargs=2,
@@ -815,16 +786,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Discard the final pass when its distribution has cosine similarity "
             "below this threshold relative to P1."
-        ),
-    )
-    parser.add_argument(
-        "--startup-cosine-reject",
-        type=float,
-        default=None,
-        metavar="THRESHOLD",
-        help=(
-            "Override --cosine-reject for generated startup tokens covered by "
-            "--startup-relax-tokens."
         ),
     )
     parser.add_argument(
@@ -883,8 +844,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=(0.2, 0.4),
         metavar=("MIN", "MAX"),
         help=(
-            "Override the noise range during periodic perturbation; when unset, "
-            "use its existing default behavior."
+            "Override the noise range during periodic perturbation "
+            "(default: 0.2 0.4)."
         ),
     )
     parser.add_argument(
@@ -1506,31 +1467,6 @@ def format_run_arguments(args: argparse.Namespace, options: Sequence[str]) -> st
     )
 
 
-def generated_pre_margin_threshold(
-    pre_margin_threshold: float,
-    relax_tokens: int,
-    relax_factor: float,
-    generated_token_count: int,
-) -> float:
-    if generated_token_count <= relax_tokens:
-        return pre_margin_threshold * relax_factor
-    return pre_margin_threshold
-
-
-def generated_noise_level_range(
-    noise_level_range: tuple[float, float],
-    startup_noise_level_range: tuple[float, float],
-    startup_relax_tokens: int,
-    generated_token_count: int,
-) -> tuple[float, float]:
-    if (
-        startup_noise_level_range[1] > 0
-        and generated_token_count <= startup_relax_tokens
-    ):
-        return startup_noise_level_range
-    return noise_level_range
-
-
 def periodic_perturbation_noise_level_range(
     recovery_noise_level_range: tuple[float, float],
     override_noise_level_range: tuple[float, float] | None,
@@ -1542,20 +1478,6 @@ def periodic_perturbation_noise_level_range(
         if recovery_noise_level_range[1] > 0
         else (0.1, 0.2)
     )
-
-
-def generated_cosine_reject(
-    cosine_reject: float | None,
-    startup_cosine_reject: float | None,
-    startup_relax_tokens: int,
-    generated_token_count: int,
-) -> float | None:
-    if (
-        startup_cosine_reject is not None
-        and generated_token_count <= startup_relax_tokens
-    ):
-        return startup_cosine_reject
-    return cosine_reject
 
 
 def has_third_repeated_suffix(
@@ -1836,10 +1758,6 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--perturb-history-decay must be between 0 and 1.")
     if args.forced_recirculation_budget < 0:
         raise ValueError("--forced-recirculation-budget must be nonnegative.")
-    if args.startup_relax_tokens < 0:
-        raise ValueError("--startup-relax-tokens must be nonnegative.")
-    if args.pre_margin_relax_factor < 1.0:
-        raise ValueError("--pre-margin-relax-factor must be at least 1.")
     noise_min, noise_max = args.noise_level_range
     if not 0.0 <= noise_min <= noise_max <= 0.5:
         raise ValueError(
@@ -1851,29 +1769,13 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError(
                 "--perturb-noise-level-range requires 0 <= MIN <= MAX <= 0.5."
             )
-    startup_noise_min, startup_noise_max = args.startup_noise_level_range
-    if not 0.0 <= startup_noise_min <= startup_noise_max <= 1.0:
-        raise ValueError(
-            "--startup-noise-level-range requires 0 <= MIN <= MAX <= 1."
-        )
-    if startup_noise_max > 0 and args.startup_relax_tokens == 0:
-        raise ValueError(
-            "--startup-noise-level-range requires --startup-relax-tokens above 0."
-        )
-    if args.startup_cosine_reject is not None:
-        if not 0.0 <= args.startup_cosine_reject <= 1.0:
-            raise ValueError("--startup-cosine-reject must be between 0 and 1.")
-        if args.startup_relax_tokens == 0:
-            raise ValueError(
-                "--startup-cosine-reject requires --startup-relax-tokens above 0."
-            )
     if not 0.0 <= args.noise_decay_per_pass <= 1.0:
         raise ValueError("--noise-decay-per-pass must be between 0 and 1.")
     if args.perturb_pre_margin_thres < 0:
         raise ValueError("--perturb-pre-margin-thres must be nonnegative.")
-    if max(noise_max, startup_noise_max) > 0 and args.mode != "source":
+    if noise_max > 0 and args.mode != "source":
         raise ValueError("noise ranges require --mode source.")
-    if max(noise_max, startup_noise_max) > 0 and (
+    if noise_max > 0 and (
         args.post_margin_thres is None
         or args.post_margin_thres[0] == args.post_margin_thres[1]
     ):
@@ -2667,26 +2569,10 @@ def main() -> None:
                             generated_ids,
                             run_args.perturb_recent_m_tokens,
                         )
-                    pre_margin_threshold = generated_pre_margin_threshold(
-                        run_args.pre_margin_thres,
-                        run_args.startup_relax_tokens,
-                        run_args.pre_margin_relax_factor,
-                        generated_token_count,
-                    )
                     recovery_settings = repetition_recovery_settings(
-                        generated_noise_level_range(
-                            run_config.noise_level_range,
-                            tuple(run_args.startup_noise_level_range),
-                            run_args.startup_relax_tokens,
-                            generated_token_count,
-                        ),
-                        generated_cosine_reject(
-                            run_args.cosine_reject,
-                            run_args.startup_cosine_reject,
-                            run_args.startup_relax_tokens,
-                            generated_token_count,
-                        ),
-                        pre_margin_threshold,
+                        run_config.noise_level_range,
+                        run_args.cosine_reject,
+                        run_args.pre_margin_thres,
                         tuple(run_args.post_margin_thres)
                         if run_args.post_margin_thres is not None
                         else None,
@@ -3037,18 +2923,8 @@ def main() -> None:
                     run_args.perturb_recent_m_tokens,
                 )
             recovery_settings = repetition_recovery_settings(
-                generated_noise_level_range(
-                    run_config.noise_level_range,
-                    tuple(run_args.startup_noise_level_range),
-                    run_args.startup_relax_tokens,
-                    token_index + 1,
-                ),
-                generated_cosine_reject(
-                    run_args.cosine_reject,
-                    run_args.startup_cosine_reject,
-                    run_args.startup_relax_tokens,
-                    token_index + 1,
-                ),
+                run_config.noise_level_range,
+                run_args.cosine_reject,
                 run_args.pre_margin_thres,
                 tuple(run_args.post_margin_thres)
                 if run_args.post_margin_thres is not None

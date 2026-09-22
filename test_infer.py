@@ -41,7 +41,6 @@ from infer import (
     summarize_recirculation_stats,
     update_forced_recirculation_budget,
     set_random_seed,
-    top_pca_perturbation_direction,
     validate_run_arguments,
 )
 
@@ -173,13 +172,6 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertTrue(periodic_perturbation_active(3, 2, 4))
         self.assertFalse(periodic_perturbation_active(3, 2, 5))
         self.assertTrue(periodic_perturbation_active(3, 2, 6))
-
-    def test_periodic_perturbation_direction_uses_negative_top_pca_component(self) -> None:
-        embeddings = torch.tensor([[[2.0, 0.0], [-2.0, 0.0], [1.0, 0.0]]])
-
-        direction = top_pca_perturbation_direction(embeddings)
-
-        torch.testing.assert_close(direction, torch.tensor([[-1.0, 0.0]]))
 
     def test_parses_a_game24_puzzle(self) -> None:
         args = parse_args(["--game24-puzzle", "2", "3", "4", "6"])

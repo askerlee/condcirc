@@ -873,9 +873,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=32,
         metavar="M",
         help=(
-            "Use the top PCA component of the most recent M token embeddings "
-            "as the negative direction injected during periodic perturbation "
-            "(default: 32)."
+            "Average the most recent M token embeddings to form the negative "
+            "direction injected during periodic perturbation (default: 32)."
         ),
     )
     parser.add_argument(
@@ -1429,27 +1428,6 @@ def periodic_perturbation_active(
     position_in_interval = generated_token_count % perturb_every_n_tokens
     return generated_token_count >= perturb_every_n_tokens and (
         position_in_interval == 0 or position_in_interval < perturb_for_k_tokens
-    )
-
-
-def top_pca_perturbation_direction(recent_embeddings: Tensor) -> Tensor:
-    """Return the negative, mean-oriented top PCA component for each batch item."""
-    mean_embedding = recent_embeddings.float().mean(dim=1)
-    centered_embeddings = recent_embeddings.float() - mean_embedding.unsqueeze(1)
-    _, singular_values, right_singular_vectors = torch.linalg.svd(
-        centered_embeddings, full_matrices=False
-    )
-    top_component = right_singular_vectors[:, 0, :]
-    sign = torch.where(
-        (top_component * mean_embedding).sum(dim=-1, keepdim=True) < 0,
-        -1.0,
-        1.0,
-    )
-    negative_top_component = -(sign * top_component)
-    return torch.where(
-        singular_values[:, :1] > 1e-8,
-        negative_top_component,
-        -mean_embedding,
     )
 
 
@@ -2727,11 +2705,9 @@ def main() -> None:
                             :, -run_args.perturb_recent_m_tokens :
                         ]
                         with torch.inference_mode():
-                            periodic_perturbation_direction = (
-                                top_pca_perturbation_direction(
-                                    model.get_input_embeddings()(recent_token_ids)
-                                )
-                            )
+                            periodic_perturbation_direction = -model.get_input_embeddings()(
+                                recent_token_ids
+                            ).mean(dim=1)
                     pre_margin_threshold = generated_pre_margin_threshold(
                         run_args.pre_margin_thres,
                         run_args.startup_relax_tokens,
@@ -3085,9 +3061,9 @@ def main() -> None:
                     :, -run_args.perturb_recent_m_tokens :
                 ]
                 with torch.inference_mode():
-                    periodic_perturbation_direction = top_pca_perturbation_direction(
-                        model.get_input_embeddings()(recent_token_ids)
-                    )
+                    periodic_perturbation_direction = -model.get_input_embeddings()(
+                        recent_token_ids
+                    ).mean(dim=1)
             recovery_settings = repetition_recovery_settings(
                 generated_noise_level_range(
                     run_config.noise_level_range,

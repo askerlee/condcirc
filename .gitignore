@@ -1,5 +1,5 @@
 **/__pycache__/*
 results*.txt
 ratings.md
-*.json
+/*.json
 *.log

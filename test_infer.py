@@ -11,8 +11,6 @@ import torch
 from torch import nn
 
 from infer import (
-    FORCED_RECIRCULATION_SYSTEM_PROMPT,
-    FORCED_RECIRCULATION_TOOL,
     aggregate_recirculation_stats,
     apply_repetition_penalty,
     configure_model_generation,
@@ -22,12 +20,10 @@ from infer import (
     format_index_ranges,
     format_run_arguments,
     format_run_stats,
-    forced_recirculation_messages,
     has_third_repeated_suffix,
     has_third_repeated_text_suffix,
     output_recirculation_pairs,
     parse_args,
-    parse_generated_response,
     REPETITION_RECOVERY_TOKEN_COUNT,
     periodic_perturbation_active,
     periodic_perturbation_direction_scale,
@@ -41,13 +37,42 @@ from infer import (
     resolve_game24_indices,
     StreamingSimilarityWriter,
     summarize_recirculation_stats,
-    update_forced_recirculation_budget,
     set_random_seed,
+    teacher_forced_token_accuracy,
     validate_run_arguments,
 )
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_teacher_forced_accuracy_scores_before_feeding_each_target_token(self) -> None:
+        seen_tokens = []
+        top_two_reports = []
+        predicted_tokens = iter((3, 9, 5))
+
+        def step(tokens: torch.Tensor) -> torch.Tensor:
+            seen_tokens.append(tokens.tolist())
+            predicted_token = next(predicted_tokens)
+            logits = torch.full((1, 1, 10), -10.0)
+            logits[0, 0, 1] = 0.0
+            logits[0, 0, predicted_token] = 2.0
+            return logits
+
+        accuracy = teacher_forced_token_accuracy(
+            torch.tensor([[11, 12]]), torch.tensor([[3, 4, 5]]), step,
+            on_top_two=lambda index, tokens: top_two_reports.append((index, tokens)),
+        )
+
+        self.assertAlmostEqual(accuracy, 2 / 3)
+        self.assertEqual(seen_tokens, [[[11, 12]], [[3]], [[4]]])
+        self.assertEqual([index for index, _ in top_two_reports], [0, 1, 2])
+        for (_, predictions), expected_top in zip(top_two_reports, (3, 9, 5)):
+            self.assertEqual([token_id for token_id, _ in predictions], [expected_top, 1])
+            self.assertAlmostEqual(
+                predictions[0][1],
+                float(torch.softmax(torch.tensor([2.0, 0.0] + [-10.0] * 8), dim=0)[0]),
+                delta=1e-6,
+            )
+
     def test_adaptive_recirculation_requires_condition_or_forced_recovery(self) -> None:
         self.assertEqual(effective_adaptive_recirculation(2, False), 0)
         self.assertEqual(effective_adaptive_recirculation(2, True), 2)
@@ -323,90 +348,9 @@ class RecirculationStatsTest(unittest.TestCase):
             parse_args(["--no-repetition-recovery", "prompt"]).repetition_recovery
         )
 
-    def test_parses_forced_recirculation_budget(self) -> None:
-        args = parse_args(["--forced-recirculation-budget", "7", "prompt"])
-
-        self.assertEqual(args.forced_recirculation_budget, 7)
-
-    def test_forced_recirculation_call_activates_budget_once(self) -> None:
-        response = {
-            "tool_calls": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "forced_recirculation",
-                        "arguments": {},
-                    },
-                }
-            ]
-        }
-        call_count, tokens_remaining = update_forced_recirculation_budget(
-            response, 0, 0, 7
-        )
-        self.assertEqual((call_count, tokens_remaining), (1, 7))
-
-        call_count, tokens_remaining = update_forced_recirculation_budget(
-            response, call_count, 4, 7
-        )
-        self.assertEqual((call_count, tokens_remaining), (1, 4))
-
-        call_count, tokens_remaining = update_forced_recirculation_budget(
-            {}, call_count, 3, 7
-        )
-        self.assertEqual((call_count, tokens_remaining), (1, 3))
-
-    def test_rejects_negative_forced_recirculation_budget(self) -> None:
-        args = parse_args(["--forced-recirculation-budget", "-1", "prompt"])
-
-        with self.assertRaisesRegex(ValueError, "must be nonnegative"):
-            validate_run_arguments(args)
-
-    def test_forced_recirculation_uses_standard_tool_schema(self) -> None:
-        function = FORCED_RECIRCULATION_TOOL["function"]
-
-        self.assertEqual(FORCED_RECIRCULATION_TOOL["type"], "function")
-        self.assertEqual(function["name"], "forced_recirculation")
-        self.assertEqual(function["parameters"]["properties"], {})
-        self.assertIn("call the forced_recirculation tool", FORCED_RECIRCULATION_SYSTEM_PROMPT)
-        self.assertIn("twice without making progress", FORCED_RECIRCULATION_SYSTEM_PROMPT)
-
-    def test_forced_recirculation_instruction_survives_system_message_discard(self) -> None:
-        messages = forced_recirculation_messages("Solve the puzzle.")
-
-        self.assertEqual(messages[0]["role"], "system")
-        self.assertEqual(messages[1]["role"], "user")
-        self.assertIn(
-            FORCED_RECIRCULATION_SYSTEM_PROMPT,
-            messages[1]["content"],
-        )
-        self.assertIn("Solve the puzzle.", messages[1]["content"])
-
-    def test_parses_generated_response_with_tool_schema(self) -> None:
-        parsed_response = {
-            "tool_calls": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "forced_recirculation",
-                        "arguments": {},
-                    },
-                }
-            ]
-        }
-        parse_arguments = {}
-
-        def parse_response(*_args, **kwargs):
-            parse_arguments.update(kwargs)
-            return parsed_response
-
-        tokenizer = SimpleNamespace(parse_response=parse_response)
-
-        self.assertEqual(
-            parse_generated_response(tokenizer, torch.tensor([1, 2])),
-            parsed_response,
-        )
-        self.assertEqual(parse_arguments["prefix"], "")
-        self.assertEqual(parse_arguments["tools"], [FORCED_RECIRCULATION_TOOL])
+    def test_rejects_removed_forced_recirculation_option(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--forced-recirculation-budget", "7", "prompt"])
 
     def test_detects_a_third_repeated_generated_token_sequence(self) -> None:
         repeated = list(range(8)) * 3
@@ -887,7 +831,6 @@ class RecirculationStatsTest(unittest.TestCase):
             [1, 2, 2] + [0] * 297,
             [True] * 2 + [False] * 298,
             rejection_reasons,
-            forced_recirculation_tool_calls=2,
         )
 
         self.assertEqual(
@@ -907,7 +850,6 @@ class RecirculationStatsTest(unittest.TestCase):
                 "adaptive_recirculated_tokens": {"count": 3, "total": 300},
                 "adaptive_rejected": 2,
                 "average_adaptive_recirculations": 1.67,
-                "forced_recirculation_tool_calls": 2,
             },
         )
 
@@ -927,7 +869,6 @@ class RecirculationStatsTest(unittest.TestCase):
             "adaptive_recirculated_tokens": {"count": 3, "total": 300},
             "adaptive_rejected": 2,
             "average_adaptive_recirculations": 1.67,
-            "forced_recirculation_tool_calls": 2,
         }
         second = {
             "recirculated_tokens": {"count": 5, "total": 200},
@@ -944,7 +885,6 @@ class RecirculationStatsTest(unittest.TestCase):
             "adaptive_recirculated_tokens": {"count": 2, "total": 200},
             "adaptive_rejected": 1,
             "average_adaptive_recirculations": 2.5,
-            "forced_recirculation_tool_calls": 1,
         }
 
         lines = format_run_stats(aggregate_recirculation_stats([first, second]))
@@ -957,7 +897,6 @@ class RecirculationStatsTest(unittest.TestCase):
                 "post-margin-max=8, cosine=9, rank=2",
                 "adaptive_recirculated_tokens = 5/500, rejected = 3, "
                 "average_adaptive_recirculations = 2.00",
-                "forced_recirculation_tool_calls = 3",
             ),
         )
 

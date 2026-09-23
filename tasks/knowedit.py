@@ -1,9 +1,8 @@
-"""In-context knowledge-update evaluation over KnowEdit JSON records."""
+"""Target-blind answer evaluation over KnowEdit JSON records."""
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +13,7 @@ class KnowEditExample:
     target_new: str
     subject: str
     source: str
+    reference: str | None = None
 
 
 def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
@@ -40,7 +40,15 @@ def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
             )
         if not isinstance(subject, str):
             raise ValueError(f"Invalid KnowEdit subject in record {index} of {path}.")
-        examples.append(KnowEditExample(prompt, target, subject, source))
+        original = record.get("ground_truth")
+        if isinstance(original, list):
+            original = next(
+                (answer for answer in original if isinstance(answer, str) and answer.strip()),
+                None,
+            )
+        if original is not None and not isinstance(original, str):
+            raise ValueError(f"Invalid KnowEdit ground_truth in record {index} of {path}.")
+        examples.append(KnowEditExample(prompt, target, subject, source, original))
     return tuple(examples)
 
 
@@ -51,17 +59,7 @@ def format_prompt(example: KnowEditExample) -> str:
             f"{example.prompt.rstrip()}"
         )
     return (
-        "For this question, use the following updated fact even if it differs "
-        "from your prior knowledge. Answer with only the updated answer.\n\n"
-        f"Question: {example.prompt.strip()}\n"
-        f"Updated answer: {example.target_new.strip()}\n\n"
-        f"Question: {example.prompt.strip()}\nAnswer:"
+        "Answer the question or complete the statement with only the requested fact.\n\n"
+        f"{example.prompt.strip()}"
     )
 
-
-def is_correct(example: KnowEditExample, output: str) -> bool:
-    target = example.target_new.strip().casefold()
-    answer = output.strip().casefold()
-    if example.source == "wikibio":
-        return answer.startswith(target)
-    return re.match(rf"^{re.escape(target)}(?=$|[\s.,;:!?])", answer) is not None

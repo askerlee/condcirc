@@ -56,7 +56,6 @@ from tasks.game24 import load_countdown_puzzles  # noqa: E402
 from tasks.game24 import load_puzzles as load_game24_puzzles  # noqa: E402
 from tasks.game24 import score_countdown_output  # noqa: E402
 from tasks.knowedit import format_prompt as format_knowedit_prompt  # noqa: E402
-from tasks.knowedit import is_correct as is_knowedit_correct  # noqa: E402
 from tasks.knowedit import load_examples as load_knowedit_examples  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
@@ -112,7 +111,6 @@ def summarize_recirculation_stats(
     adaptive_recirculation_counts: Sequence[int],
     final_pass_same_top1_flags: Sequence[bool],
     rejection_reasons: Sequence[Sequence[str]],
-    forced_recirculation_tool_calls: int = 0,
 ) -> dict[str, Any]:
     total_tokens = len(recirculated_flags)
     adaptive_counts = [count for count in adaptive_recirculation_counts if count > 0]
@@ -138,7 +136,6 @@ def summarize_recirculation_stats(
         "average_adaptive_recirculations": round(
             average_adaptive_recirculations, 2
         ),
-        "forced_recirculation_tool_calls": forced_recirculation_tool_calls,
     }
 
 
@@ -157,8 +154,6 @@ def format_run_stats(stats: dict[str, Any]) -> tuple[str, ...]:
         f"rejected = {stats['adaptive_rejected']}, "
         "average_adaptive_recirculations = "
         f"{stats['average_adaptive_recirculations']:.2f}",
-        "forced_recirculation_tool_calls = "
-        f"{stats['forced_recirculation_tool_calls']}",
     )
 
 
@@ -166,6 +161,35 @@ def format_average_eval_rating(scores: Sequence[float]) -> str:
     if not scores:
         raise ValueError("Cannot average an empty collection of evaluation scores.")
     return f"average_eval_model_rating = {sum(scores) / len(scores):.2f}"
+
+
+def teacher_forced_token_accuracy(
+    prompt_ids: Tensor,
+    target_ids: Tensor,
+    step: Callable[[Tensor], Tensor],
+    on_top_two: Callable[[int, tuple[tuple[int, float], ...]], None] | None = None,
+) -> float:
+    if prompt_ids.shape[0] != 1 or target_ids.shape[0] != 1 or target_ids.shape[1] == 0:
+        raise ValueError("KnowEdit scoring requires one prompt and a nonempty target.")
+    logits = step(prompt_ids)
+    correct = 0
+    for token_index in range(target_ids.shape[1]):
+        target_token = target_ids[:, token_index:token_index + 1]
+        next_logits = logits[0, -1, :].float()
+        if on_top_two is not None:
+            top_two = torch.topk(next_logits, k=2)
+            probabilities = torch.softmax(next_logits, dim=-1)
+            on_top_two(
+                token_index,
+                tuple(
+                    (int(token_id), float(probabilities[token_id]))
+                    for token_id in top_two.indices.tolist()
+                ),
+            )
+        correct += int(next_logits.argmax().item() == target_token.item())
+        if token_index + 1 < target_ids.shape[1]:
+            logits = step(target_token)
+    return correct / target_ids.shape[1]
 
 
 def aggregate_recirculation_stats(
@@ -210,10 +234,6 @@ def aggregate_recirculation_stats(
         "average_adaptive_recirculations": round(
             adaptive_recirculation_total / adaptive_count if adaptive_count else 0.0,
             2,
-        ),
-        "forced_recirculation_tool_calls": sum(
-            stats.get("forced_recirculation_tool_calls", 0)
-            for stats in stats_records
         ),
     }
 
@@ -601,7 +621,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     task_group.add_argument(
         "--knowedit-file",
         type=Path,
-        help="Run in-context update examples from a KnowEdit fact or WikiBio JSON file.",
+        help="Run target-blind questions from a KnowEdit fact or WikiBio JSON file.",
     )
     parser.add_argument(
         "--do-sudoku",
@@ -891,16 +911,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "Override the noise range during periodic perturbation "
             "(default: 0.2 0.4)."
-        ),
-    )
-    parser.add_argument(
-        "--forced-recirculation-budget",
-        type=int,
-        default=20,
-        metavar="TOKENS",
-        help=(
-            "Force recirculation for this many tokens after the model calls "
-            "the forced_recirculation tool (default: 20)."
         ),
     )
     parser.add_argument(
@@ -1618,75 +1628,6 @@ def repeated_text_signature_counts(
     return signature_counts
 
 
-FORCED_RECIRCULATION_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "forced_recirculation",
-        "description": (
-            "Request a temporary forced-recirculation decoding phase for "
-            "brainstorming or getting new ideas. Call this function when you "
-            "want a fresh approach after your reasoning repeats the same steps "
-            "or a failed approach without making progress."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-}
-FORCED_RECIRCULATION_SYSTEM_PROMPT = (
-    "Monitor whether your reasoning is making progress. If you repeat the same "
-    "reasoning, calculation, or failed approach twice without making progress, "
-    "call the forced_recirculation tool immediately. Continue answering normally "
-    "otherwise. Do not write the tool call as plain text."
-)
-
-
-def forced_recirculation_messages(prompt: str) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": FORCED_RECIRCULATION_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"{FORCED_RECIRCULATION_SYSTEM_PROMPT}\n\n{prompt}",
-        },
-    ]
-
-
-def parse_generated_response(tokenizer: Any, generated_token_ids: Tensor) -> Mapping[str, Any]:
-    try:
-        response = tokenizer.parse_response(
-            generated_token_ids,
-            prefix="",
-            tools=[FORCED_RECIRCULATION_TOOL],
-        )
-    except (KeyError, TypeError, ValueError):
-        return {}
-    return response if isinstance(response, Mapping) else {}
-
-
-def forced_recirculation_call_count(response: Mapping[str, Any]) -> int:
-    return sum(
-        isinstance(call, Mapping)
-        and isinstance(call.get("function"), Mapping)
-        and call["function"].get("name") == "forced_recirculation"
-        and call["function"].get("arguments") in ({}, None)
-        for call in response.get("tool_calls", ())
-    )
-
-
-def update_forced_recirculation_budget(
-    parsed_response: Mapping[str, Any],
-    detected_call_count: int,
-    tokens_remaining: int,
-    budget: int,
-) -> tuple[int, int]:
-    call_count = forced_recirculation_call_count(parsed_response)
-    if call_count > detected_call_count:
-        tokens_remaining = max(tokens_remaining, budget)
-    return max(call_count, detected_call_count), tokens_remaining
-
-
 @dataclasses.dataclass(frozen=True)
 class RepetitionRecoverySettings:
     noise_level_range: tuple[float, float]
@@ -1805,8 +1746,6 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--perturb-recent-m-tokens must be at least 1.")
     if not 0.0 <= args.perturb_history_decay <= 1.0:
         raise ValueError("--perturb-history-decay must be between 0 and 1.")
-    if args.forced_recirculation_budget < 0:
-        raise ValueError("--forced-recirculation-budget must be nonnegative.")
     noise_min, noise_max = args.noise_level_range
     if not 0.0 <= noise_min <= noise_max <= 0.5:
         raise ValueError(
@@ -2398,7 +2337,6 @@ def main() -> None:
                 generated_adaptive_recirculation_counts,
                 generated_final_pass_same_top1_flags,
                 generated_rejection_reasons,
-                forced_recirculation_call_count,
             )
 
         def allow_generated_recirculation(generated_token_count: int) -> bool:
@@ -2459,10 +2397,6 @@ def main() -> None:
                     f"{sum(adaptive_rejected_flags or [])}, "
                     f"average_adaptive_recirculations = {average_count:.2f}"
                 )
-            print(
-                "forced_recirculation_tool_calls = "
-                f"{forced_recirculation_call_count}"
-            )
             summary = similarity_stats.summary() if similarity_stats else None
             if summary is not None:
                 formatted = ", ".join(
@@ -2538,8 +2472,6 @@ def main() -> None:
             repetition_recovery_tokens_remaining = 0
             repetition_recovery_penalty_tokens_remaining = 0
             consecutive_repetition_count = 0
-            forced_recirculation_call_count = 0
-            forced_recirculation_tokens_remaining = 0
             for _ in range(run_args.max_new_tokens):
                 effective_repetition_penalty = repetition_recovery_penalty(
                     repetition_recovery_penalty_tokens_remaining > 0
@@ -2566,18 +2498,6 @@ def main() -> None:
                 generated_text = tokenizer.decode(
                     generated_token_ids, skip_special_tokens=True
                 )
-                previous_call_count = forced_recirculation_call_count
-                (
-                    forced_recirculation_call_count,
-                    forced_recirculation_tokens_remaining,
-                ) = update_forced_recirculation_budget(
-                    parse_generated_response(tokenizer, generated_token_ids),
-                    forced_recirculation_call_count,
-                    forced_recirculation_tokens_remaining,
-                    run_args.forced_recirculation_budget,
-                )
-                if forced_recirculation_call_count > previous_call_count:
-                    print("\nforced recirculation requested", flush=True)
                 repetition_counts = repeated_text_signature_counts(
                     repetition_text_window(generated_text)
                 )
@@ -2600,9 +2520,6 @@ def main() -> None:
                 if next_token.item() in eos_token_ids:
                     break
                 repetition_recovery_active = repetition_recovery_tokens_remaining > 0
-                forced_recirculation_active = (
-                    forced_recirculation_tokens_remaining > 0
-                )
                 if use_recirculation:
                     generated_token_count = generated_ids.shape[1] - input_ids.shape[1]
                     periodic_perturbation = periodic_perturbation_active(
@@ -2701,17 +2618,14 @@ def main() -> None:
                             run_args.ada_recirculate,
                             run_args.cond_recirculate,
                             repetition_recovery_active
-                            or forced_recirculation_active
                             or periodic_perturbation,
                         ),
                         recirculation_allowed=(
                             recovery_settings.recirculation_allowed
-                            or forced_recirculation_active
                             or periodic_perturbation
                         ),
                         force_recirculation=(
                             recovery_settings.force_recirculation
-                            or forced_recirculation_active
                             or periodic_perturbation
                         ),
                         cosine_reject=recovery_settings.cosine_reject,
@@ -2742,9 +2656,6 @@ def main() -> None:
                     )
                 repetition_recovery_tokens_remaining = max(
                     0, repetition_recovery_tokens_remaining - 1
-                )
-                forced_recirculation_tokens_remaining = max(
-                    0, forced_recirculation_tokens_remaining - 1
                 )
                 next_logits = token_logits[:, -1, :]
 
@@ -2827,8 +2738,6 @@ def main() -> None:
         repetition_recovery_tokens_remaining = 0
         repetition_recovery_penalty_tokens_remaining = 0
         consecutive_repetition_count = 0
-        forced_recirculation_call_count = 0
-        forced_recirculation_tokens_remaining = 0
 
         for token_index in range(run_args.max_new_tokens):
             comparison = distribution_similarity(teacher_next_logits, student_next_logits)
@@ -2927,18 +2836,6 @@ def main() -> None:
             generated_text = tokenizer.decode(
                 generated_token_tensor, skip_special_tokens=True
             )
-            previous_call_count = forced_recirculation_call_count
-            (
-                forced_recirculation_call_count,
-                forced_recirculation_tokens_remaining,
-            ) = update_forced_recirculation_budget(
-                parse_generated_response(tokenizer, generated_token_tensor),
-                forced_recirculation_call_count,
-                forced_recirculation_tokens_remaining,
-                run_args.forced_recirculation_budget,
-            )
-            if forced_recirculation_call_count > previous_call_count:
-                print("\nforced recirculation requested", flush=True)
             repetition_counts = repeated_text_signature_counts(
                 repetition_text_window(generated_text)
             )
@@ -2957,7 +2854,6 @@ def main() -> None:
                     REPETITION_RECOVERY_TOKEN_COUNT
                 )
             repetition_recovery_active = repetition_recovery_tokens_remaining > 0
-            forced_recirculation_active = forced_recirculation_tokens_remaining > 0
             periodic_perturbation = periodic_perturbation_active(
                 run_args.perturb_every_n_tokens,
                 run_args.perturb_for_k_tokens,
@@ -3032,9 +2928,6 @@ def main() -> None:
             comparison["repetition_recovery_forces_recirculation"] = (
                 repetition_recovery_active
             )
-            comparison["forced_recirculation_tool_active"] = (
-                forced_recirculation_active
-            )
             comparison["periodic_perturbation_active"] = periodic_perturbation
             similarities.append(comparison)
             if on_debug_comparison is not None:
@@ -3088,17 +2981,14 @@ def main() -> None:
                     run_args.ada_recirculate,
                     run_args.cond_recirculate,
                     repetition_recovery_active
-                    or forced_recirculation_active
                     or periodic_perturbation,
                 ),
                 recirculation_allowed=(
                     recovery_settings.recirculation_allowed
-                    or forced_recirculation_active
                     or periodic_perturbation
                 ),
                 force_recirculation=(
                     recovery_settings.force_recirculation
-                    or forced_recirculation_active
                     or periodic_perturbation
                 ),
                 cosine_reject=recovery_settings.cosine_reject,
@@ -3131,9 +3021,6 @@ def main() -> None:
             repetition_recovery_tokens_remaining = max(
                 0, repetition_recovery_tokens_remaining - 1
             )
-            forced_recirculation_tokens_remaining = max(
-                0, forced_recirculation_tokens_remaining - 1
-            )
             current_token = next_token
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
@@ -3163,12 +3050,7 @@ def main() -> None:
             for gpu in range(torch.cuda.device_count()):
                 torch.cuda.synchronize(gpu)
 
-    def timed_generate(
-        use_recirculation: bool,
-        run_args: argparse.Namespace,
-        on_generated_token: Callable[[Tensor], None] | None = None,
-        on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
-    ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
+    def run_recirculation_config(run_args: argparse.Namespace) -> RecirculationConfig:
         pairs = resolve_recirculation_pairs(
             run_args, len(blocks), global_attention_layers
         )
@@ -3191,6 +3073,85 @@ def main() -> None:
             )
         if run_config.mode == "layerwise" and len(run_config.pairs) != 1:
             raise ValueError("--mode layerwise requires exactly one --pair.")
+        return run_config
+
+    def score_knowedit_target(
+        prompt_ids: Tensor,
+        target: str,
+        run_args: argparse.Namespace,
+        use_recirculation: bool,
+        score_name: str,
+    ) -> float:
+        target_ids = tokenizer.encode(
+            " " + target.strip(), add_special_tokens=False, return_tensors="pt"
+        ).to(input_device)
+        cache = DynamicCache(config=model.config)
+        if use_recirculation:
+            cache.activate_past_recording()
+        run_config = run_recirculation_config(run_args)
+
+        def step(tokens: Tensor) -> Tensor:
+            nonlocal cache
+            logits, cache = recirculate(
+                tokens,
+                blocks=blocks,
+                cache=cache,
+                step=student_step,
+                rewind_one=rewind_dynamic_cache,
+                config=run_config,
+                passes=run_args.passes if use_recirculation else 1,
+                rewind_layer=rewind_dynamic_cache_layer,
+                condition_thresholds=(
+                    run_args.act_sim_thres if run_args.cond_recirculate else None
+                ),
+                pre_margin_threshold=run_args.pre_margin_thres,
+                post_margin_threshold=run_args.post_margin_thres,
+                post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
+                adaptive_recirculation=effective_adaptive_recirculation(
+                    run_args.ada_recirculate, run_args.cond_recirculate
+                ),
+                recirculation_allowed=(
+                    cache.get_seq_length() == 0
+                    or run_args.no_recirculate_after_tokens is None
+                    or cache.get_seq_length() - prompt_ids.shape[1] + 1
+                    < run_args.no_recirculate_after_tokens
+                ),
+                cosine_reject=run_args.cosine_reject,
+                cosine_top_k=run_args.cosine_top_k,
+                gating_pair_index=run_args.gating_pair_index,
+                decode_injected_source_latent=(
+                    decoded_latent_stats
+                    if run_config.noise_level_range[1] > 0
+                    else None
+                ),
+                capture_cached_token=capture_dynamic_cache_token,
+                restore_cached_token=restore_dynamic_cache_token,
+                capture_rewind_state=capture_dynamic_cache_rewind_state,
+                restore_rewind_state=restore_dynamic_cache_rewind_state,
+                finalize_token_cache=finalize_dynamic_cache_token,
+            )
+            return logits
+
+        def report_top_two(
+            token_index: int, top_two: tuple[tuple[int, float], ...]
+        ) -> None:
+            predictions = ", ".join(
+                f"{tokenizer.decode([token_id])!r} ({probability:.4f})"
+                for token_id, probability in top_two
+            )
+            emit(f"{score_name}_token_{token_index + 1}_top2 = {predictions}")
+
+        return teacher_forced_token_accuracy(
+            prompt_ids, target_ids, step, on_top_two=report_top_two
+        )
+
+    def timed_generate(
+        use_recirculation: bool,
+        run_args: argparse.Namespace,
+        on_generated_token: Callable[[Tensor], None] | None = None,
+        on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
+    ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
+        run_config = run_recirculation_config(run_args)
         synchronize_devices()
         start = time.perf_counter()
         generated_ids, similarities, stats = generate(
@@ -3223,7 +3184,6 @@ def main() -> None:
             "perturb_for_k_tokens",
             "perturb_recent_m_tokens",
             "perturb_history_decay",
-            "forced_recirculation_budget",
             "repetition_penalty",
             "seed",
         )
@@ -3449,12 +3409,13 @@ def main() -> None:
                 query_record["knowedit_source"] = knowedit_example.source
                 query_record["knowedit_subject"] = knowedit_example.subject
                 query_record["knowedit_target"] = knowedit_example.target_new
+                if knowedit_example.reference is not None:
+                    query_record["knowedit_ground_truth"] = knowedit_example.reference
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
             encoded_prompt = tokenizer.apply_chat_template(
-                forced_recirculation_messages(prompt),
-                tools=[FORCED_RECIRCULATION_TOOL],
+                [{"role": "user", "content": prompt}],
                 tokenize=True,
                 add_generation_prompt=True,
                 enable_thinking=False,
@@ -3515,10 +3476,19 @@ def main() -> None:
                         bbeh_example, output
                     )
                 if knowedit_example is not None:
-                    run_record["knowedit_in_context_correct"] = is_knowedit_correct(
-                        knowedit_example, output
-                    )
-                if args.do_eval:
+                    emit(f"knowedit_ground_truth = {knowedit_example.reference if knowedit_example.reference is not None else 'n/a'}")
+                    emit(f"knowedit_target_new = {knowedit_example.target_new}")
+                    for score_name, reference in (
+                        ("knowedit_ground_truth_acc", knowedit_example.reference),
+                        ("knowedit_target_new_acc", knowedit_example.target_new),
+                    ):
+                        if reference is None:
+                            continue
+                        run_record[score_name] = score_knowedit_target(
+                            input_ids, reference, run_args, use_recirculation, score_name
+                        )
+                        emit(f"{score_name} = {run_record[score_name]:.4f}")
+                if args.do_eval and knowedit_example is None:
                     evaluation = evaluate_single_answer(
                         prompt,
                         label,
@@ -3597,16 +3567,15 @@ def main() -> None:
                     f"{sum(run['bbeh_correct'] for run in bbeh_runs)}/"
                     f"{len(bbeh_runs)}"
                 )
-            knowedit_runs = [
-                run for run in completed_runs if "knowedit_in_context_correct" in run
-            ]
-            if knowedit_runs:
-                emit(
-                    "knowedit_in_context_correct = "
-                    f"{sum(run['knowedit_in_context_correct'] for run in knowedit_runs)}/"
-                    f"{len(knowedit_runs)}"
-                )
-            if args.do_eval:
+            for score_name in ("knowedit_ground_truth_acc", "knowedit_target_new_acc"):
+                scored_runs = [run for run in completed_runs if score_name in run]
+                if scored_runs:
+                    emit(
+                        f"{score_name} = "
+                        f"{sum(run[score_name] for run in scored_runs) / len(scored_runs):.4f} "
+                        f"({len(scored_runs)}/{len(completed_runs)} with reference)"
+                    )
+            if args.do_eval and knowedit_examples is None:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))
     finally:
         if output_file is not None:

@@ -1,6 +1,8 @@
 import unittest
 import json
+import io
 import tempfile
+from contextlib import redirect_stderr
 from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
@@ -275,6 +277,23 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.bbeh_file, Path("bbeh/mini/data.json"))
         self.assertEqual(args.bbeh_index, (1, 2, 3))
         self.assertEqual(last.bbeh_index, (-1,))
+
+    def test_parses_knowedit_file_and_indices(self) -> None:
+        default = parse_args([])
+        args = parse_args(
+            ["--knowedit-file", "benchmark/ZsRE/ZsRE-test-all.json", "--knowedit-index", "1-3"]
+        )
+        last = parse_args(
+            ["--knowedit-file", "benchmark/ZsRE/ZsRE-test-all.json", "--knowedit-index", "-1"]
+        )
+
+        self.assertIsNone(default.knowedit_file)
+        self.assertEqual(default.knowedit_index, ())
+        self.assertEqual(args.knowedit_file, Path("benchmark/ZsRE/ZsRE-test-all.json"))
+        self.assertEqual(args.knowedit_index, (1, 2, 3))
+        self.assertEqual(last.knowedit_index, (-1,))
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--knowedit-file", "example.json", "--bbeh-file", "other.json"])
 
     def test_parses_game24_indices_beyond_builtin_queries(self) -> None:
         args = parse_args(

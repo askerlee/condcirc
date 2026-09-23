@@ -55,6 +55,9 @@ from tasks.game24 import is_solution as is_game24_solution  # noqa: E402
 from tasks.game24 import load_countdown_puzzles  # noqa: E402
 from tasks.game24 import load_puzzles as load_game24_puzzles  # noqa: E402
 from tasks.game24 import score_countdown_output  # noqa: E402
+from tasks.knowedit import format_prompt as format_knowedit_prompt  # noqa: E402
+from tasks.knowedit import is_correct as is_knowedit_correct  # noqa: E402
+from tasks.knowedit import load_examples as load_knowedit_examples  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
@@ -465,6 +468,10 @@ def parse_bbeh_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "BBEH")
 
 
+def parse_knowedit_indices(value: str) -> tuple[int, ...]:
+    return parse_benchmark_indices(value, "KnowEdit")
+
+
 def resolve_benchmark_indices(
     indices: Sequence[int], puzzle_count: int, task_name: str
 ) -> tuple[int, ...]:
@@ -518,7 +525,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         argument = argv[argument_index]
         if (
             argument
-            in ("--game24-index", "--countdown-index", "--sudoku-index", "--bbeh-index")
+            in ("--game24-index", "--countdown-index", "--sudoku-index", "--bbeh-index", "--knowedit-index")
             and argument_index + 1 < len(argv)
             and argv[argument_index + 1].startswith("-")
         ):
@@ -591,6 +598,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "or mini/data.json file."
         ),
     )
+    task_group.add_argument(
+        "--knowedit-file",
+        type=Path,
+        help="Run in-context update examples from a KnowEdit fact or WikiBio JSON file.",
+    )
     parser.add_argument(
         "--do-sudoku",
         action="store_true",
@@ -635,6 +647,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "1-based BBEH JSON indices; negative values count from the end "
             "(default: all)."
         ),
+    )
+    parser.add_argument(
+        "--knowedit-index",
+        type=parse_knowedit_indices,
+        default=(),
+        metavar="INDEX[-INDEX][,...]",
+        help="1-based KnowEdit JSON indices; negative values count from the end (default: all).",
     )
     parser.add_argument(
         "--eval-provider",
@@ -1060,6 +1079,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "do_sudoku",
         "bbeh_file",
         "bbeh_index",
+        "knowedit_file",
+        "knowedit_index",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1862,6 +1883,7 @@ def main() -> None:
         or args.countdown_file is not None
         or args.do_sudoku
         or args.bbeh_file is not None
+        or args.knowedit_file is not None
     ):
         raise ValueError("A free-form prompt cannot be combined with a benchmark task.")
     if args.do_sudoku and (
@@ -1870,6 +1892,7 @@ def main() -> None:
         or args.countdown_puzzle is not None
         or args.countdown_file is not None
         or args.bbeh_file is not None
+        or args.knowedit_file is not None
     ):
         raise ValueError("--do-sudoku cannot be combined with another benchmark task.")
     if args.game24_puzzle is not None and args.game24_index:
@@ -1880,6 +1903,8 @@ def main() -> None:
         raise ValueError("--sudoku-index requires --do-sudoku.")
     if args.bbeh_index and args.bbeh_file is None:
         raise ValueError("--bbeh-index requires --bbeh-file.")
+    if args.knowedit_index and args.knowedit_file is None:
+        raise ValueError("--knowedit-index requires --knowedit-file.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -2064,11 +2089,16 @@ def main() -> None:
             if args.bbeh_file is not None
             else ""
         )
+        knowedit_signature = (
+            f"-knowedit-{args.knowedit_file.stem}-{format_index_ranges(args.knowedit_index) or 'all'}"
+            if args.knowedit_file is not None
+            else ""
+        )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}"
             f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
-            f"{game24_signature}{countdown_signature}{sudoku_signature}{bbeh_signature}"
+            f"{game24_signature}{countdown_signature}{sudoku_signature}{bbeh_signature}{knowedit_signature}"
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
@@ -3283,14 +3313,29 @@ def main() -> None:
         if bbeh_examples is not None
         else ()
     )
+    knowedit_examples = (
+        load_knowedit_examples(args.knowedit_file)
+        if args.knowedit_file is not None
+        else None
+    )
+    knowedit_indices = (
+        resolve_benchmark_indices(
+            args.knowedit_index or tuple(range(1, len(knowedit_examples) + 1)),
+            len(knowedit_examples),
+            "KnowEdit",
+        )
+        if knowedit_examples is not None
+        else ()
+    )
     prompts = (
-        ((1, args.prompt, None, None, None, None),)
+        ((1, args.prompt, None, None, None, None, None),)
         if args.prompt is not None
         else tuple(
             (
                 index,
                 format_game24_prompt(game24_puzzles[index - 1]),
                 game24_puzzles[index - 1],
+                None,
                 None,
                 None,
                 None,
@@ -3306,6 +3351,7 @@ def main() -> None:
                 countdown_puzzles[index - 1],
                 None,
                 None,
+                None,
             )
             for index in countdown_indices
         )
@@ -3317,6 +3363,7 @@ def main() -> None:
                 None,
                 None,
                 sudoku_puzzles[index - 1],
+                None,
                 None,
             )
             for index in sudoku_indices
@@ -3330,12 +3377,26 @@ def main() -> None:
                 None,
                 None,
                 bbeh_examples[index - 1],
+                None,
             )
             for index in bbeh_indices
         )
         if bbeh_examples is not None
         else tuple(
-            (index, EXAMPLE_QUERIES[index - 1], None, None, None, None)
+            (
+                index,
+                format_knowedit_prompt(knowedit_examples[index - 1]),
+                None,
+                None,
+                None,
+                None,
+                knowedit_examples[index - 1],
+            )
+            for index in knowedit_indices
+        )
+        if knowedit_examples is not None
+        else tuple(
+            (index, EXAMPLE_QUERIES[index - 1], None, None, None, None, None)
             for index in args.query_indices
         )
     )
@@ -3366,6 +3427,7 @@ def main() -> None:
             countdown_puzzle,
             sudoku_puzzle,
             bbeh_example,
+            knowedit_example,
         ) in prompts:
             query_record: dict[str, Any] = {
                 "index": prompt_index,
@@ -3383,6 +3445,10 @@ def main() -> None:
             if bbeh_example is not None:
                 query_record["bbeh_task"] = bbeh_example.task
                 query_record["bbeh_target"] = bbeh_example.target
+            if knowedit_example is not None:
+                query_record["knowedit_source"] = knowedit_example.source
+                query_record["knowedit_subject"] = knowedit_example.subject
+                query_record["knowedit_target"] = knowedit_example.target_new
             output_records.append(query_record)
             emit(f"\n=== Query {prompt_index} ===")
             emit(prompt)
@@ -3447,6 +3513,10 @@ def main() -> None:
                 if bbeh_example is not None:
                     run_record["bbeh_correct"] = is_bbeh_correct(
                         bbeh_example, output
+                    )
+                if knowedit_example is not None:
+                    run_record["knowedit_in_context_correct"] = is_knowedit_correct(
+                        knowedit_example, output
                     )
                 if args.do_eval:
                     evaluation = evaluate_single_answer(
@@ -3526,6 +3596,15 @@ def main() -> None:
                     "bbeh_correct = "
                     f"{sum(run['bbeh_correct'] for run in bbeh_runs)}/"
                     f"{len(bbeh_runs)}"
+                )
+            knowedit_runs = [
+                run for run in completed_runs if "knowedit_in_context_correct" in run
+            ]
+            if knowedit_runs:
+                emit(
+                    "knowedit_in_context_correct = "
+                    f"{sum(run['knowedit_in_context_correct'] for run in knowedit_runs)}/"
+                    f"{len(knowedit_runs)}"
                 )
             if args.do_eval:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))

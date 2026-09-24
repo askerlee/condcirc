@@ -55,6 +55,7 @@ class RecirculationConfig:
     noise_level_range: tuple[float, float] = (0.0, 0.0)
     perturbation_direction: Tensor | None = None
     perturbation_direction_scale: float = 1.0
+    perturbation_target_token_id: int | None = None
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
@@ -310,14 +311,17 @@ class _Hooks:
             normalized_source = source * destination_norm / source_norm.clamp_min(
                 self.cfg.eps
             )
-            select_perturbation_sign = (
+            select_perturbation_candidate = (
                 perturbation_probe is not None
-                and self.cfg.perturbation_direction is not None
+                and (
+                    self.cfg.perturbation_direction is not None
+                    or self.cfg.perturbation_target_token_id is not None
+                )
             )
             direction_weight = self.noise_level * (
                 self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
             )
-            if self.noise_level > 0 and not select_perturbation_sign:
+            if self.noise_level > 0 and not select_perturbation_candidate:
                 gaussian_noise = torch.randn_like(source)
                 gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
                     gaussian_noise, dim=-1, keepdim=True
@@ -344,13 +348,15 @@ class _Hooks:
                     self.injected_source_latents.append((source_index, debug_latent))
                 # Inject noise into the normalized source latent
                 normalized_source = normalized_source + normalized_perturbation
-            if select_perturbation_sign:
+            if select_perturbation_candidate:
                 assert perturbation_probe is not None
-                assert self.cfg.perturbation_direction is not None
-                downstream_direction = self.cfg.perturbation_direction.to(
-                    device=source.device, dtype=torch.float32
-                )
-                baseline_output = source[:, -1, :]
+                target_token_id = self.cfg.perturbation_target_token_id
+                if target_token_id is None:
+                    assert self.cfg.perturbation_direction is not None
+                    downstream_direction = self.cfg.perturbation_direction.to(
+                        device=source.device, dtype=torch.float32
+                    )
+                    baseline_output = source[:, -1, :]
                 candidates = []
                 scores = []
                 for _ in range(PERIODIC_PERTURBATION_CANDIDATE_COUNT):
@@ -365,17 +371,28 @@ class _Hooks:
                     candidate_output = perturbation_probe(
                         source_index, destination_index, destination, candidate
                     )
-                    direction = downstream_direction.reshape_as(candidate_output)
                     candidates.append(candidate)
-                    scores.append(
-                        torch.sum(
-                            (candidate_output - baseline_output) * direction,
-                            dim=-1,
+                    if target_token_id is not None:
+                        scores.append(
+                            torch.log_softmax(candidate_output.float(), dim=-1)[
+                                :, target_token_id
+                            ]
                         )
-                    )
+                    else:
+                        direction = downstream_direction.reshape_as(candidate_output)
+                        scores.append(
+                            torch.sum(
+                                (candidate_output - baseline_output) * direction,
+                                dim=-1,
+                            )
+                        )
                 candidate_tensor = torch.stack(candidates, dim=0)
                 score_tensor = torch.stack(scores, dim=0)
-                best_index = score_tensor.argmin(dim=0)
+                best_index = (
+                    score_tensor.argmax(dim=0)
+                    if target_token_id is not None
+                    else score_tensor.argmin(dim=0)
+                )
                 normalized_source = candidate_tensor.gather(
                     0,
                     best_index.view(1, -1, 1, 1).expand(

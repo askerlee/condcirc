@@ -195,6 +195,18 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
 
+    def test_towards_target_perturbation_requires_knowedit(self) -> None:
+        default = parse_args(["prompt"])
+        args = parse_args(
+            ["--knowedit-file", "example.json", "--perturb-mode", "towards-target"]
+        )
+
+        self.assertEqual(default.perturb_mode, "repel-history")
+        self.assertEqual(args.perturb_mode, "towards-target")
+        validate_run_arguments(args)
+        with self.assertRaisesRegex(ValueError, "requires --knowedit-file"):
+            validate_run_arguments(parse_args(["--perturb-mode", "towards-target"]))
+
     def test_parses_periodic_perturbation_noise_override(self) -> None:
         default = parse_args(["prompt"])
         args = parse_args(

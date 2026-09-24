@@ -13,6 +13,60 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_periodic_probe_selects_highest_target_probability(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        selected_inputs: list[torch.Tensor] = []
+
+        def step(token: torch.Tensor, cache: list[int]):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            selected_inputs.append(hidden.detach().clone())
+            cache.append(len(cache))
+            return torch.tensor([[[2.0, 1.0, 0.0]]]), cache
+
+        with patch(
+            "recirculation.torch.randn_like",
+            side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[-1.0, 0.0]]]),
+                torch.tensor([[[0.0, 1.0]]]),
+                torch.tensor([[[0.0, -1.0]]]),
+            ],
+        ):
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=[],
+                step=step,
+                rewind_one=lambda cache: cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),),
+                    alpha=0.5,
+                    noise_level_range=(0.2, 0.2),
+                    perturbation_target_token_id=1,
+                ),
+                passes=1,
+                force_recirculation=True,
+                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
+                perturbation_probe=lambda _token, _source, _destination, _target, candidate, *_args: torch.cat(
+                    (
+                        2 * candidate[:, -1, :1],
+                        candidate[:, -1, :1],
+                        torch.zeros_like(candidate[:, -1, :1]),
+                    ),
+                    dim=-1,
+                ),
+                capture_cached_token=lambda cache: cache[-1],
+                restore_cached_token=lambda _cache, _cached_token: None,
+            )
+
+        expected = torch.tensor([[[0.8, 1.0]]])
+        expected = expected * 2**0.5 / torch.linalg.vector_norm(
+            expected, dim=-1, keepdim=True
+        )
+        torch.testing.assert_close(selected_inputs[-1], 0.5 * (torch.ones_like(expected) + expected))
+
     def test_periodic_probe_selects_least_aligned_noise_candidate(self) -> None:
         block_one_inputs: list[torch.Tensor] = []
 

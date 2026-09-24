@@ -873,6 +873,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--perturb-mode",
+        choices=("repel-history", "towards-target"),
+        default="repel-history",
+        help=(
+            "Select periodic noise candidates by repelling history (default) or "
+            "maximizing the first KnowEdit target token's probability."
+        ),
+    )
+    parser.add_argument(
         "--perturb-for-k-tokens",
         type=int,
         default=30,
@@ -1738,6 +1747,8 @@ class StreamingSimilarityWriter:
 def validate_run_arguments(args: argparse.Namespace) -> None:
     if args.repetition_penalty is not None and args.repetition_penalty <= 0:
         raise ValueError("--repetition-penalty must be positive.")
+    if args.perturb_mode == "towards-target" and args.knowedit_file is None:
+        raise ValueError("--perturb-mode towards-target requires --knowedit-file.")
     if args.perturb_every_n_tokens < 0:
         raise ValueError("--perturb-every-n-tokens must be nonnegative.")
     if args.perturb_for_k_tokens < 1:
@@ -2186,10 +2197,12 @@ def main() -> None:
         )
         output_handle = blocks[source_index].register_forward_hook(capture_output)
         try:
-            student_step(token, replay_cache)
+            logits, _ = student_step(token, replay_cache)
         finally:
             injection_handle.remove()
             output_handle.remove()
+        if config.perturbation_target_token_id is not None:
+            return logits[:, -1, :]
         if not captured_outputs:
             raise RuntimeError("Periodic perturbation probe did not capture a source residual.")
         return captured_outputs[-1]
@@ -2242,6 +2255,7 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
+        target_token_id: int | None = None,
         on_generated_token: Callable[[Tensor], None] | None = None,
         on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
@@ -2423,6 +2437,8 @@ def main() -> None:
 
         if not args.debug:
             if use_recirculation:
+                # When not debug, this recirculate() processes input_ids and produces logits for the first generated token, 
+                # using the configured recirculation gates.
                 prompt_logits, student_cache = recirculate(
                     input_ids,
                     blocks=blocks,
@@ -2534,19 +2550,21 @@ def main() -> None:
                         and generated_token_count % run_args.perturb_every_n_tokens == 0
                     ):
                         print(f"perturb at {generated_token_count}", flush=True)
-                        centroid = recent_token_centroid(
-                            model.get_input_embeddings(),
-                            generated_ids,
-                            run_args.perturb_recent_m_tokens,
-                        )
-                        periodic_perturbation_centroids.append(centroid)
-                    if periodic_perturbation:
-                        periodic_perturbation_direction = (
-                            periodic_perturbation_history_direction(
-                                periodic_perturbation_centroids,
-                                run_args.perturb_history_decay,
+                        if run_args.perturb_mode == "repel-history":
+                            centroid = recent_token_centroid(
+                                model.get_input_embeddings(),
+                                generated_ids,
+                                run_args.perturb_recent_m_tokens,
                             )
-                        )
+                            periodic_perturbation_centroids.append(centroid)
+                    if periodic_perturbation:
+                        if run_args.perturb_mode == "repel-history":
+                            periodic_perturbation_direction = (
+                                periodic_perturbation_history_direction(
+                                    periodic_perturbation_centroids,
+                                    run_args.perturb_history_decay,
+                                )
+                            )
                     elif repetition_recovery_active:
                         repetition_recovery_direction = -recent_token_centroid(
                             model.get_input_embeddings(),
@@ -2588,6 +2606,12 @@ def main() -> None:
                             if periodic_perturbation
                             else repetition_recovery_direction
                         ),
+                        perturbation_target_token_id=(
+                            target_token_id
+                            if periodic_perturbation
+                            and run_args.perturb_mode == "towards-target"
+                            else None
+                        ),
                         perturbation_direction_scale=(
                             periodic_perturbation_direction_scale(
                                 run_args.perturb_every_n_tokens,
@@ -2597,6 +2621,8 @@ def main() -> None:
                             else 1.0
                         ),
                     )
+                    # When not debug, this recirculate() processes each newly selected token to produce logits for the next one. 
+                    # It can adjust or force recirculation for repetition recovery and periodic perturbation.
                     token_logits, student_cache = recirculate(
                         next_token,
                         blocks=blocks,
@@ -2681,6 +2707,8 @@ def main() -> None:
         injected_noise_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
         decoded_injected_source_latents: list[list[dict[str, Any]]] = []
+        # When debug, this recirculate() does the prompt work while also collecting first-pass logits, margins, 
+        # similarities, and noise diagnostics for comparison.
         student_logits, student_cache = recirculate(
             input_ids,
             blocks=blocks,
@@ -2866,19 +2894,21 @@ def main() -> None:
                 and (token_index + 1) % run_args.perturb_every_n_tokens == 0
             ):
                 print(f"perturb at {token_index + 1}", flush=True)
-                centroid = recent_token_centroid(
-                    model.get_input_embeddings(),
-                    generated_ids,
-                    run_args.perturb_recent_m_tokens,
-                )
-                periodic_perturbation_centroids.append(centroid)
-            if periodic_perturbation:
-                periodic_perturbation_direction = (
-                    periodic_perturbation_history_direction(
-                        periodic_perturbation_centroids,
-                        run_args.perturb_history_decay,
+                if run_args.perturb_mode == "repel-history":
+                    centroid = recent_token_centroid(
+                        model.get_input_embeddings(),
+                        generated_ids,
+                        run_args.perturb_recent_m_tokens,
                     )
-                )
+                    periodic_perturbation_centroids.append(centroid)
+            if periodic_perturbation:
+                if run_args.perturb_mode == "repel-history":
+                    periodic_perturbation_direction = (
+                        periodic_perturbation_history_direction(
+                            periodic_perturbation_centroids,
+                            run_args.perturb_history_decay,
+                        )
+                    )
             elif repetition_recovery_active:
                 repetition_recovery_direction = -recent_token_centroid(
                     model.get_input_embeddings(),
@@ -2951,6 +2981,12 @@ def main() -> None:
                     if periodic_perturbation
                     else repetition_recovery_direction
                 ),
+                perturbation_target_token_id=(
+                    target_token_id
+                    if periodic_perturbation
+                    and run_args.perturb_mode == "towards-target"
+                    else None
+                ),
                 perturbation_direction_scale=(
                     periodic_perturbation_direction_scale(
                         run_args.perturb_every_n_tokens,
@@ -2960,6 +2996,8 @@ def main() -> None:
                     else 1.0
                 ),
             )
+            # This recirculate() processes the generated token and collects first-pass logits, margins,
+            # similarities, and any applicable noise diagnostics for comparison.
             student_logits, student_cache = recirculate(
                 next_token,
                 blocks=blocks,
@@ -3148,6 +3186,7 @@ def main() -> None:
     def timed_generate(
         use_recirculation: bool,
         run_args: argparse.Namespace,
+        target_token_id: int | None = None,
         on_generated_token: Callable[[Tensor], None] | None = None,
         on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
@@ -3158,6 +3197,7 @@ def main() -> None:
             use_recirculation=use_recirculation,
             run_args=run_args,
             run_config=run_config,
+            target_token_id=target_token_id,
             on_generated_token=on_generated_token,
             on_debug_comparison=on_debug_comparison,
         )
@@ -3181,6 +3221,7 @@ def main() -> None:
             "cosine_top_k",
             "repetition_recovery",
             "perturb_every_n_tokens",
+            "perturb_mode",
             "perturb_for_k_tokens",
             "perturb_recent_m_tokens",
             "perturb_history_decay",
@@ -3430,9 +3471,19 @@ def main() -> None:
                 emit(f"\n=== {label} ===")
                 if similarities_writer is not None:
                     similarities_writer.start_run(prompt, label, run_args.seed)
+                target_token_id = None
+                if knowedit_example is not None and run_args.perturb_mode == "towards-target":
+                    target_ids = tokenizer.encode(
+                        " " + knowedit_example.target_new.strip(),
+                        add_special_tokens=False,
+                    )
+                    if not target_ids:
+                        raise ValueError("KnowEdit target has no tokens after encoding.")
+                    target_token_id = target_ids[0]
                 run_ids, similarities, stats, run_seconds = timed_generate(
                     use_recirculation=use_recirculation,
                     run_args=run_args,
+                    target_token_id=target_token_id,
                     on_generated_token=lambda token: print(
                         tokenizer.decode(token[0], skip_special_tokens=True),
                         end="",

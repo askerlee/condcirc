@@ -1,8 +1,9 @@
 import unittest
 import json
 import io
+import sys
 import tempfile
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
@@ -41,9 +42,87 @@ from infer import (
     teacher_forced_token_accuracy,
     validate_run_arguments,
 )
+import infer
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_interval_one_perturbs_first_generated_token(self) -> None:
+        model = nn.Module()
+        model.config = SimpleNamespace()
+        model.generation_config = SimpleNamespace(eos_token_id=2, repetition_penalty=1.0)
+        model.embeddings = nn.Embedding(8, 3)
+        model.output = nn.Linear(3, 8)
+        model.get_input_embeddings = lambda: model.embeddings
+        model.get_output_embeddings = lambda: model.output
+        tokenizer = SimpleNamespace(
+            eos_token_id=2,
+            apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
+                input_ids=torch.tensor([[3, 4, 5]])
+            ),
+            decode=lambda *_args, **_kwargs: "E",
+        )
+        calls = []
+
+        def fake_recirculate(tokens, **kwargs):
+            calls.append((tokens.tolist(), kwargs["force_recirculation"] if "force_recirculation" in kwargs else False, kwargs["config"]))
+            logits = torch.tensor([[[0.0, 5.0, 0.0]]]).expand(1, tokens.shape[1], 3)
+            for _ in range(tokens.shape[1]):
+                for name, value in (
+                    ("recirculated_flags", kwargs.get("force_recirculation", False)),
+                    ("rejected_flags", False),
+                    ("adaptive_recirculated_flags", False),
+                    ("adaptive_rejected_flags", False),
+                    ("adaptive_recirculation_counts", 0),
+                    ("final_pass_same_top1_flags", False),
+                    ("rejection_reasons", ()),
+                    ("first_pass_logits", logits[:, :1]),
+                    ("first_pass_similarities", (0.5,)),
+                    ("pass_probability_margins", [0.8]),
+                    ("final_pass_cosine_similarities", None),
+                    ("injected_noise_levels", [0.3] if kwargs.get("force_recirculation") else []),
+                    ("initial_decoded_noise_source_latents", []),
+                    ("decoded_injected_source_latents", []),
+                ):
+                    if kwargs.get(name) is not None:
+                        kwargs[name].append(value)
+            return logits, kwargs["cache"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            for debug in (False, True):
+                with self.subTest(debug=debug):
+                    calls.clear()
+                    with (
+                        patch.object(sys, "argv", [
+                            "infer.py", "question", "--model", "test-model",
+                            "--device-map", "none", "--pair", "2", "0",
+                            "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
+                            "--output", str(Path(directory) / "output.json"),
+                            *(["--debug"] if debug else []),
+                        ]),
+                        patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
+                        patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
+                        patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
+                        patch.object(infer, "DynamicCache", return_value=SimpleNamespace(activate_past_recording=lambda: None)),
+                        patch.object(infer, "recirculate", side_effect=fake_recirculate),
+                        patch.object(infer, "enable_fp32_output_projection"),
+                        patch.object(infer.torch.cuda, "is_available", return_value=False),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        infer.main()
+                    result = json.loads((Path(directory) / "output.json").read_text())
+
+                    self.assertEqual([tokens for tokens, _, _ in calls], [[[3, 4]], [[5]], [[1]]])
+                    self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
+                    self.assertIsNone(calls[0][2].perturbation_direction)
+                    self.assertIsNotNone(calls[1][2].perturbation_direction)
+                    self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
+                    if debug:
+                        comparisons = json.loads(
+                            (Path(directory) / "output-debug.json").read_text()
+                        )[0]["similarities"]
+                        self.assertTrue(comparisons[0]["recirculated"])
+                        self.assertEqual(comparisons[0]["injected_noise_levels"], [0.3])
+
     def test_teacher_forced_accuracy_scores_before_feeding_each_target_token(self) -> None:
         seen_tokens = []
         top_two_reports = []

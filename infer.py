@@ -2299,6 +2299,52 @@ def main() -> None:
             else probe_step
         )
 
+        periodic_perturbation_centroids: list[Tensor] = []
+
+        def recirculate_prompt(**kwargs: Any) -> tuple[Tensor, DynamicCache]:
+            if (
+                not use_recirculation
+                or run_args.perturb_every_n_tokens != 1
+                or run_args.max_new_tokens == 0
+            ):
+                return recirculate(input_ids, **kwargs)
+            if input_ids.shape[1] > 1:
+                _, kwargs["cache"] = recirculate(input_ids[:, :-1], **kwargs)
+            centroid = (
+                recent_token_centroid(
+                    model.get_input_embeddings(), input_ids, run_args.perturb_recent_m_tokens
+                )
+                if run_args.perturb_mode == "repel-history"
+                else None
+            )
+            if centroid is not None:
+                periodic_perturbation_centroids.append(centroid)
+            kwargs["config"] = dataclasses.replace(
+                run_config,
+                noise_level_range=periodic_perturbation_noise_level_range(
+                    run_config.noise_level_range,
+                    tuple(run_args.perturb_noise_level_range)
+                    if run_args.perturb_noise_level_range is not None
+                    else None,
+                ),
+                perturbation_direction=(
+                    periodic_perturbation_history_direction(
+                        periodic_perturbation_centroids, run_args.perturb_history_decay
+                    )
+                    if centroid is not None
+                    else None
+                ),
+                perturbation_target_token_id=(
+                    target_token_id if run_args.perturb_mode == "towards-target" else None
+                ),
+            )
+            kwargs["force_recirculation"] = True
+            kwargs["adaptive_recirculation"] = effective_adaptive_recirculation(
+                run_args.ada_recirculate, run_args.cond_recirculate, True
+            )
+            kwargs["perturbation_probe"] = probe_periodic_perturbation
+            return recirculate(input_ids[:, -1:], **kwargs)
+
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
         adaptive_recirculated_flags: list[bool] = []
@@ -2439,8 +2485,7 @@ def main() -> None:
             if use_recirculation:
                 # When not debug, this recirculate() processes input_ids and produces logits for the first generated token, 
                 # using the configured recirculation gates.
-                prompt_logits, student_cache = recirculate(
-                    input_ids,
+                prompt_logits, student_cache = recirculate_prompt(
                     blocks=blocks,
                     cache=student_cache,
                     step=student_step,
@@ -2483,7 +2528,6 @@ def main() -> None:
                 next_logits = prompt_logits[:, -1, :]
 
             generated_ids = input_ids.clone()
-            periodic_perturbation_centroids: list[Tensor] = []
             active_repetition_counts: dict[tuple[str, ...], int] = {}
             repetition_recovery_tokens_remaining = 0
             repetition_recovery_penalty_tokens_remaining = 0
@@ -2549,7 +2593,7 @@ def main() -> None:
                         periodic_perturbation
                         and generated_token_count % run_args.perturb_every_n_tokens == 0
                     ):
-                        print(f"perturb at {generated_token_count}", flush=True)
+                        print(f"(perturb at {generated_token_count})", flush=True)
                         if run_args.perturb_mode == "repel-history":
                             centroid = recent_token_centroid(
                                 model.get_input_embeddings(),
@@ -2699,7 +2743,6 @@ def main() -> None:
 
         similarities: list[dict[str, Any]] = []
         generated_ids = input_ids.clone()
-        periodic_perturbation_centroids: list[Tensor] = []
         first_pass_logits: list[Tensor] = []
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
@@ -2709,8 +2752,7 @@ def main() -> None:
         decoded_injected_source_latents: list[list[dict[str, Any]]] = []
         # When debug, this recirculate() does the prompt work while also collecting first-pass logits, margins, 
         # similarities, and noise diagnostics for comparison.
-        student_logits, student_cache = recirculate(
-            input_ids,
+        student_logits, student_cache = recirculate_prompt(
             blocks=blocks,
             cache=student_cache,
             step=student_step,

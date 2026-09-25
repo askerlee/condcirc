@@ -13,6 +13,55 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_records_cosine_for_each_forced_noise_attempt(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        pass_logits = (
+            torch.tensor([[[5.0, 0.0, 0.0]]]),
+            torch.tensor([[[0.0, 5.0, 0.0]]]),
+            torch.tensor([[[4.0, 0.0, 0.0]]]),
+        )
+        call_count = 0
+        pass_cosines: list[list[float]] = []
+        pass_token_ids: list[list[list[int]]] = []
+        noise_levels: list[list[float]] = []
+
+        def step(_token: torch.Tensor, cache: list[int]):
+            nonlocal call_count
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            cache.append(call_count + 1)
+            logits = pass_logits[call_count]
+            call_count += 1
+            return logits, cache
+
+        with patch(
+            "recirculation._distribution_cosine_similarity", side_effect=(0.1, 0.3)
+        ):
+            recirculate(
+                torch.tensor([[1]]),
+                blocks=blocks,
+                cache=[],
+                step=step,
+                rewind_one=lambda cache: cache[:-1],
+                config=RecirculationConfig(
+                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+                ),
+                passes=1,
+                force_recirculation=True,
+                cosine_reject=0.4,
+                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
+                capture_cached_token=lambda cache: cache[-1],
+                restore_cached_token=lambda _cache, _token: None,
+                pass_cosine_similarities=pass_cosines,
+                pass_top_k_token_ids=pass_token_ids,
+                injected_noise_levels=noise_levels,
+            )
+
+        self.assertEqual(pass_cosines, [[0.1, 0.3]])
+        self.assertEqual(pass_token_ids, [[[1, 0, 2], [0, 1, 2]]])
+        self.assertEqual(len(pass_cosines[0]), len(noise_levels[0]))
+
     def test_periodic_probe_selects_highest_target_probability(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         selected_inputs: list[torch.Tensor] = []
@@ -69,6 +118,9 @@ class RecirculationCacheTest(unittest.TestCase):
 
     def test_periodic_probe_selects_least_aligned_noise_candidate(self) -> None:
         block_one_inputs: list[torch.Tensor] = []
+        decoded_latents: list[list[dict[str, object]]] = []
+        initial_decoded_latents: list[list[dict[str, object]]] = []
+        captured_latents: list[torch.Tensor] = []
 
         class CaptureBlock(nn.Module):
             def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -83,6 +135,10 @@ class RecirculationCacheTest(unittest.TestCase):
                 hidden = block(hidden)
             cache.append(len(cache))
             return torch.tensor([[[2.0, 1.0, 0.0]]]), cache
+
+        def decode(_token, _source, latent, _cache, _state):
+            captured_latents.append(latent.detach().clone())
+            return {"margin": 0.1, "top1_token": "first", "top2_token": "second"}
 
         with patch(
             "recirculation.torch.randn_like",
@@ -107,8 +163,10 @@ class RecirculationCacheTest(unittest.TestCase):
                 ),
                 passes=1,
                 force_recirculation=True,
-                decode_injected_source_latent=lambda *_args: {"margin": 0.0},
                 perturbation_probe=lambda _token, _source, _destination, _target, candidate, *_args: candidate[:, -1, :],
+                decode_injected_source_latent=decode,
+                decoded_injected_source_latents=decoded_latents,
+                initial_decoded_noise_source_latents=initial_decoded_latents,
                 capture_cached_token=lambda cache: cache[-1],
                 restore_cached_token=lambda _cache, _cached_token: None,
             )
@@ -120,6 +178,11 @@ class RecirculationCacheTest(unittest.TestCase):
         )
         expected = 0.5 * (torch.ones_like(expected) + expected)
         torch.testing.assert_close(block_one_inputs[-1], expected)
+        torch.testing.assert_close(captured_latents[0], 2 * block_one_inputs[-1] - 1)
+        self.assertEqual(decoded_latents, [[{
+            "margin": 0.1, "top1_token": "first", "top2_token": "second"
+        }]])
+        self.assertEqual(initial_decoded_latents, [[]])
 
     def test_forced_recirculation_adds_configured_direction_to_noisy_pass(self) -> None:
         block_one_inputs: list[torch.Tensor] = []

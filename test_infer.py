@@ -40,12 +40,20 @@ from infer import (
     summarize_recirculation_stats,
     set_random_seed,
     teacher_forced_token_accuracy,
+    top_k_decoded_tokens,
     validate_run_arguments,
 )
 import infer
 
 
 class RecirculationStatsTest(unittest.TestCase):
+    def test_top_k_decoded_tokens_follow_final_logits(self) -> None:
+        logits = torch.tensor([[0.1, 0.8, 0.3, 0.6]])
+        tokenizer = SimpleNamespace(decode=lambda token: str(int(token)))
+
+        self.assertEqual(top_k_decoded_tokens(logits, tokenizer, 3), ["1", "3", "2"])
+        self.assertEqual(top_k_decoded_tokens(logits, tokenizer, 6), ["1", "3", "2", "0"])
+
     def test_interval_one_perturbs_first_generated_token(self) -> None:
         model = nn.Module()
         model.config = SimpleNamespace()
@@ -79,9 +87,14 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("first_pass_similarities", (0.5,)),
                     ("pass_probability_margins", [0.8]),
                     ("final_pass_cosine_similarities", None),
+                    ("pass_cosine_similarities", [0.3] if kwargs.get("force_recirculation") else []),
+                    ("pass_top_k_token_ids", [[1, 0, 2]] if kwargs.get("force_recirculation") else []),
+                    ("cosine_reject_thresholds", 0.2 if kwargs.get("force_recirculation") else 0.8),
                     ("injected_noise_levels", [0.3] if kwargs.get("force_recirculation") else []),
                     ("initial_decoded_noise_source_latents", []),
-                    ("decoded_injected_source_latents", []),
+                    ("decoded_injected_source_latents", [
+                        {"margin": 0.1, "topk_tokens": ["Earth", "E", "Mars"]}
+                    ] if kwargs.get("force_recirculation") else []),
                 ):
                     if kwargs.get(name) is not None:
                         kwargs[name].append(value)
@@ -96,6 +109,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "infer.py", "question", "--model", "test-model",
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
+                            "--noise-injected-source-top-k", "3",
                             "--output", str(Path(directory) / "output.json"),
                             *(["--debug"] if debug else []),
                         ]),
@@ -122,6 +136,16 @@ class RecirculationStatsTest(unittest.TestCase):
                         )[0]["similarities"]
                         self.assertTrue(comparisons[0]["recirculated"])
                         self.assertEqual(comparisons[0]["injected_noise_levels"], [0.3])
+                        self.assertEqual(comparisons[0]["pass_top_k_cosine_similarities"], [0.3])
+                        self.assertEqual(comparisons[0]["pass_recirculation_topk_tokens"], [["E"] * 3])
+                        self.assertEqual(comparisons[0]["cosine_reject_threshold"], 0.2)
+                        self.assertEqual(comparisons[0]["post_recirculation_topk_tokens"], ["E"] * 3)
+                        self.assertEqual(
+                            comparisons[0]["noise_injected_source_topk_tokens"],
+                            [["Earth", "E", "Mars"]],
+                        )
+                        self.assertNotIn("noise_injected_source_top1_token", comparisons[0])
+                        self.assertNotIn("noise_injected_source_top2_token", comparisons[0])
 
     def test_teacher_forced_accuracy_scores_before_feeding_each_target_token(self) -> None:
         seen_tokens = []
@@ -273,6 +297,16 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_for_k_tokens, 2)
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
+
+    def test_noise_injected_source_top_k_is_positive(self) -> None:
+        self.assertEqual(parse_args(["prompt"]).noise_injected_source_top_k, 4)
+        args = parse_args(["--noise-injected-source-top-k", "5", "prompt"])
+        self.assertEqual(args.noise_injected_source_top_k, 5)
+        validate_run_arguments(args)
+        with self.assertRaisesRegex(ValueError, "--noise-injected-source-top-k"):
+            validate_run_arguments(
+                parse_args(["--noise-injected-source-top-k", "0", "prompt"])
+            )
 
     def test_towards_target_perturbation_requires_knowedit(self) -> None:
         default = parse_args(["prompt"])

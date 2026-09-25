@@ -919,11 +919,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--perturb-noise-level-range",
         type=float,
         nargs=2,
-        default=(0.2, 0.4),
+        default=(0.1, 0.2),
         metavar=("MIN", "MAX"),
         help=(
             "Override the noise range during periodic perturbation "
-            "(default: 0.2 0.4)."
+            "(default: 0.1 0.2)."
         ),
     )
     parser.add_argument(
@@ -933,8 +933,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="K",
         help=(
             "Compute P1/final-pass cosine over the union of their top-K "
-            "tokens (default: 5)."
+            "tokens and log the final student's top-K tokens (default: 5)."
         ),
+    )
+    parser.add_argument(
+        "--noise-injected-source-top-k",
+        type=int,
+        default=4,
+        metavar="K",
+        help="Log the top K tokens decoded from each injected source (default: 4).",
     )
     parser.add_argument(
         "--gating-pair-index",
@@ -1108,6 +1115,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "max_new_tokens",
         "model",
         "perturb_pre_margin_thres",
+        "noise_injected_source_top_k",
         "no_recirculate_after_tokens",
         "openai_base_url",
         "output",
@@ -1435,6 +1443,13 @@ def sample_token(logits: Tensor, temperature: float) -> Tensor:
         return logits.argmax(dim=-1, keepdim=True)
     probabilities = torch.softmax(logits / temperature, dim=-1)
     return torch.multinomial(probabilities, num_samples=1)
+
+
+def top_k_decoded_tokens(logits: Tensor, tokenizer: Any, count: int) -> list[str]:
+    token_ids = torch.topk(
+        logits.float(), k=min(count, logits.shape[-1]), dim=-1
+    ).indices[0]
+    return [tokenizer.decode(token_id) for token_id in token_ids]
 
 
 def apply_repetition_penalty(
@@ -1820,6 +1835,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
             raise ValueError("--post-margin-ratio-thres requires --mode source.")
     if args.cosine_top_k < 1:
         raise ValueError("--cosine-top-k must be at least 1.")
+    if args.noise_injected_source_top_k < 1:
+        raise ValueError("--noise-injected-source-top-k must be at least 1.")
 
 
 def main() -> None:
@@ -2131,8 +2148,9 @@ def main() -> None:
         margin = float((top_two.values[..., 0] - top_two.values[..., 1]).item())
         stats: dict[str, Any] = {
             "margin": margin,
-            "top1_token": tokenizer.decode(top_two.indices[..., 0]),
-            "top2_token": tokenizer.decode(top_two.indices[..., 1]),
+            "topk_tokens": top_k_decoded_tokens(
+                logits[:, -1, :], tokenizer, args.noise_injected_source_top_k
+            ),
         }
         if margin == 0.0 and projection_inputs and projection_outputs:
             token_indices = top_two.indices[0]
@@ -2751,6 +2769,9 @@ def main() -> None:
         first_pass_similarities: list[tuple[float, ...]] = []
         pass_probability_margins: list[list[float]] = []
         final_pass_cosine_similarities: list[float | None] = []
+        pass_cosine_similarities: list[list[float]] = []
+        pass_top_k_token_ids: list[list[list[int]]] = []
+        cosine_reject_thresholds: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
         decoded_injected_source_latents: list[list[dict[str, Any]]] = []
@@ -2789,6 +2810,9 @@ def main() -> None:
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             rejection_reasons=rejection_reasons,
             final_pass_cosine_similarities=final_pass_cosine_similarities,
+            pass_cosine_similarities=pass_cosine_similarities,
+            pass_top_k_token_ids=pass_top_k_token_ids,
+            cosine_reject_thresholds=cosine_reject_thresholds,
             injected_noise_levels=injected_noise_levels,
             decode_injected_source_latent=decoded_latent_stats,
             initial_decoded_noise_source_latents=(
@@ -2841,7 +2865,18 @@ def main() -> None:
                 if final_pass_cosine_similarities[-1] is not None
                 else None
             )
+            comparison["pass_top_k_cosine_similarities"] = [
+                round(cosine, 6) for cosine in pass_cosine_similarities[-1]
+            ]
+            comparison["pass_recirculation_topk_tokens"] = [
+                [tokenizer.decode(token_id) for token_id in attempt]
+                for attempt in pass_top_k_token_ids[-1]
+            ]
+            comparison["cosine_reject_threshold"] = cosine_reject_thresholds[-1]
             comparison["cosine_top_k"] = run_args.cosine_top_k
+            comparison["post_recirculation_topk_tokens"] = top_k_decoded_tokens(
+                student_next_logits, tokenizer, run_args.cosine_top_k
+            )
             decoded_noise_latents = decoded_injected_source_latents[-1]
             zero_gap_diagnostics = [
                 stats["zero_gap_bf16_diagnostic"]
@@ -2867,11 +2902,8 @@ def main() -> None:
                     f"{float(stats['margin']):.6e}"
                     for stats in decoded_noise_latents
                 ]
-                comparison["noise_injected_source_top1_token"] = [
-                    stats["top1_token"] for stats in decoded_noise_latents
-                ]
-                comparison["noise_injected_source_top2_token"] = [
-                    stats["top2_token"] for stats in decoded_noise_latents
+                comparison["noise_injected_source_topk_tokens"] = [
+                    stats["topk_tokens"] for stats in decoded_noise_latents
                 ]
             effective_repetition_penalty = repetition_recovery_penalty(
                 repetition_recovery_penalty_tokens_remaining > 0
@@ -2939,7 +2971,7 @@ def main() -> None:
                 periodic_perturbation
                 and (token_index + 1) % run_args.perturb_every_n_tokens == 0
             ):
-                print(f"perturb at {token_index + 1}", flush=True)
+                print(f"(perturb at {token_index + 1})", flush=True)
                 if run_args.perturb_mode == "repel-history":
                     centroid = recent_token_centroid(
                         model.get_input_embeddings(),
@@ -3089,6 +3121,9 @@ def main() -> None:
                 final_pass_same_top1_flags=final_pass_same_top1_flags,
                 rejection_reasons=rejection_reasons,
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
+                pass_cosine_similarities=pass_cosine_similarities,
+                pass_top_k_token_ids=pass_top_k_token_ids,
+                cosine_reject_thresholds=cosine_reject_thresholds,
                 injected_noise_levels=injected_noise_levels,
                 decode_injected_source_latent=decoded_latent_stats,
                 perturbation_probe=probe_periodic_perturbation,

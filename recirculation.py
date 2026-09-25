@@ -422,6 +422,8 @@ class _Hooks:
                 ).clamp_min(self.cfg.eps)
             )
             self.prepared_sources[pair_index] = normalized_source
+            if select_perturbation_candidate:
+                debug_latents.append((source_index, normalized_source.detach().clone()))
         return debug_latents
 
     def reverse_noise(self, pair_index: int) -> Tensor:
@@ -584,6 +586,9 @@ def recirculate(
     final_pass_same_top1_flags: list[bool] | None = None,
     rejection_reasons: list[tuple[str, ...]] | None = None,
     final_pass_cosine_similarities: list[float | None] | None = None,
+    pass_cosine_similarities: list[list[float]] | None = None,
+    pass_top_k_token_ids: list[list[list[int]]] | None = None,
+    cosine_reject_thresholds: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
     source_latents: list[dict[int, Tensor]] | None = None,
@@ -849,6 +854,8 @@ def recirculate(
             final_pass_same_top1 = False
             final_pass_rejection_reasons: list[str] = []
             final_pass_cosine_similarity = None
+            token_pass_cosine_similarities: list[float] = []
+            token_pass_top_k_token_ids: list[list[int]] = []
             max_passes = max(
                 passes + adaptive_recirculation,
                 2 if force_recirculation else 1,
@@ -925,7 +932,7 @@ def recirculate(
                         )
                         for source_index, latent in prepared_debug_latents
                     ]
-                    if noise_debug_latents:
+                    if hooks.noise_perturbations:
                         assert previous_pass_margin is not None
                         token_initial_decoded_noise_source_latents.extend(
                             decoded_latents
@@ -962,6 +969,20 @@ def recirculate(
                 hooks.mode = "inject"
                 final_logits, cache = step(token, cache)
                 hooks.mode = "off"
+                if pass_cosine_similarities is not None:
+                    token_pass_cosine_similarities.append(
+                        _distribution_cosine_similarity(
+                            first_logits, final_logits, cosine_top_k
+                        )
+                    )
+                if pass_top_k_token_ids is not None:
+                    token_pass_top_k_token_ids.append(
+                        torch.topk(
+                            final_logits[:, -1, :].float(),
+                            k=min(cosine_top_k, final_logits.shape[-1]),
+                            dim=-1,
+                        ).indices[0].tolist()
+                    )
                 pass_margin = (
                     _top1_top2_probability_margin(final_logits)
                     if passes >= 2
@@ -1038,8 +1059,12 @@ def recirculate(
                 ) or adaptive_margin_narrowed or (
                     pass_index >= passes - 1 and not should_retry_low_margin
                 ):
-                    final_pass_cosine_similarity = _distribution_cosine_similarity(
-                        first_logits, final_logits, cosine_top_k
+                    final_pass_cosine_similarity = (
+                        token_pass_cosine_similarities[-1]
+                        if pass_cosine_similarities is not None
+                        else _distribution_cosine_similarity(
+                            first_logits, final_logits, cosine_top_k
+                        )
                     )
                     if adaptive_margin_narrowed:
                         final_pass_rejection_reasons.append("margin-narrowed")
@@ -1134,6 +1159,12 @@ def recirculate(
                 final_pass_cosine_similarities.append(
                     final_pass_cosine_similarity
                 )
+            if pass_cosine_similarities is not None:
+                pass_cosine_similarities.append(token_pass_cosine_similarities)
+            if pass_top_k_token_ids is not None:
+                pass_top_k_token_ids.append(token_pass_top_k_token_ids)
+            if cosine_reject_thresholds is not None:
+                cosine_reject_thresholds.append(cosine_reject)
             if injected_noise_levels is not None:
                 injected_noise_levels.append(token_injected_noise_levels)
             if injected_source_latents is not None:

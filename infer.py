@@ -879,10 +879,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--perturb-mode",
         choices=("repel-history", "towards-target"),
-        default="repel-history",
+        default=None,
         help=(
-            "Select periodic noise candidates by repelling history (default) or "
-            "maximizing the first KnowEdit target token's probability."
+            "Select periodic noise candidates by repelling history or maximizing "
+            "the first KnowEdit target token's probability (default: towards-target "
+            "with --knowedit-file, repel-history otherwise)."
         ),
     )
     parser.add_argument(
@@ -1056,6 +1057,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             args.pairs = [(25, 19)] if model_name.startswith("gemma-4-26b-a4b") else [(-5, 5)]
         args.ablations = False
         args.query_index_signature = query_index_signature(argv)
+        args.perturb_mode = args.perturb_mode or (
+            "towards-target" if args.knowedit_file is not None else "repel-history"
+        )
         return args
 
     ablations_index = argv.index("--ablation")
@@ -1081,6 +1085,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     if len(ablation_groups) == 1 and not ablation_groups[0]:
         args.ablations = None
+        args.perturb_mode = args.perturb_mode or (
+            "towards-target" if args.knowedit_file is not None else "repel-history"
+        )
         return args
     if any(not group for group in ablation_groups):
         parser.error("each --ablation must be followed by at least one argument")
@@ -1166,6 +1173,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ablations.append(overrides)
 
     args.ablations = tuple(ablations)
+    args.perturb_mode = args.perturb_mode or (
+        "towards-target" if args.knowedit_file is not None else "repel-history"
+    )
     return args
 
 

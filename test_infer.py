@@ -114,7 +114,6 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--noise-injected-source-top-k", "3",
                             "--output", str(Path(directory) / "output.json"),
                             *(["--knowedit-file", "example.json"] if knowedit else []),
-                            *(["--perturb-mode", "towards-target"] if knowedit else []),
                             *(["--debug"] if debug else []),
                         ]),
                         patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(source="s", subject="s", target_new="E", reference=None)]),
@@ -330,12 +329,22 @@ class RecirculationStatsTest(unittest.TestCase):
 
     def test_towards_target_perturbation_requires_knowedit(self) -> None:
         default = parse_args(["prompt"])
-        args = parse_args(
-            ["--knowedit-file", "example.json", "--perturb-mode", "towards-target"]
+        args = parse_args(["--knowedit-file", "example.json"])
+        explicit = parse_args(
+            ["--knowedit-file", "example.json", "--perturb-mode", "repel-history"]
         )
 
         self.assertEqual(default.perturb_mode, "repel-history")
         self.assertEqual(args.perturb_mode, "towards-target")
+        self.assertEqual(explicit.perturb_mode, "repel-history")
+        self.assertEqual(
+            parse_args(["--knowedit-file", "example.json", "--ablation"]).perturb_mode,
+            "towards-target",
+        )
+        self.assertEqual(
+            parse_args(["--ablation", "--knowedit-file", "example.json"]).perturb_mode,
+            "towards-target",
+        )
         validate_run_arguments(args)
         with self.assertRaisesRegex(ValueError, "requires --knowedit-file"):
             validate_run_arguments(parse_args(["--perturb-mode", "towards-target"]))

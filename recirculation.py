@@ -588,6 +588,8 @@ def recirculate(
     final_pass_cosine_similarities: list[float | None] | None = None,
     pass_cosine_similarities: list[list[float]] | None = None,
     pass_top_k_token_ids: list[list[list[int]]] | None = None,
+    target_token_id: int | None = None,
+    pass_target_token_probabilities: list[list[float]] | None = None,
     cosine_reject_thresholds: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
@@ -856,6 +858,7 @@ def recirculate(
             final_pass_cosine_similarity = None
             token_pass_cosine_similarities: list[float] = []
             token_pass_top_k_token_ids: list[list[int]] = []
+            token_pass_target_token_probabilities: list[float] = []
             max_passes = max(
                 passes + adaptive_recirculation,
                 2 if force_recirculation else 1,
@@ -982,6 +985,10 @@ def recirculate(
                             k=min(cosine_top_k, final_logits.shape[-1]),
                             dim=-1,
                         ).indices[0].tolist()
+                    )
+                if pass_target_token_probabilities is not None and target_token_id is not None:
+                    token_pass_target_token_probabilities.append(
+                        float(torch.softmax(final_logits[0, -1, :].float(), dim=-1)[target_token_id].item())
                     )
                 pass_margin = (
                     _top1_top2_probability_margin(final_logits)
@@ -1163,6 +1170,8 @@ def recirculate(
                 pass_cosine_similarities.append(token_pass_cosine_similarities)
             if pass_top_k_token_ids is not None:
                 pass_top_k_token_ids.append(token_pass_top_k_token_ids)
+            if pass_target_token_probabilities is not None:
+                pass_target_token_probabilities.append(token_pass_target_token_probabilities)
             if cosine_reject_thresholds is not None:
                 cosine_reject_thresholds.append(cosine_reject)
             if injected_noise_levels is not None:

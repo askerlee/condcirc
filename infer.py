@@ -2771,6 +2771,7 @@ def main() -> None:
         final_pass_cosine_similarities: list[float | None] = []
         pass_cosine_similarities: list[list[float]] = []
         pass_top_k_token_ids: list[list[list[int]]] = []
+        pass_target_token_probabilities: list[list[float]] = []
         cosine_reject_thresholds: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
@@ -2812,6 +2813,8 @@ def main() -> None:
             final_pass_cosine_similarities=final_pass_cosine_similarities,
             pass_cosine_similarities=pass_cosine_similarities,
             pass_top_k_token_ids=pass_top_k_token_ids,
+            target_token_id=target_token_id,
+            pass_target_token_probabilities=pass_target_token_probabilities,
             cosine_reject_thresholds=cosine_reject_thresholds,
             injected_noise_levels=injected_noise_levels,
             decode_injected_source_latent=decoded_latent_stats,
@@ -2872,6 +2875,12 @@ def main() -> None:
                 [tokenizer.decode(token_id) for token_id in attempt]
                 for attempt in pass_top_k_token_ids[-1]
             ]
+            if target_token_id is not None:
+                comparison["target_token"] = tokenizer.decode(target_token_id)
+                comparison["pre_recirculation_target_token_probability"] = float(
+                    torch.softmax(teacher_next_logits[0].float(), dim=-1)[target_token_id].item()
+                )
+                comparison["pass_target_token_probabilities"] = pass_target_token_probabilities[-1]
             comparison["cosine_reject_threshold"] = cosine_reject_thresholds[-1]
             comparison["cosine_top_k"] = run_args.cosine_top_k
             comparison["post_recirculation_topk_tokens"] = top_k_decoded_tokens(
@@ -3123,6 +3132,8 @@ def main() -> None:
                 final_pass_cosine_similarities=final_pass_cosine_similarities,
                 pass_cosine_similarities=pass_cosine_similarities,
                 pass_top_k_token_ids=pass_top_k_token_ids,
+                target_token_id=target_token_id,
+                pass_target_token_probabilities=pass_target_token_probabilities,
                 cosine_reject_thresholds=cosine_reject_thresholds,
                 injected_noise_levels=injected_noise_levels,
                 decode_injected_source_latent=decoded_latent_stats,
@@ -3553,7 +3564,7 @@ def main() -> None:
                 if similarities_writer is not None:
                     similarities_writer.start_run(prompt, label, run_args.seed)
                 target_token_id = None
-                if knowedit_example is not None and run_args.perturb_mode == "towards-target":
+                if run_args.perturb_mode == "towards-target":
                     target_ids = tokenizer.encode(
                         " " + knowedit_example.target_new.strip(),
                         add_special_tokens=False,

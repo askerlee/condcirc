@@ -23,6 +23,7 @@ class RecirculationCacheTest(unittest.TestCase):
         call_count = 0
         pass_cosines: list[list[float]] = []
         pass_token_ids: list[list[list[int]]] = []
+        pass_target_probabilities: list[list[float]] = []
         noise_levels: list[list[float]] = []
 
         def step(_token: torch.Tensor, cache: list[int]):
@@ -55,12 +56,17 @@ class RecirculationCacheTest(unittest.TestCase):
                 restore_cached_token=lambda _cache, _token: None,
                 pass_cosine_similarities=pass_cosines,
                 pass_top_k_token_ids=pass_token_ids,
+                target_token_id=1,
+                pass_target_token_probabilities=pass_target_probabilities,
                 injected_noise_levels=noise_levels,
             )
 
         self.assertEqual(pass_cosines, [[0.1, 0.3]])
         self.assertEqual(pass_token_ids, [[[1, 0, 2], [0, 1, 2]]])
         self.assertEqual(len(pass_cosines[0]), len(noise_levels[0]))
+        self.assertEqual(len(pass_target_probabilities[0]), len(pass_cosines[0]))
+        self.assertAlmostEqual(pass_target_probabilities[0][0], torch.softmax(pass_logits[1][0, -1], dim=-1)[1].item())
+        self.assertAlmostEqual(pass_target_probabilities[0][1], torch.softmax(pass_logits[2][0, -1], dim=-1)[1].item())
 
     def test_periodic_probe_selects_highest_target_probability(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

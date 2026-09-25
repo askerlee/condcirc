@@ -68,6 +68,7 @@ class RecirculationStatsTest(unittest.TestCase):
                 input_ids=torch.tensor([[3, 4, 5]])
             ),
             decode=lambda *_args, **_kwargs: "E",
+            encode=lambda *_args, **kwargs: torch.tensor([[1]]) if kwargs.get("return_tensors") else [1],
         )
         calls = []
 
@@ -89,6 +90,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("final_pass_cosine_similarities", None),
                     ("pass_cosine_similarities", [0.3] if kwargs.get("force_recirculation") else []),
                     ("pass_top_k_token_ids", [[1, 0, 2]] if kwargs.get("force_recirculation") else []),
+                    ("pass_target_token_probabilities", [0.9] if kwargs.get("force_recirculation") else []),
                     ("cosine_reject_thresholds", 0.2 if kwargs.get("force_recirculation") else 0.8),
                     ("injected_noise_levels", [0.3] if kwargs.get("force_recirculation") else []),
                     ("initial_decoded_noise_source_latents", []),
@@ -101,18 +103,23 @@ class RecirculationStatsTest(unittest.TestCase):
             return logits, kwargs["cache"]
 
         with tempfile.TemporaryDirectory() as directory:
-            for debug in (False, True):
-                with self.subTest(debug=debug):
+            for debug, knowedit in ((False, False), (True, False), (True, True)):
+                with self.subTest(debug=debug, knowedit=knowedit):
                     calls.clear()
                     with (
                         patch.object(sys, "argv", [
-                            "infer.py", "question", "--model", "test-model",
+                            "infer.py", *([] if knowedit else ["question"]), "--model", "test-model",
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
                             "--noise-injected-source-top-k", "3",
                             "--output", str(Path(directory) / "output.json"),
+                            *(["--knowedit-file", "example.json"] if knowedit else []),
+                            *(["--perturb-mode", "towards-target"] if knowedit else []),
                             *(["--debug"] if debug else []),
                         ]),
+                        patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(source="s", subject="s", target_new="E", reference=None)]),
+                        patch.object(infer, "format_knowedit_prompt", return_value="question"),
+                        patch.object(infer, "teacher_forced_token_accuracy", return_value=1.0),
                         patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
                         patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
                         patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
@@ -128,7 +135,10 @@ class RecirculationStatsTest(unittest.TestCase):
                     self.assertEqual([tokens for tokens, _, _ in calls], [[[3, 4]], [[5]], [[1]]])
                     self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
                     self.assertIsNone(calls[0][2].perturbation_direction)
-                    self.assertIsNotNone(calls[1][2].perturbation_direction)
+                    if knowedit:
+                        self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
+                    else:
+                        self.assertIsNotNone(calls[1][2].perturbation_direction)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
                     if debug:
                         comparisons = json.loads(
@@ -138,6 +148,16 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual(comparisons[0]["injected_noise_levels"], [0.3])
                         self.assertEqual(comparisons[0]["pass_top_k_cosine_similarities"], [0.3])
                         self.assertEqual(comparisons[0]["pass_recirculation_topk_tokens"], [["E"] * 3])
+                        if knowedit:
+                            self.assertEqual(comparisons[0]["target_token"], "E")
+                            self.assertAlmostEqual(
+                                comparisons[0]["pre_recirculation_target_token_probability"],
+                                torch.softmax(torch.tensor([0.0, 5.0, 0.0]), dim=-1)[1].item(),
+                            )
+                            self.assertEqual(comparisons[0]["pass_target_token_probabilities"], [0.9])
+                        else:
+                            self.assertNotIn("target_token", comparisons[0])
+                            self.assertNotIn("pre_recirculation_target_token_probability", comparisons[0])
                         self.assertEqual(comparisons[0]["cosine_reject_threshold"], 0.2)
                         self.assertEqual(comparisons[0]["post_recirculation_topk_tokens"], ["E"] * 3)
                         self.assertEqual(

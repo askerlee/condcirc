@@ -72,6 +72,17 @@ class RecirculationCacheTest(unittest.TestCase):
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         selected_inputs: list[torch.Tensor] = []
 
+        def probe(_token, _source, _destination, _target, candidate, *_args):
+            logits = torch.cat(
+                (
+                    2 * candidate[:, -1, :1],
+                    candidate[:, -1, :1],
+                    torch.zeros_like(candidate[:, -1, :1]),
+                ),
+                dim=-1,
+            )
+            return logits.to("cuda:0") if torch.cuda.is_available() else logits
+
         def step(token: torch.Tensor, cache: list[int]):
             hidden = torch.ones((1, 1, 2))
             for block in blocks:
@@ -104,14 +115,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 passes=1,
                 force_recirculation=True,
                 decode_injected_source_latent=lambda *_args: {"margin": 0.0},
-                perturbation_probe=lambda _token, _source, _destination, _target, candidate, *_args: torch.cat(
-                    (
-                        2 * candidate[:, -1, :1],
-                        candidate[:, -1, :1],
-                        torch.zeros_like(candidate[:, -1, :1]),
-                    ),
-                    dim=-1,
-                ),
+                perturbation_probe=probe,
                 capture_cached_token=lambda cache: cache[-1],
                 restore_cached_token=lambda _cache, _cached_token: None,
             )

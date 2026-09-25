@@ -395,7 +395,7 @@ class _Hooks:
                 )
                 normalized_source = candidate_tensor.gather(
                     0,
-                    best_index.view(1, -1, 1, 1).expand(
+                    best_index.to(candidate_tensor.device).view(1, -1, 1, 1).expand(
                         1, *candidate_tensor.shape[1:]
                     ),
                 ).squeeze(0)

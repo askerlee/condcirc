@@ -1,6 +1,8 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tasks.sudoku import format_prompt, is_solution, load_puzzles, parse_puzzle
 
@@ -19,6 +21,21 @@ SOLUTION_4X4 = """Answer:
 
 
 class SudokuTest(unittest.TestCase):
+    def test_loads_sudoku_extreme_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test.csv"
+            question = "12345678." + "." * 72
+            content = f"source,question,answer,rating\nexample,{question},{'1' * 81},1\n"
+            path.write_text(content, encoding="utf-8")
+
+            puzzles = load_puzzles(path)
+            self.assertEqual(len(puzzles), 1)
+            self.assertEqual(puzzles[0][0], (1, 2, 3, 4, 5, 6, 7, 8, 0))
+            self.assertEqual(puzzles[0][1], (0,) * 9)
+
+            with patch("tasks.sudoku.urlopen", return_value=io.BytesIO(content.encode())):
+                self.assertEqual(load_puzzles("https://example.org/test.csv"), puzzles)
+
     def test_loads_sudoku4llm_jsonl_with_text_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sudoku.jsonl"

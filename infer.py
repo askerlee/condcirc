@@ -484,6 +484,10 @@ def parse_sudoku_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "Sudoku")
 
 
+def parse_sudoku_file(value: str) -> str | Path:
+    return value if value.startswith("https://") else Path(value)
+
+
 def parse_bbeh_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "BBEH")
 
@@ -606,9 +610,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     task_group.add_argument(
         "--sudoku-file",
-        type=Path,
-        default="tasks/grid-9_diff-30_placeholder-0_enforce-non_unique.jsonl",
-        help="Run puzzles from a Sudoku4LLM JSONL file.",
+        type=parse_sudoku_file,
+        default="https://huggingface.co/datasets/sapientinc/sudoku-extreme/resolve/main/test.csv",
+        help="Run puzzles from the Sudoku Extreme test CSV URL (default), a local CSV, or a Sudoku4LLM JSONL file.",
     )
     task_group.add_argument(
         "--bbeh-file",
@@ -626,7 +630,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--do-sudoku",
         action="store_true",
-        help="Run the Sudoku4LLM evaluation task using --sudoku-file.",
+        help="Run the Sudoku evaluation task using --sudoku-file.",
     )
     parser.add_argument(
         "--game24-index",
@@ -654,7 +658,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=(),
         metavar="INDEX[-INDEX][,...]",
         help=(
-            "1-based Sudoku4LLM JSONL indices; negative values count from the "
+            "1-based Sudoku puzzle indices; negative values count from the "
             "end (default: all)."
         ),
     )

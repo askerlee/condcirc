@@ -1,10 +1,13 @@
-"""Sudoku4LLM-compatible benchmark loading, prompting, and scoring."""
-# https://github.com/DolbyUUU/Sudoku4LLM
+"""Sudoku benchmark loading, prompting, and scoring."""
+# https://huggingface.co/datasets/sapientinc/sudoku-extreme
 
+import csv
+import io
 import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.request import urlopen
 
 
 SUDOKU_BOX_SHAPES = {4: (2, 2), 6: (2, 3), 9: (3, 3)}
@@ -36,9 +39,34 @@ def parse_puzzle(
     return tuple(normalized_rows)
 
 
-def load_puzzles(path: Path) -> tuple[tuple[tuple[int, ...], ...], ...]:
+def load_puzzles(path: str | Path) -> tuple[tuple[tuple[int, ...], ...], ...]:
     puzzles = []
-    with path.open(encoding="utf-8") as file:
+    if str(path).endswith(".csv"):
+        if str(path).startswith("https://"):
+            source = io.TextIOWrapper(urlopen(str(path)), encoding="utf-8")
+        else:
+            source = Path(path).open(encoding="utf-8", newline="")
+        with source as file:
+            for line_number, record in enumerate(csv.DictReader(file), start=2):
+                question = record.get("question")
+                if question is None or len(question) != 81 or any(
+                    cell not in ".123456789" for cell in question
+                ):
+                    raise ValueError(
+                        f"{path} contains an invalid Sudoku CSV record on line {line_number}."
+                    )
+                puzzles.append(
+                    parse_puzzle(
+                        [
+                            [0 if cell == "." else int(cell) for cell in question[row : row + 9]]
+                            for row in range(0, 81, 9)
+                        ]
+                    )
+                )
+        if not puzzles:
+            raise ValueError(f"{path} contains no Sudoku puzzles.")
+        return tuple(puzzles)
+    with Path(path).open(encoding="utf-8") as file:
         for line_number, line in enumerate(file, start=1):
             if not line.strip():
                 continue

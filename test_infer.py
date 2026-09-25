@@ -372,6 +372,10 @@ class RecirculationStatsTest(unittest.TestCase):
             ["--do-sudoku", "--sudoku-file", "sudoku.jsonl", "--sudoku-index", "-1"]
         )
 
+        self.assertEqual(
+            default.sudoku_file,
+            "https://huggingface.co/datasets/sapientinc/sudoku-extreme/resolve/main/test.csv",
+        )
         self.assertEqual(default.sudoku_index, ())
         self.assertFalse(default.do_sudoku)
         self.assertEqual(args.sudoku_file, Path("sudoku.jsonl"))

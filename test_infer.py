@@ -62,13 +62,19 @@ class RecirculationStatsTest(unittest.TestCase):
         model.output = nn.Linear(3, 8)
         model.get_input_embeddings = lambda: model.embeddings
         model.get_output_embeddings = lambda: model.output
+        encoded_targets: list[str] = []
+
+        def encode_target(text, **kwargs):
+            encoded_targets.append(text)
+            return torch.tensor([[1]]) if kwargs.get("return_tensors") else [1]
+
         tokenizer = SimpleNamespace(
             eos_token_id=2,
             apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
                 input_ids=torch.tensor([[3, 4, 5]])
             ),
             decode=lambda *_args, **_kwargs: "E",
-            encode=lambda *_args, **kwargs: torch.tensor([[1]]) if kwargs.get("return_tensors") else [1],
+            encode=encode_target,
         )
         calls = []
 
@@ -106,6 +112,7 @@ class RecirculationStatsTest(unittest.TestCase):
             for debug, knowedit in ((False, False), (True, False), (True, True)):
                 with self.subTest(debug=debug, knowedit=knowedit):
                     calls.clear()
+                    encoded_targets.clear()
                     with (
                         patch.object(sys, "argv", [
                             "infer.py", *([] if knowedit else ["question"]), "--model", "test-model",
@@ -135,8 +142,10 @@ class RecirculationStatsTest(unittest.TestCase):
                     self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
                     self.assertIsNone(calls[0][2].perturbation_direction)
                     if knowedit:
+                        self.assertEqual(encoded_targets, ["E", "E"])
                         self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
                     else:
+                        self.assertEqual(encoded_targets, [])
                         self.assertIsNotNone(calls[1][2].perturbation_direction)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
                     if debug:

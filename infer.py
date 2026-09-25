@@ -3223,7 +3223,7 @@ def main() -> None:
         score_name: str,
     ) -> float:
         target_ids = tokenizer.encode(
-            " " + target.strip(), add_special_tokens=False, return_tensors="pt"
+            target.strip(), add_special_tokens=False, return_tensors="pt"
         ).to(input_device)
         cache = DynamicCache(config=model.config)
         if use_recirculation:
@@ -3576,7 +3576,7 @@ def main() -> None:
                 target_token_id = None
                 if run_args.perturb_mode == "towards-target":
                     target_ids = tokenizer.encode(
-                        " " + knowedit_example.target_new.strip(),
+                        knowedit_example.target_new.strip(),
                         add_special_tokens=False,
                     )
                     if not target_ids:

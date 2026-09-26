@@ -41,10 +41,10 @@ from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
+import torch.nn.functional as F
 
 
-FORCED_NOISE_MAX_ATTEMPTS = 8
-PERIODIC_PERTURBATION_CANDIDATE_COUNT = 4
+FORCED_NOISE_MAX_ATTEMPTS = 1
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,9 @@ class RecirculationConfig:
     perturbation_direction: Tensor | None = None
     perturbation_direction_scale: float = 1.0
     perturbation_target_token_id: int | None = None
+    periodic_perturbation_candidate_count: int = 16
+    periodic_perturbation_steps: int = 1
+    periodic_perturbation_step_decay: float = 1.0
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
@@ -194,6 +197,12 @@ class _Hooks:
             raise ValueError("noise_decay_per_pass must be between 0 and 1.")
         if cfg.perturb_pre_margin_thres < 0:
             raise ValueError("perturb_pre_margin_thres must be nonnegative.")
+        if cfg.periodic_perturbation_candidate_count < 1:
+            raise ValueError("periodic_perturbation_candidate_count must be positive.")
+        if cfg.periodic_perturbation_steps < 1:
+            raise ValueError("periodic_perturbation_steps must be positive.")
+        if not 0.0 <= cfg.periodic_perturbation_step_decay <= 1.0:
+            raise ValueError("periodic_perturbation_step_decay must be between 0 and 1.")
         self.cfg = cfg
         self.mode = "off"
         self.pass_index = 1
@@ -286,6 +295,8 @@ class _Hooks:
     def prepare_injections(
         self,
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor] | None = None,
+        candidate_target_token_probabilities: list[float] | None = None,
+        aggregate_target_token_probabilities: list[float] | None = None,
     ) -> list[tuple[int, Tensor]]:
         self.prepared_sources.clear()
         self.noise_perturbations.clear()
@@ -357,48 +368,103 @@ class _Hooks:
                         device=source.device, dtype=torch.float32
                     )
                     baseline_output = source[:, -1, :]
-                candidates = []
-                scores = []
-                for _ in range(PERIODIC_PERTURBATION_CANDIDATE_COUNT):
-                    epsilon = (
-                        direction_weight
-                        * self.cfg.perturbation_direction_scale
-                        * destination_norm
-                        * torch.randn_like(source)
-                        / source.shape[-1] ** 0.5
-                    )
-                    candidate = normalized_source + epsilon
-                    candidate_output = perturbation_probe(
-                        source_index, destination_index, destination, candidate
-                    )
-                    candidates.append(candidate)
-                    if target_token_id is not None:
-                        scores.append(
-                            torch.log_softmax(candidate_output.float(), dim=-1)[
-                                :, target_token_id
-                            ]
+                steps = self.cfg.periodic_perturbation_steps
+                candidates_per_step = self.cfg.periodic_perturbation_candidate_count
+                average_candidate_norm = None
+                for _step in range(steps):
+                    candidates = []
+                    scores = []
+                    for _ in range(candidates_per_step):
+                        epsilon = (
+                            direction_weight
+                            * self.cfg.perturbation_direction_scale
+                            * destination_norm
+                            * torch.randn_like(source)
+                            / source.shape[-1] ** 0.5
                         )
-                    else:
-                        direction = downstream_direction.reshape_as(candidate_output)
-                        scores.append(
-                            torch.sum(
-                                (candidate_output - baseline_output) * direction,
-                                dim=-1,
+                        candidate = normalized_source + epsilon
+                        candidate_output = perturbation_probe(
+                            source_index, destination_index, destination, candidate
+                        )
+                        if target_token_id is not None:
+                            reversed_output = perturbation_probe(
+                                source_index,
+                                destination_index,
+                                destination,
+                                normalized_source - epsilon,
                             )
+                            forward_score = torch.log_softmax(
+                                candidate_output.float(), dim=-1
+                            )[:, target_token_id]
+                            reversed_score = torch.log_softmax(
+                                reversed_output.float(), dim=-1
+                            )[:, target_token_id]
+                            keep_forward = (forward_score >= reversed_score).to(
+                                epsilon.device
+                            )
+                            candidates.append(
+                                torch.where(keep_forward[:, None, None], epsilon, -epsilon)
+                            )
+                            scores.append(torch.maximum(forward_score, reversed_score))
+                        else:
+                            candidates.append(candidate)
+                            direction = downstream_direction.reshape_as(candidate_output)
+                            scores.append(
+                                torch.sum(
+                                    (candidate_output - baseline_output) * direction,
+                                    dim=-1,
+                                )
+                            )
+                    if target_token_id is not None:
+                        candidate_weights = torch.softmax(torch.stack(scores, dim=0), dim=0)
+                        if candidate_target_token_probabilities is not None:
+                            candidate_target_token_probabilities.extend(
+                                float(score.exp().item()) for score in scores
+                            )
+                        candidate_weights = candidate_weights.masked_fill(
+                            candidate_weights <= 0.5 / candidates_per_step,
+                            0.0,
                         )
-                candidate_tensor = torch.stack(candidates, dim=0)
-                score_tensor = torch.stack(scores, dim=0)
-                best_index = (
-                    score_tensor.argmax(dim=0)
-                    if target_token_id is not None
-                    else score_tensor.argmin(dim=0)
-                )
-                normalized_source = candidate_tensor.gather(
-                    0,
-                    best_index.to(candidate_tensor.device).view(1, -1, 1, 1).expand(
-                        1, *candidate_tensor.shape[1:]
-                    ),
-                ).squeeze(0)
+                        candidate_weights = candidate_weights / candidate_weights.sum(
+                            dim=0, keepdim=True
+                        )
+                        candidate_tensor = torch.stack(candidates, dim=0)
+                        weighted_perturbation = (
+                            candidate_tensor
+                            * candidate_weights.to(source.device)[:, :, None, None]
+                        ).sum(dim=0)
+                        if average_candidate_norm is None:
+                            average_candidate_norm = torch.linalg.vector_norm(
+                                candidate_tensor, dim=-1, keepdim=True
+                            ).mean(dim=0)
+                        weighted_perturbation = (
+                            weighted_perturbation
+                            * average_candidate_norm
+                            / torch.linalg.vector_norm(
+                                weighted_perturbation, dim=-1, keepdim=True
+                            ).clamp_min(self.cfg.eps)
+                        )
+                        normalized_source = normalized_source + (
+                            self.cfg.periodic_perturbation_step_decay ** _step
+                        ) * weighted_perturbation
+                        if aggregate_target_token_probabilities is not None:
+                            aggregate_output = perturbation_probe(
+                                source_index, destination_index, destination, normalized_source
+                            )
+                            aggregate_target_token_probabilities.append(
+                                float(torch.softmax(aggregate_output.float(), dim=-1)[:, target_token_id].item())
+                            )
+                        #breakpoint()
+                    else:
+                        candidate_tensor = torch.stack(candidates, dim=0)
+                        score_tensor = torch.stack(scores, dim=0)
+                        best_index = score_tensor.argmin(dim=0)
+                        normalized_source = candidate_tensor.gather(
+                            0,
+                            best_index.to(candidate_tensor.device).view(1, -1, 1, 1).expand(
+                                1, *candidate_tensor.shape[1:]
+                            ),
+                        ).squeeze(0)
             # Without a downstream probe, preserve the original direct-direction behavior.
             elif self.cfg.perturbation_direction is not None:
                 direction = self.cfg.perturbation_direction.to(
@@ -414,6 +480,7 @@ class _Hooks:
                     * destination_norm
                     * direction
                 )
+            '''
             normalized_source = (
                 normalized_source
                 * destination_norm
@@ -421,6 +488,7 @@ class _Hooks:
                     normalized_source, dim=-1, keepdim=True
                 ).clamp_min(self.cfg.eps)
             )
+            '''
             self.prepared_sources[pair_index] = normalized_source
             if select_perturbation_candidate:
                 debug_latents.append((source_index, normalized_source.detach().clone()))
@@ -590,6 +658,8 @@ def recirculate(
     pass_top_k_token_ids: list[list[list[int]]] | None = None,
     target_token_id: int | None = None,
     pass_target_token_probabilities: list[list[float]] | None = None,
+    candidate_target_token_probabilities: list[list[float]] | None = None,
+    aggregate_target_token_probabilities: list[list[float]] | None = None,
     cosine_reject_thresholds: list[float | None] | None = None,
     injected_noise_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
@@ -859,6 +929,8 @@ def recirculate(
             token_pass_cosine_similarities: list[float] = []
             token_pass_top_k_token_ids: list[list[int]] = []
             token_pass_target_token_probabilities: list[float] = []
+            token_candidate_target_token_probabilities: list[float] = []
+            token_aggregate_target_token_probabilities: list[float] = []
             max_passes = max(
                 passes + adaptive_recirculation,
                 2 if force_recirculation else 1,
@@ -924,7 +996,17 @@ def recirculate(
                         else None
                     )
                     if perturbation_probe is not None
-                    else None
+                    else None,
+                    candidate_target_token_probabilities=(
+                        token_candidate_target_token_probabilities
+                        if candidate_target_token_probabilities is not None
+                        else None
+                    ),
+                    aggregate_target_token_probabilities=(
+                        token_aggregate_target_token_probabilities
+                        if aggregate_target_token_probabilities is not None
+                        else None
+                    ),
                 )
                 if not prepared_debug_latents:
                     prepared_debug_latents = noise_debug_latents
@@ -1172,6 +1254,14 @@ def recirculate(
                 pass_top_k_token_ids.append(token_pass_top_k_token_ids)
             if pass_target_token_probabilities is not None:
                 pass_target_token_probabilities.append(token_pass_target_token_probabilities)
+            if candidate_target_token_probabilities is not None:
+                candidate_target_token_probabilities.append(
+                    token_candidate_target_token_probabilities
+                )
+            if aggregate_target_token_probabilities is not None:
+                aggregate_target_token_probabilities.append(
+                    token_aggregate_target_token_probabilities
+                )
             if cosine_reject_thresholds is not None:
                 cosine_reject_thresholds.append(cosine_reject)
             if injected_noise_levels is not None:

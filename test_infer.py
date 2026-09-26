@@ -97,6 +97,8 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("pass_cosine_similarities", [0.3] if kwargs.get("force_recirculation") else []),
                     ("pass_top_k_token_ids", [[1, 0, 2]] if kwargs.get("force_recirculation") else []),
                     ("pass_target_token_probabilities", [0.9] if kwargs.get("force_recirculation") else []),
+                    ("candidate_target_token_probabilities", [0.3, 0.7, 0.4, 0.8, 0.2, 0.6, 0.5, 0.9] if kwargs.get("force_recirculation") else []),
+                    ("aggregate_target_token_probabilities", [0.45, 0.75] if kwargs.get("force_recirculation") else []),
                     ("cosine_reject_thresholds", 0.2 if kwargs.get("force_recirculation") else 0.8),
                     ("injected_noise_levels", [0.3] if kwargs.get("force_recirculation") else []),
                     ("initial_decoded_noise_source_latents", []),
@@ -118,6 +120,9 @@ class RecirculationStatsTest(unittest.TestCase):
                             "infer.py", *([] if knowedit else ["question"]), "--model", "test-model",
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
+                            "--periodic-perturbation-candidate-count", "4",
+                            "--periodic-perturbation-steps", "2",
+                            "--periodic-perturbation-step-decay", "0.5",
                             "--noise-injected-source-top-k", "3",
                             "--output", str(Path(directory) / "output.json"),
                             *(["--knowedit-file", "example.json"] if knowedit else []),
@@ -141,6 +146,9 @@ class RecirculationStatsTest(unittest.TestCase):
                     self.assertEqual([tokens for tokens, _, _ in calls], [[[3, 4]], [[5]], [[1]]])
                     self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
                     self.assertIsNone(calls[0][2].perturbation_direction)
+                    self.assertEqual(calls[1][2].periodic_perturbation_candidate_count, 4)
+                    self.assertEqual(calls[1][2].periodic_perturbation_steps, 2)
+                    self.assertEqual(calls[1][2].periodic_perturbation_step_decay, 0.5)
                     if knowedit:
                         self.assertEqual(encoded_targets, ["E", "E"])
                         self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
@@ -162,10 +170,20 @@ class RecirculationStatsTest(unittest.TestCase):
                                 comparisons[0]["pre_recirculation_target_token_probability"],
                                 torch.softmax(torch.tensor([0.0, 5.0, 0.0]), dim=-1)[1].item(),
                             )
-                            self.assertEqual(comparisons[0]["pass_target_token_probabilities"], [0.9])
+                            self.assertEqual(comparisons[0]["candidate_target_token_probabilities"], [["3.00e-01", "7.00e-01", "4.00e-01", "8.00e-01"], ["2.00e-01", "6.00e-01", "5.00e-01", "9.00e-01"]])
+                            self.assertEqual(comparisons[0]["aggregate_target_token_probabilities"], ["4.50e-01", "7.50e-01"])
+                            self.assertNotIn("pass_target_token_probabilities", comparisons[0])
+                            self.assertEqual(comparisons[0]["final_pass_target_token_probability"], "9.00e-01")
+                            self.assertEqual(comparisons[0]["post_recirculation_target_token_probability"], "9.87e-01")
+                            self.assertNotEqual(
+                                comparisons[0]["final_pass_target_token_probability"],
+                                comparisons[0]["post_recirculation_target_token_probability"],
+                            )
                         else:
                             self.assertNotIn("target_token", comparisons[0])
                             self.assertNotIn("pre_recirculation_target_token_probability", comparisons[0])
+                            self.assertNotIn("final_pass_target_token_probability", comparisons[0])
+                            self.assertNotIn("post_recirculation_target_token_probability", comparisons[0])
                         self.assertEqual(comparisons[0]["cosine_reject_threshold"], 0.2)
                         self.assertEqual(comparisons[0]["post_recirculation_topk_tokens"], ["E"] * 3)
                         self.assertEqual(
@@ -325,6 +343,27 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_for_k_tokens, 2)
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
+
+    def test_periodic_perturbation_candidate_count_is_positive(self) -> None:
+        self.assertEqual(parse_args(["prompt"]).periodic_perturbation_candidate_count, 16)
+        self.assertEqual(parse_args(["prompt"]).periodic_perturbation_steps, 1)
+        self.assertEqual(parse_args(["prompt"]).periodic_perturbation_step_decay, 1.0)
+        args = parse_args(["--periodic-perturbation-candidate-count", "4", "prompt"])
+        self.assertEqual(args.periodic_perturbation_candidate_count, 4)
+        validate_run_arguments(args)
+        with self.assertRaisesRegex(ValueError, "--periodic-perturbation-candidate-count"):
+            validate_run_arguments(
+                parse_args(["--periodic-perturbation-candidate-count", "0", "prompt"])
+            )
+        with self.assertRaisesRegex(ValueError, "--periodic-perturbation-steps"):
+            validate_run_arguments(parse_args(["--periodic-perturbation-steps", "0", "prompt"]))
+        with self.assertRaisesRegex(ValueError, "--periodic-perturbation-step-decay"):
+            validate_run_arguments(parse_args(["--periodic-perturbation-step-decay", "1.1", "prompt"]))
+        validate_run_arguments(parse_args([
+            "--periodic-perturbation-candidate-count", "4",
+            "--periodic-perturbation-steps", "3",
+            "--periodic-perturbation-step-decay", "0.5", "prompt",
+        ]))
 
     def test_noise_injected_source_top_k_is_positive(self) -> None:
         self.assertEqual(parse_args(["prompt"]).noise_injected_source_top_k, 4)

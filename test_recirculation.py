@@ -68,11 +68,15 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertAlmostEqual(pass_target_probabilities[0][0], torch.softmax(pass_logits[1][0, -1], dim=-1)[1].item())
         self.assertAlmostEqual(pass_target_probabilities[0][1], torch.softmax(pass_logits[2][0, -1], dim=-1)[1].item())
 
-    def test_periodic_probe_selects_highest_target_probability(self) -> None:
+    def test_periodic_probe_weights_target_oriented_noises(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         selected_inputs: list[torch.Tensor] = []
+        probed_inputs: list[torch.Tensor] = []
+        candidate_probabilities: list[list[float]] = []
+        aggregate_probabilities: list[list[float]] = []
 
         def probe(_token, _source, _destination, _target, candidate, *_args):
+            probed_inputs.append(candidate.detach().clone())
             logits = torch.cat(
                 (
                     2 * candidate[:, -1, :1],
@@ -91,14 +95,17 @@ class RecirculationCacheTest(unittest.TestCase):
             cache.append(len(cache))
             return torch.tensor([[[2.0, 1.0, 0.0]]]), cache
 
-        with patch(
-            "recirculation.torch.randn_like",
-            side_effect=[
+        with (
+            patch("builtins.breakpoint"),
+            patch(
+                "recirculation.torch.randn_like",
+                side_effect=[
                 torch.tensor([[[1.0, 0.0]]]),
                 torch.tensor([[[-1.0, 0.0]]]),
                 torch.tensor([[[0.0, 1.0]]]),
                 torch.tensor([[[0.0, -1.0]]]),
-            ],
+                ],
+            ),
         ):
             recirculate(
                 torch.tensor([[1]]),
@@ -111,20 +118,192 @@ class RecirculationCacheTest(unittest.TestCase):
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     perturbation_target_token_id=1,
+                    periodic_perturbation_candidate_count=4,
                 ),
                 passes=1,
                 force_recirculation=True,
                 decode_injected_source_latent=lambda *_args: {"margin": 0.0},
                 perturbation_probe=probe,
+                candidate_target_token_probabilities=candidate_probabilities,
+                aggregate_target_token_probabilities=aggregate_probabilities,
                 capture_cached_token=lambda cache: cache[-1],
                 restore_cached_token=lambda _cache, _cached_token: None,
             )
 
+        x_score = torch.log_softmax(torch.tensor([1.6, 0.8, 0.0]), dim=-1)[1]
+        y_score = torch.log_softmax(torch.tensor([2.0, 1.0, 0.0]), dim=-1)[1]
         expected = torch.tensor([[[0.8, 1.0]]])
-        expected = expected * 2**0.5 / torch.linalg.vector_norm(
-            expected, dim=-1, keepdim=True
+        aggregate_source = expected.clone()
+        self.assertEqual(len(probed_inputs), 9)
+        self.assertEqual(len(candidate_probabilities), 1)
+        self.assertEqual(len(aggregate_probabilities[0]), 1)
+        torch.testing.assert_close(probed_inputs[-1], aggregate_source)
+        aggregate_logits = torch.tensor([2 * aggregate_source[0, 0, 0], aggregate_source[0, 0, 0], 0.0])
+        self.assertAlmostEqual(
+            aggregate_probabilities[0][0],
+            torch.softmax(aggregate_logits, dim=-1)[1].item(),
         )
+        self.assertAlmostEqual(candidate_probabilities[0][0], x_score.exp().item())
+        self.assertAlmostEqual(candidate_probabilities[0][1], x_score.exp().item())
+        self.assertAlmostEqual(candidate_probabilities[0][2], y_score.exp().item())
+        self.assertAlmostEqual(candidate_probabilities[0][3], y_score.exp().item())
         torch.testing.assert_close(selected_inputs[-1], 0.5 * (torch.ones_like(expected) + expected))
+
+    def test_periodic_probe_discards_candidates_below_half_average_weight(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        config = RecirculationConfig(
+            pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+            periodic_perturbation_candidate_count=2,
+        )
+        hooks = _Hooks(blocks, config)
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+
+        def probe(_source, _destination, _target, candidate):
+            high_probability = candidate[:, -1, 0] > 1.1
+            return torch.stack(
+                (torch.where(high_probability, 0.0, 2.0),
+                 torch.where(high_probability, 2.0, 0.0)),
+                dim=-1,
+            )
+
+        try:
+            with (
+                patch("builtins.breakpoint"),
+                patch("recirculation.torch.randn_like", side_effect=[
+                    torch.tensor([[[1.0, 0.0]]]),
+                    torch.tensor([[[0.0, 1.0]]]),
+                ]),
+            ):
+                hooks.prepare_injections(probe)
+            expected = torch.tensor([[[1.2, 1.0]]])
+            expected *= 2**0.5 / torch.linalg.vector_norm(expected, dim=-1, keepdim=True)
+            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+        finally:
+            hooks.close()
+
+    def test_periodic_probe_matches_average_candidate_noise_norm(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=2,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 2.0]]]),
+            ]):
+                hooks.prepare_injections(
+                    lambda *_args: torch.zeros((1, 2))
+                )
+            weighted_noise = torch.tensor([[[0.1, 0.2]]])
+            average_norm = 0.3
+            expected = torch.ones((1, 1, 2)) + (
+                weighted_noise * average_norm
+                / torch.linalg.vector_norm(weighted_noise, dim=-1, keepdim=True)
+            )
+            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+        finally:
+            hooks.close()
+
+    def test_periodic_probe_uses_updated_source_on_next_step(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=4, periodic_perturbation_steps=2,
+                periodic_perturbation_step_decay=0.5,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+        probed_inputs: list[torch.Tensor] = []
+        probabilities: list[float] = []
+        aggregate_probabilities: list[float] = []
+
+        def probe(_source, _destination, _target, candidate):
+            probed_inputs.append(candidate.clone())
+            return torch.zeros((1, 2))
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 2.0]]]),
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 2.0]]]),
+                torch.tensor([[[2.0, 0.0]]]),
+                torch.tensor([[[0.0, 4.0]]]),
+                torch.tensor([[[2.0, 0.0]]]),
+                torch.tensor([[[0.0, 4.0]]]),
+            ]):
+                hooks.prepare_injections(probe, probabilities, aggregate_probabilities)
+            weighted_noise = torch.tensor([[[0.1, 0.2]]])
+            stage_noise = weighted_noise * 0.3 / torch.linalg.vector_norm(
+                weighted_noise, dim=-1, keepdim=True
+            )
+            torch.testing.assert_close(
+                probed_inputs[8], torch.ones((1, 1, 2)) + stage_noise,
+            )
+            torch.testing.assert_close(
+                probed_inputs[9], torch.ones((1, 1, 2)) + stage_noise
+                + torch.tensor([[[0.4, 0.0]]]),
+            )
+            expected = torch.ones((1, 1, 2)) + 1.5 * stage_noise
+            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+            torch.testing.assert_close(probed_inputs[-1], expected)
+            self.assertEqual(len(probed_inputs), 18)
+            self.assertEqual(len(probabilities), 8)
+            self.assertEqual(aggregate_probabilities, [0.5, 0.5])
+        finally:
+            hooks.close()
+
+    def test_direction_probe_uses_updated_source_on_next_step(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pairs=((2, 0),), alpha=0.5,
+                perturbation_direction=torch.tensor([[1.0, 0.0]]),
+                periodic_perturbation_candidate_count=4, periodic_perturbation_steps=2,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+        probed_inputs: list[torch.Tensor] = []
+
+        def probe(_source, _destination, _target, candidate):
+            probed_inputs.append(candidate.clone())
+            return candidate[:, -1, :]
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[-1.0, 0.0]]]),
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[-1.0, 0.0]]]),
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[-1.0, 0.0]]]),
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[-1.0, 0.0]]]),
+            ]):
+                hooks.prepare_injections(probe)
+            torch.testing.assert_close(probed_inputs[4], torch.ones((1, 1, 2)))
+            self.assertEqual(len(probed_inputs), 8)
+            expected = torch.tensor([[[0.6, 1.0]]])
+            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+        finally:
+            hooks.close()
 
     def test_periodic_probe_selects_least_aligned_noise_candidate(self) -> None:
         block_one_inputs: list[torch.Tensor] = []
@@ -170,6 +349,7 @@ class RecirculationCacheTest(unittest.TestCase):
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     perturbation_direction=torch.tensor([[1.0, 0.0]]),
+                    periodic_perturbation_candidate_count=4,
                 ),
                 passes=1,
                 force_recirculation=True,

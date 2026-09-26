@@ -928,6 +928,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--periodic-perturbation-candidate-count",
+        type=int,
+        default=16,
+        metavar="COUNT",
+        help="Number of periodic perturbation candidates to probe per step (default: 16).",
+    )
+    parser.add_argument(
+        "--periodic-perturbation-steps",
+        type=int,
+        default=1,
+        metavar="STEPS",
+        help="Number of sequential periodic perturbation steps (default: 1).",
+    )
+    parser.add_argument(
+        "--periodic-perturbation-step-decay",
+        type=float,
+        default=0.8,
+        metavar="S",
+        help="Scale each step's weighted perturbation by S^step (default: 0.8).",
+    )
+    parser.add_argument(
         "--cosine-top-k",
         type=int,
         default=5,
@@ -1784,6 +1805,12 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--perturb-for-k-tokens must be at least 1.")
     if args.perturb_recent_m_tokens < 1:
         raise ValueError("--perturb-recent-m-tokens must be at least 1.")
+    if args.periodic_perturbation_candidate_count < 1:
+        raise ValueError("--periodic-perturbation-candidate-count must be at least 1.")
+    if args.periodic_perturbation_steps < 1:
+        raise ValueError("--periodic-perturbation-steps must be at least 1.")
+    if not 0.0 <= args.periodic_perturbation_step_decay <= 1.0:
+        raise ValueError("--periodic-perturbation-step-decay must be between 0 and 1.")
     if not 0.0 <= args.perturb_history_decay <= 1.0:
         raise ValueError("--perturb-history-decay must be between 0 and 1.")
     noise_min, noise_max = args.noise_level_range
@@ -2782,6 +2809,8 @@ def main() -> None:
         pass_cosine_similarities: list[list[float]] = []
         pass_top_k_token_ids: list[list[list[int]]] = []
         pass_target_token_probabilities: list[list[float]] = []
+        candidate_target_token_probabilities: list[list[float]] = []
+        aggregate_target_token_probabilities: list[list[float]] = []
         cosine_reject_thresholds: list[float | None] = []
         injected_noise_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
@@ -2825,6 +2854,8 @@ def main() -> None:
             pass_top_k_token_ids=pass_top_k_token_ids,
             target_token_id=target_token_id,
             pass_target_token_probabilities=pass_target_token_probabilities,
+            candidate_target_token_probabilities=candidate_target_token_probabilities,
+            aggregate_target_token_probabilities=aggregate_target_token_probabilities,
             cosine_reject_thresholds=cosine_reject_thresholds,
             injected_noise_levels=injected_noise_levels,
             decode_injected_source_latent=decoded_latent_stats,
@@ -2890,7 +2921,24 @@ def main() -> None:
                 comparison["pre_recirculation_target_token_probability"] = float(
                     torch.softmax(teacher_next_logits[0].float(), dim=-1)[target_token_id].item()
                 )
-                comparison["pass_target_token_probabilities"] = pass_target_token_probabilities[-1]
+                candidates_per_step = student_run_config.periodic_perturbation_candidate_count
+                probabilities = candidate_target_token_probabilities[-1]
+                comparison["candidate_target_token_probabilities"] = [
+                    [f"{probability:.2e}" for probability in probabilities[start:start + candidates_per_step]]
+                    for start in range(0, len(probabilities), candidates_per_step)
+                ]
+                comparison["aggregate_target_token_probabilities"] = [
+                    f"{probability:.2e}"
+                    for probability in aggregate_target_token_probabilities[-1]
+                ]
+                comparison["final_pass_target_token_probability"] = (
+                    f"{pass_target_token_probabilities[-1][-1]:.2e}"
+                    if pass_target_token_probabilities[-1]
+                    else None
+                )
+                comparison["post_recirculation_target_token_probability"] = (
+                    f"{torch.softmax(student_next_logits[0].float(), dim=-1)[target_token_id].item():.2e}"
+                )
             comparison["cosine_reject_threshold"] = cosine_reject_thresholds[-1]
             comparison["cosine_top_k"] = run_args.cosine_top_k
             comparison["post_recirculation_topk_tokens"] = top_k_decoded_tokens(
@@ -3144,6 +3192,8 @@ def main() -> None:
                 pass_top_k_token_ids=pass_top_k_token_ids,
                 target_token_id=target_token_id,
                 pass_target_token_probabilities=pass_target_token_probabilities,
+                candidate_target_token_probabilities=candidate_target_token_probabilities,
+                aggregate_target_token_probabilities=aggregate_target_token_probabilities,
                 cosine_reject_thresholds=cosine_reject_thresholds,
                 injected_noise_levels=injected_noise_levels,
                 decode_injected_source_latent=decoded_latent_stats,
@@ -3199,6 +3249,9 @@ def main() -> None:
             alpha=run_args.alpha,
             beta=run_args.beta,
             noise_level_range=tuple(run_args.noise_level_range),
+            periodic_perturbation_candidate_count=run_args.periodic_perturbation_candidate_count,
+            periodic_perturbation_steps=run_args.periodic_perturbation_steps,
+            periodic_perturbation_step_decay=run_args.periodic_perturbation_step_decay,
             perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
@@ -3327,6 +3380,9 @@ def main() -> None:
             "perturb_for_k_tokens",
             "perturb_recent_m_tokens",
             "perturb_history_decay",
+            "periodic_perturbation_candidate_count",
+            "periodic_perturbation_steps",
+            "periodic_perturbation_step_decay",
             "repetition_penalty",
             "seed",
         )

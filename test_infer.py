@@ -406,6 +406,15 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(default.perturb_noise_level_range, (0.2, 0.4))
         self.assertEqual(args.perturb_noise_level_range, [0.05, 0.15])
 
+    def test_parses_perturbation_save_and_replay_paths(self) -> None:
+        args = parse_args([
+            "--save-perturbation", "saved",
+            "--replay-perturbation", "replay.pt",
+        ])
+
+        self.assertEqual(args.save_perturbation, Path("saved.pt"))
+        self.assertEqual(args.replay_perturbation, Path("replay.pt"))
+
     def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:
         self.assertEqual(
             periodic_perturbation_noise_level_range((0.0, 0.0), None),

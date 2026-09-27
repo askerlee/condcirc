@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import torch
@@ -59,6 +60,8 @@ class RecirculationConfig:
     periodic_perturbation_candidate_count: int = 16
     periodic_perturbation_steps: int = 1
     periodic_perturbation_step_decay: float = 1.0
+    save_perturbation: Path | None = None
+    replay_perturbation: Path | None = None
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
@@ -164,6 +167,18 @@ def _distribution_cosine_similarity(
         dim=-1,
     )
     return float(similarity.mean().item())
+
+
+def perturbation_replay(normalized_source: Tensor, path: Path) -> Tensor:
+    perturbation = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(perturbation, Tensor) or perturbation.shape != normalized_source.shape:
+        raise ValueError(
+            f"Replay perturbation in {path} must be a tensor with shape "
+            f"{tuple(normalized_source.shape)}."
+        )
+    return normalized_source + perturbation.to(
+        device=normalized_source.device, dtype=normalized_source.dtype
+    )
 
 
 class _Hooks:
@@ -306,6 +321,7 @@ class _Hooks:
         steps = self.cfg.periodic_perturbation_steps
         candidates_per_step = self.cfg.periodic_perturbation_candidate_count
         average_candidate_norm = None
+        initial_normalized_source = normalized_source
         for _step in range(steps):
             candidates = []
             scores = []
@@ -400,6 +416,11 @@ class _Hooks:
                         1, *candidate_tensor.shape[1:]
                     ),
                 ).squeeze(0)
+        if self.cfg.save_perturbation is not None:
+            torch.save(
+                (normalized_source - initial_normalized_source).detach().cpu(),
+                self.cfg.save_perturbation,
+            )
         return normalized_source
 
     def prepare_injections(
@@ -434,7 +455,7 @@ class _Hooks:
             self.cfg.eps
         )
         select_perturbation_candidate = (
-            perturbation_probe is not None
+            (perturbation_probe is not None or self.cfg.replay_perturbation is not None)
             and (
                 self.cfg.perturbation_direction is not None
                 or self.cfg.perturbation_target_token_id is not None
@@ -465,19 +486,24 @@ class _Hooks:
                 self.injected_source_latents.append((source_index, debug_latent))
             normalized_source = normalized_source + normalized_perturbation
         if select_perturbation_candidate:
-            assert perturbation_probe is not None
-            normalized_source = self.iteratively_find_perturbation_candidate(
-                source_index,
-                destination_index,
-                destination,
-                source,
-                destination_norm,
-                normalized_source,
-                direction_weight,
-                perturbation_probe,
-                candidate_target_token_probabilities,
-                aggregate_target_token_probabilities,
-            )
+            if self.cfg.replay_perturbation is not None:
+                normalized_source = perturbation_replay(
+                    normalized_source, self.cfg.replay_perturbation
+                )
+            else:
+                assert perturbation_probe is not None
+                normalized_source = self.iteratively_find_perturbation_candidate(
+                    source_index,
+                    destination_index,
+                    destination,
+                    source,
+                    destination_norm,
+                    normalized_source,
+                    direction_weight,
+                    perturbation_probe,
+                    candidate_target_token_probabilities,
+                    aggregate_target_token_probabilities,
+                )
         elif self.cfg.perturbation_direction is not None:
             direction = self.cfg.perturbation_direction.to(
                 device=source.device, dtype=torch.float32

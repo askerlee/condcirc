@@ -488,6 +488,10 @@ def parse_sudoku_file(value: str) -> str | Path:
     return value if value.startswith("https://") else Path(value)
 
 
+def parse_perturbation_file(value: str) -> Path:
+    return Path(value if value.endswith(".pt") else f"{value}.pt")
+
+
 def parse_bbeh_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "BBEH")
 
@@ -955,6 +959,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=0.8,
         metavar="S",
         help="Scale each step's weighted perturbation by S^step (default: 0.8).",
+    )
+    parser.add_argument(
+        "--save-perturbation",
+        type=parse_perturbation_file,
+        default="perturb.pt",
+        metavar="FILE.pt",
+        help="Save the final candidate perturbation to a .pt file when one is selected.",
+    )
+    parser.add_argument(
+        "--replay-perturbation",
+        type=parse_perturbation_file,
+        default=None,
+        metavar="FILE.pt",
+        help="Apply a saved perturbation instead of searching for candidates.",
     )
     parser.add_argument(
         "--cosine-top-k",
@@ -3241,6 +3259,8 @@ def main() -> None:
             periodic_perturbation_candidate_count=run_args.periodic_perturbation_candidate_count,
             periodic_perturbation_steps=run_args.periodic_perturbation_steps,
             periodic_perturbation_step_decay=run_args.periodic_perturbation_step_decay,
+            save_perturbation=run_args.save_perturbation,
+            replay_perturbation=run_args.replay_perturbation,
             perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,

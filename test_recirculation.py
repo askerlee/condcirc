@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -213,6 +215,80 @@ class RecirculationCacheTest(unittest.TestCase):
             torch.testing.assert_close(hooks.prepared_source, expected)
         finally:
             hooks.close()
+
+    def test_saves_and_replays_accumulated_perturbation(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perturbation.pt"
+            hooks = _Hooks(
+                blocks,
+                RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                    periodic_perturbation_candidate_count=1,
+                    periodic_perturbation_steps=2,
+                    periodic_perturbation_step_decay=0.5,
+                    save_perturbation=path,
+                ),
+            )
+            hooks.residuals[0] = torch.ones((1, 1, 2))
+            hooks.injection_source = torch.ones((1, 1, 2))
+            hooks.noise_level = 0.2
+            try:
+                with patch("recirculation.torch.randn_like", side_effect=[
+                    torch.tensor([[[1.0, 0.0]]]),
+                    torch.tensor([[[1.0, 0.0]]]),
+                ]):
+                    hooks.prepare_injections(lambda *_args: torch.zeros((1, 2)))
+                saved = torch.load(path, map_location="cpu", weights_only=True)
+                torch.testing.assert_close(saved, hooks.prepared_source - 1)
+                torch.testing.assert_close(saved, torch.tensor([[[0.3, 0.0]]]))
+            finally:
+                hooks.close()
+
+            replay_hooks = _Hooks(
+                blocks,
+                RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                    replay_perturbation=path,
+                ),
+            )
+            replay_hooks.residuals[0] = torch.ones((1, 1, 2))
+            replay_hooks.injection_source = torch.tensor([[[2.0, 0.0]]])
+            replay_hooks.noise_level = 0.2
+            try:
+                with (
+                    patch.object(replay_hooks, "iteratively_find_perturbation_candidate",
+                                 side_effect=AssertionError("candidate search ran")),
+                    patch("recirculation.torch.randn_like",
+                          side_effect=AssertionError("random noise drawn")),
+                ):
+                    replay_hooks.prepare_injections()
+                torch.testing.assert_close(
+                    replay_hooks.prepared_source,
+                    torch.tensor([[[2**0.5 + 0.3, 0.0]]]),
+                )
+            finally:
+                replay_hooks.close()
+
+    def test_replay_rejects_wrong_perturbation_shape(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perturbation.pt"
+            torch.save(torch.ones((2,)), path)
+            hooks = _Hooks(
+                blocks,
+                RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                    replay_perturbation=path,
+                ),
+            )
+            hooks.residuals[0] = torch.ones((1, 1, 2))
+            hooks.injection_source = torch.ones((1, 1, 2))
+            try:
+                with self.assertRaisesRegex(ValueError, "shape"):
+                    hooks.prepare_injections(lambda *_args: torch.zeros((1, 2)))
+            finally:
+                hooks.close()
 
     def test_periodic_probe_uses_updated_source_on_next_step(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

@@ -46,7 +46,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda cache: cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+                    pair=(2, 0), alpha=0.5, noise_level_range=(0.2, 0.4)
                 ),
                 passes=1,
                 force_recirculation=True,
@@ -114,7 +114,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda cache: cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     perturbation_target_token_id=1,
@@ -152,12 +152,12 @@ class RecirculationCacheTest(unittest.TestCase):
     def test_periodic_probe_discards_candidates_below_half_average_weight(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         config = RecirculationConfig(
-            pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+            pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
             periodic_perturbation_candidate_count=2,
         )
         hooks = _Hooks(blocks, config)
         hooks.residuals[0] = torch.ones((1, 1, 2))
-        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
         hooks.noise_level = 0.2
 
         def probe(_source, _destination, _target, candidate):
@@ -179,7 +179,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 hooks.prepare_injections(probe)
             expected = torch.tensor([[[1.2, 1.0]]])
             expected *= 2**0.5 / torch.linalg.vector_norm(expected, dim=-1, keepdim=True)
-            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+            torch.testing.assert_close(hooks.prepared_source, expected)
         finally:
             hooks.close()
 
@@ -188,12 +188,12 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
                 periodic_perturbation_candidate_count=2,
             ),
         )
         hooks.residuals[0] = torch.ones((1, 1, 2))
-        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
         hooks.noise_level = 0.2
 
         try:
@@ -210,7 +210,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 weighted_noise * average_norm
                 / torch.linalg.vector_norm(weighted_noise, dim=-1, keepdim=True)
             )
-            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+            torch.testing.assert_close(hooks.prepared_source, expected)
         finally:
             hooks.close()
 
@@ -219,13 +219,13 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, perturbation_target_token_id=1,
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
                 periodic_perturbation_candidate_count=4, periodic_perturbation_steps=2,
                 periodic_perturbation_step_decay=0.5,
             ),
         )
         hooks.residuals[0] = torch.ones((1, 1, 2))
-        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
         hooks.noise_level = 0.2
         probed_inputs: list[torch.Tensor] = []
         probabilities: list[float] = []
@@ -259,7 +259,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 + torch.tensor([[[0.4, 0.0]]]),
             )
             expected = torch.ones((1, 1, 2)) + 1.5 * stage_noise
-            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+            torch.testing.assert_close(hooks.prepared_source, expected)
             torch.testing.assert_close(probed_inputs[-1], expected)
             self.assertEqual(len(probed_inputs), 18)
             self.assertEqual(len(probabilities), 8)
@@ -272,13 +272,13 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5,
+                pair=(2, 0), alpha=0.5,
                 perturbation_direction=torch.tensor([[1.0, 0.0]]),
                 periodic_perturbation_candidate_count=4, periodic_perturbation_steps=2,
             ),
         )
         hooks.residuals[0] = torch.ones((1, 1, 2))
-        hooks.injection_sources[2] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
         hooks.noise_level = 0.2
         probed_inputs: list[torch.Tensor] = []
 
@@ -301,7 +301,7 @@ class RecirculationCacheTest(unittest.TestCase):
             torch.testing.assert_close(probed_inputs[4], torch.ones((1, 1, 2)))
             self.assertEqual(len(probed_inputs), 8)
             expected = torch.tensor([[[0.6, 1.0]]])
-            torch.testing.assert_close(hooks.prepared_sources[0], expected)
+            torch.testing.assert_close(hooks.prepared_source, expected)
         finally:
             hooks.close()
 
@@ -345,7 +345,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda cache: cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     perturbation_direction=torch.tensor([[1.0, 0.0]]),
@@ -399,7 +399,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda cache: cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     perturbation_direction=torch.tensor([[-1.0, 0.0]]),
@@ -438,7 +438,7 @@ class RecirculationCacheTest(unittest.TestCase):
             step=step,
             rewind_one=lambda cache: cache[:-1],
             config=RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+                pair=(2, 0), alpha=0.5, noise_level_range=(0.2, 0.4)
             ),
             passes=1,
             adaptive_recirculation=0,
@@ -497,11 +497,11 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=rewind_one,
                 config=RecirculationConfig(
-                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.2, 0.4)
+                    pair=(2, 0), alpha=0.5, noise_level_range=(0.2, 0.4)
                 ),
                 passes=1,
                 force_recirculation=True,
-                condition_thresholds=(2.0,),
+                condition_threshold=2.0,
                 pre_margin_threshold=-1.0,
                 post_margin_threshold=(1.0, 1.0),
                 post_margin_ratio_threshold=99.0,
@@ -526,7 +526,7 @@ class RecirculationCacheTest(unittest.TestCase):
         _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.5, 1.0)
+                pair=(2, 0), alpha=0.5, noise_level_range=(0.5, 1.0)
             ),
         )
 
@@ -536,7 +536,7 @@ class RecirculationCacheTest(unittest.TestCase):
         _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.0)
+                pair=(2, 0), alpha=0.5, noise_level_range=(0.8, 1.0)
             ),
             force_recirculation=True,
         )
@@ -548,7 +548,7 @@ class RecirculationCacheTest(unittest.TestCase):
             _Hooks(
                 blocks,
                 RecirculationConfig(
-                    pairs=((2, 0),), alpha=0.5, noise_level_range=(8.0, 12.0)
+                    pair=(2, 0), alpha=0.5, noise_level_range=(8.0, 12.0)
                 ),
                 force_recirculation=True,
             )
@@ -560,7 +560,7 @@ class RecirculationCacheTest(unittest.TestCase):
             _Hooks(
                 blocks,
                 RecirculationConfig(
-                    pairs=((2, 0),), alpha=0.5, noise_level_range=(0.8, 1.6)
+                    pair=(2, 0), alpha=0.5, noise_level_range=(0.8, 1.6)
                 ),
             )
 
@@ -582,7 +582,7 @@ class RecirculationCacheTest(unittest.TestCase):
             step=step,
             rewind_one=lambda current_cache: current_cache[:-1],
             config=RecirculationConfig(
-                pairs=((2, 0),),
+                pair=(2, 0),
                 alpha=0.5,
                 noise_level_range=(0.1, 0.2),
                 perturb_pre_margin_thres=0.05,
@@ -616,7 +616,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda current_cache: current_cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=0.5,
                     noise_level_range=(0.2, 0.2),
                     noise_decay_per_pass=decay,
@@ -651,15 +651,15 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),), alpha=1.0, noise_level_range=(0.0, 0.25)
+                pair=(2, 0), alpha=1.0, noise_level_range=(0.0, 0.25)
             ),
             injected_source_latents=injected_source_latents,
         )
         destination = torch.tensor([[[3.0, 4.0]]])
         source = torch.tensor([[[1.0, 0.0]]])
         hooks.residuals[0] = destination
-        hooks.injection_sources[2] = source
-        hooks.active_pairs = (True,)
+        hooks.injection_source = source
+        hooks.active_pair = True
         hooks.mode = "inject"
         hooks.noise_level = 0.25
 
@@ -686,7 +686,7 @@ class RecirculationCacheTest(unittest.TestCase):
         hooks = _Hooks(
             blocks,
             RecirculationConfig(
-                pairs=((2, 0),),
+                pair=(2, 0),
                 alpha=1.0,
                 noise_level_range=(0.0, 0.4),
                 noise_decay_per_pass=0.5,
@@ -695,8 +695,8 @@ class RecirculationCacheTest(unittest.TestCase):
         destination = torch.tensor([[[3.0, 4.0]]])
         source = torch.tensor([[[1.0, 0.0]]])
         hooks.residuals[0] = destination
-        hooks.injection_sources[2] = source
-        hooks.active_pairs = (True,)
+        hooks.injection_source = source
+        hooks.active_pair = True
         hooks.mode = "inject"
         hooks.noise_level = 0.4
         normalized_source = torch.tensor([[[5.0, 0.0]]])
@@ -751,7 +751,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda current_cache: current_cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=0.5,
                     noise_level_range=(0.0, 0.4),
                     noise_decay_per_pass=0.5,
@@ -834,7 +834,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 step=step,
                 rewind_one=lambda current_cache: current_cache[:-1],
                 config=RecirculationConfig(
-                    pairs=((2, 0),),
+                    pair=(2, 0),
                     alpha=1.0,
                     noise_level_range=(0.4, 0.4),
                 ),
@@ -874,7 +874,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=lambda current_cache: current_cache,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             finalize_token_cache=finalize_token_cache,
         )
@@ -904,9 +904,9 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=lambda current_cache: current_cache,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
-            condition_thresholds=[2.0],
+            condition_threshold=2.0,
             pre_margin_threshold=-1.0,
             post_margin_threshold=(0.0, 0.0),
             cosine_reject=1.0,
@@ -937,7 +937,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=lambda current_cache: current_cache,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=3,
             recirculation_allowed=False,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -982,7 +982,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=3,
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -1030,7 +1030,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=3,
             final_pass_same_top1_flags=final_pass_same_top1_flags,
             capture_cached_token=lambda current_cache: current_cache[-1],
@@ -1080,7 +1080,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=3,
             post_margin_threshold=(0.05, 0.05),
             cosine_reject=0.8,
@@ -1136,7 +1136,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=2,
             post_margin_threshold=(0.05, 0.05),
             rejected_flags=rejected_flags,
@@ -1185,7 +1185,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=2,
             post_margin_threshold=(0.01, 0.5),
             post_margin_ratio_threshold=0.5,
@@ -1230,7 +1230,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=2,
             post_margin_threshold=(0.1, 0.7),
             post_margin_ratio_threshold=0.5,
@@ -1274,7 +1274,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=3,
             capture_cached_token=lambda current_cache: current_cache[-1],
             restore_cached_token=lambda current_cache, cached: current_cache.__setitem__(
@@ -1321,7 +1321,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
@@ -1383,7 +1383,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
@@ -1429,7 +1429,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=lambda current_cache: current_cache,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=3,
@@ -1475,7 +1475,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             post_margin_threshold=(0.2, 0.2),
             adaptive_recirculation=2,
@@ -1517,7 +1517,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=lambda current_cache: current_cache,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             pre_margin_threshold=-1.0,
             post_margin_threshold=(0.2, 0.2),
@@ -1564,7 +1564,7 @@ class RecirculationCacheTest(unittest.TestCase):
             cache=cache,
             step=step,
             rewind_one=rewind_one,
-            config=RecirculationConfig(pairs=((2, 0),), alpha=0.5),
+            config=RecirculationConfig(pair=(2, 0), alpha=0.5),
             passes=1,
             adaptive_recirculation=2,
             rejection_reasons=rejection_reasons,

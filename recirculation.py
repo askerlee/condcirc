@@ -2,7 +2,7 @@
    Originally implemented by Benhao Huang:
    https://gist.github.com/huskydoge/1ff29693e2172226ec26081f208b19d6
 
-In source-to-destination mode, each configured ``(source, destination)`` pair
+In source-to-destination mode, the configured ``(source, destination)`` pair
 is recirculated for every token (with three passes):
     1. Run a normal cached pass; return its logits and save residuals h_d, h_s.
   2. Rewind the KV cache by one position.
@@ -49,7 +49,7 @@ FORCED_NOISE_MAX_ATTEMPTS = 1
 
 @dataclass(frozen=True)
 class RecirculationConfig:
-    pairs: tuple[tuple[int, int], ...]
+    pair: tuple[int, int]
     alpha: float
     beta: float | None = None  # None selects the convex mix: beta = 1 - alpha.
     noise_level_range: tuple[float, float] = (0.0, 0.0)
@@ -175,16 +175,10 @@ class _Hooks:
         adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
         injected_source_latents: list[tuple[int, Tensor]] | None = None,
     ) -> None:
-        if not cfg.pairs:
-            raise ValueError("At least one source/destination pair is required.")
-        if len({destination for _source, destination in cfg.pairs}) != len(cfg.pairs):
-            raise ValueError("Each source/destination pair must have a unique destination.")
-        if any(
-            not 0 <= destination < source < len(blocks)
-            for source, destination in cfg.pairs
-        ):
+        source, destination = cfg.pair
+        if not 0 <= destination < source < len(blocks):
             raise ValueError(
-                "Expected 0 <= destination < source < number of blocks for every pair."
+                "Expected 0 <= destination < source < number of blocks."
             )
         noise_min, noise_max = cfg.noise_level_range
         maximum_noise_level = 1.0
@@ -207,27 +201,24 @@ class _Hooks:
         self.mode = "off"
         self.pass_index = 1
         self.noise_level = 0.0
-        self.destinations = {destination for _source, destination in cfg.pairs}
-        self.sources = {source for source, _destination in cfg.pairs}
+        self.destination_index = destination
+        self.source_index = source
         self.residuals: dict[int, Tensor] = {}
-        self.injection_sources: dict[int, Tensor] = {}
-        self.active_pairs = tuple(True for _pair in cfg.pairs)
+        self.injection_source: Tensor | None = None
+        self.active_pair = True
         self.adjacent_layer_stats = adjacent_layer_stats
         self.injected_source_latents = injected_source_latents
-        self.prepared_sources: dict[int, Tensor] = {}
-        self.noise_perturbations: dict[int, tuple[Tensor, Tensor]] = {}
-        self.noise_debug_positions: dict[int, int] = {}
+        self.prepared_source: Tensor | None = None
+        self.noise_perturbation: tuple[Tensor, Tensor] | None = None
+        self.noise_debug_position: int | None = None
         self.layer_residuals: dict[int, Tensor] = {}
-        watched_layers = self.destinations | self.sources
+        watched_layers = {source, destination}
         handles = [
             blocks[layer_index].register_forward_hook(self._save_residual(layer_index))
             for layer_index in watched_layers
         ]
-        handles.extend(
-            blocks[destination + 1].register_forward_pre_hook(
-                self._inject(pair_index, source, destination)
-            )
-            for pair_index, (source, destination) in enumerate(cfg.pairs)
+        handles.append(
+            blocks[destination + 1].register_forward_pre_hook(self._inject())
         )
         if adjacent_layer_stats is not None:
             adjacent_layer_stats.ensure_layers(len(blocks) - 1)
@@ -270,15 +261,15 @@ class _Hooks:
 
         return hook
 
-    def _inject(
-        self, pair_index: int, source_index: int, destination_index: int
-    ) -> Callable[..., tuple | None]:
+    def _inject(self) -> Callable[..., tuple | None]:
         def hook(_module: nn.Module, inputs: tuple) -> tuple | None:
-            if self.mode != "inject" or not self.active_pairs[pair_index]:
+            if self.mode != "inject" or not self.active_pair:
                 return None
             try:
-                destination = self.residuals[destination_index]
-                source = self.prepared_sources[pair_index]
+                destination = self.residuals[self.destination_index]
+                source = self.prepared_source
+                if source is None:
+                    raise KeyError("prepared_source")
             except KeyError as error:
                 raise RuntimeError("Recirculation injection was not prepared.") from error
 
@@ -417,138 +408,124 @@ class _Hooks:
         candidate_target_token_probabilities: list[float] | None = None,
         aggregate_target_token_probabilities: list[float] | None = None,
     ) -> list[tuple[int, Tensor]]:
-        self.prepared_sources.clear()
-        self.noise_perturbations.clear()
-        self.noise_debug_positions.clear()
+        self.prepared_source = None
+        self.noise_perturbation = None
+        self.noise_debug_position = None
         debug_latents: list[tuple[int, Tensor]] = []
-        for pair_index, (source_index, destination_index) in enumerate(self.cfg.pairs):
-            if not self.active_pairs[pair_index]:
-                continue
-            try:
-                destination = self.residuals[destination_index].float()
-                source = self.injection_sources[source_index].to(
-                    device=destination.device, dtype=torch.float32
-                )
-            except KeyError as error:
-                raise RuntimeError(
-                    "The preceding pass did not capture both residual streams for "
-                    "every pair."
-                ) from error
-            source_norm = torch.linalg.vector_norm(source, dim=-1, keepdim=True)
-            destination_norm = torch.linalg.vector_norm(
-                destination, dim=-1, keepdim=True
+        if not self.active_pair:
+            return debug_latents
+        source_index, destination_index = self.cfg.pair
+        try:
+            destination = self.residuals[destination_index].float()
+            if self.injection_source is None:
+                raise KeyError("injection_source")
+            source = self.injection_source.to(
+                device=destination.device, dtype=torch.float32
             )
-            normalized_source = source * destination_norm / source_norm.clamp_min(
-                self.cfg.eps
+        except KeyError as error:
+            raise RuntimeError(
+                "The preceding pass did not capture both residual streams."
+            ) from error
+        source_norm = torch.linalg.vector_norm(source, dim=-1, keepdim=True)
+        destination_norm = torch.linalg.vector_norm(
+            destination, dim=-1, keepdim=True
+        )
+        normalized_source = source * destination_norm / source_norm.clamp_min(
+            self.cfg.eps
+        )
+        select_perturbation_candidate = (
+            perturbation_probe is not None
+            and (
+                self.cfg.perturbation_direction is not None
+                or self.cfg.perturbation_target_token_id is not None
             )
-            select_perturbation_candidate = (
-                perturbation_probe is not None
-                and (
-                    self.cfg.perturbation_direction is not None
-                    or self.cfg.perturbation_target_token_id is not None
-                )
-            )
-            direction_weight = self.noise_level * (
+        )
+        direction_weight = self.noise_level * (
+            self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
+        )
+        if self.noise_level > 0 and not select_perturbation_candidate:
+            gaussian_noise = torch.randn_like(source)
+            gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
+                gaussian_noise, dim=-1, keepdim=True
+            ).clamp_min(self.cfg.eps)
+            noise_weight = self.noise_level * (
                 self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
             )
-            if self.noise_level > 0 and not select_perturbation_candidate:
-                gaussian_noise = torch.randn_like(source)
-                gaussian_direction = gaussian_noise / torch.linalg.vector_norm(
-                    gaussian_noise, dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
-                noise_weight = self.noise_level * (
-                    self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
-                )
-                debug_latent = (
-                    source + noise_weight * source_norm * gaussian_direction
-                ).detach().clone()
-                debug_latents.append((source_index, debug_latent))
-                normalized_perturbation = (
-                    noise_weight * destination_norm * gaussian_direction
-                )
-                raw_perturbation = noise_weight * source_norm * gaussian_direction
-                self.noise_perturbations[pair_index] = (
-                    normalized_perturbation,
-                    raw_perturbation,
-                )
-                if self.injected_source_latents is not None:
-                    self.noise_debug_positions[pair_index] = len(
-                        self.injected_source_latents
-                    )
-                    self.injected_source_latents.append((source_index, debug_latent))
-                # Inject noise into the normalized source latent
-                normalized_source = normalized_source + normalized_perturbation
-            if select_perturbation_candidate:
-                assert perturbation_probe is not None
-                normalized_source = self.iteratively_find_perturbation_candidate(
-                    source_index,
-                    destination_index,
-                    destination,
-                    source,
-                    destination_norm,
-                    normalized_source,
-                    direction_weight,
-                    perturbation_probe,
-                    candidate_target_token_probabilities,
-                    aggregate_target_token_probabilities,
-                )
-            # Without a downstream probe, preserve the original direct-direction behavior.
-            elif self.cfg.perturbation_direction is not None:
-                direction = self.cfg.perturbation_direction.to(
-                    device=source.device, dtype=torch.float32
-                )
-                direction = direction / torch.linalg.vector_norm(
-                    direction, dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
-                # Inject the negative average latent direction of the previous tokens.
-                normalized_source = normalized_source + (
-                    direction_weight
-                    * self.cfg.perturbation_direction_scale
-                    * destination_norm
-                    * direction
-                )
-            self.prepared_sources[pair_index] = normalized_source
-            if select_perturbation_candidate:
-                debug_latents.append((source_index, normalized_source.detach().clone()))
+            debug_latent = (
+                source + noise_weight * source_norm * gaussian_direction
+            ).detach().clone()
+            debug_latents.append((source_index, debug_latent))
+            normalized_perturbation = (
+                noise_weight * destination_norm * gaussian_direction
+            )
+            raw_perturbation = noise_weight * source_norm * gaussian_direction
+            self.noise_perturbation = (normalized_perturbation, raw_perturbation)
+            if self.injected_source_latents is not None:
+                self.noise_debug_position = len(self.injected_source_latents)
+                self.injected_source_latents.append((source_index, debug_latent))
+            normalized_source = normalized_source + normalized_perturbation
+        if select_perturbation_candidate:
+            assert perturbation_probe is not None
+            normalized_source = self.iteratively_find_perturbation_candidate(
+                source_index,
+                destination_index,
+                destination,
+                source,
+                destination_norm,
+                normalized_source,
+                direction_weight,
+                perturbation_probe,
+                candidate_target_token_probabilities,
+                aggregate_target_token_probabilities,
+            )
+        elif self.cfg.perturbation_direction is not None:
+            direction = self.cfg.perturbation_direction.to(
+                device=source.device, dtype=torch.float32
+            )
+            direction = direction / torch.linalg.vector_norm(
+                direction, dim=-1, keepdim=True
+            ).clamp_min(self.cfg.eps)
+            normalized_source = normalized_source + (
+                direction_weight
+                * self.cfg.perturbation_direction_scale
+                * destination_norm
+                * direction
+            )
+        self.prepared_source = normalized_source
+        if select_perturbation_candidate:
+            debug_latents.append((source_index, normalized_source.detach().clone()))
         return debug_latents
 
-    # reverse_noise() is called when a Gaussian-noise injection has been recorded
-    # and decoding that noisy latent produces a margin greater than the 
-    # preceding pass’s margin
-    def reverse_noise(self, pair_index: int) -> Tensor:
-        normalized_perturbation, raw_perturbation = self.noise_perturbations[
-            pair_index
-        ]
-        # prepared_sources[pair_index] is the normalized source latent + normalized_perturbation.
-        # (To be precise, it can also contain a direct-direction offset when perturbation_direction 
-        # is set and no probe is supplied)
-        # To reverse the noise, we subtract twice the normalized perturbation from the prepared source.
-        self.prepared_sources[pair_index] -= 2 * normalized_perturbation
-        source_index, _destination_index = self.cfg.pairs[pair_index]
+    def reverse_noise(self) -> Tensor:
+        assert self.noise_perturbation is not None
+        assert self.prepared_source is not None
+        assert self.injection_source is not None
+        normalized_perturbation, raw_perturbation = self.noise_perturbation
+        self.prepared_source -= 2 * normalized_perturbation
+        source_index = self.source_index
         reversed_latent = (
-            self.injection_sources[source_index].to(raw_perturbation.device).float()
+            self.injection_source.to(raw_perturbation.device).float()
             - raw_perturbation
         ).detach().clone()
         if self.injected_source_latents is not None:
-            position = self.noise_debug_positions[pair_index]
-            self.injected_source_latents[position] = (source_index, reversed_latent)
+            assert self.noise_debug_position is not None
+            self.injected_source_latents[self.noise_debug_position] = (
+                source_index, reversed_latent
+            )
         return reversed_latent
 
-    def activation_similarities(self) -> tuple[float, ...]:
-        similarities = []
-        for source_index, destination_index in self.cfg.pairs:
-            try:
-                destination = self.residuals[destination_index][:, -1, :].float()
-                source = self.residuals[source_index][:, -1, :].to(
-                    destination.device, dtype=torch.float32
-                )
-            except KeyError as error:
-                raise RuntimeError(
-                    "The first pass did not capture both residual streams for every pair."
-                ) from error
-            cosine = torch.nn.functional.cosine_similarity(destination, source, dim=-1)
-            similarities.append(float(cosine.mean().item()))
-        return tuple(similarities)
+    def activation_similarity(self) -> float:
+        try:
+            destination = self.residuals[self.destination_index][:, -1, :].float()
+            source = self.residuals[self.source_index][:, -1, :].to(
+                destination.device, dtype=torch.float32
+            )
+        except KeyError as error:
+            raise RuntimeError(
+                "The first pass did not capture both residual streams."
+            ) from error
+        cosine = torch.nn.functional.cosine_similarity(destination, source, dim=-1)
+        return float(cosine.mean().item())
 
     def close(self) -> None:
         for handle in self.handles:
@@ -565,9 +542,7 @@ class _LayerwiseHooks:
         passes: int,
         select_expert_subset: Callable[[int], None] | None,
     ) -> None:
-        if len(config.pairs) != 1:
-            raise ValueError("Layerwise mode requires exactly one source/destination pair.")
-        source, destination = config.pairs[0]
+        source, destination = config.pair
         if not 0 <= destination < source < len(blocks):
             raise ValueError("Expected 0 <= destination < source < number of blocks.")
         self.cache = cache
@@ -658,7 +633,7 @@ def recirculate(
     adjacent_layer_stats: AdjacentLayerSimilarityStats | None = None,
     passes: int = 3,
     rewind_layer: Callable[[Any, int], Any] | None = None,
-    condition_thresholds: Sequence[float] | None = None,
+    condition_threshold: float | None = None,
     pre_margin_threshold: float | None = None,
     post_margin_threshold: tuple[float, float] | None = None,
     post_margin_ratio_threshold: float | None = None,
@@ -667,9 +642,8 @@ def recirculate(
     force_recirculation: bool = False,
     cosine_reject: float | None = None,
     cosine_top_k: int = 100,
-    gating_pair_index: int = 0,
     first_pass_logits: list[Tensor] | None = None,
-    first_pass_similarities: list[tuple[float, ...]] | None = None,
+    first_pass_similarities: list[float] | None = None,
     pass_probability_margins: list[list[float]] | None = None,
     recirculated_flags: list[bool] | None = None,
     rejected_flags: list[bool] | None = None,
@@ -711,13 +685,13 @@ def recirculate(
     if adaptive_recirculation < 0:
         raise ValueError("adaptive_recirculation must be nonnegative.")
     if passes == 1 and not adaptive_recirculation and not force_recirculation:
-        condition_thresholds = None
+        condition_threshold = None
         pre_margin_threshold = None
         post_margin_threshold = None
         post_margin_ratio_threshold = None
         cosine_reject = None
     if force_recirculation:
-        condition_thresholds = None
+        condition_threshold = None
         pre_margin_threshold = None
         post_margin_threshold = None
         post_margin_ratio_threshold = None
@@ -767,7 +741,7 @@ def recirculate(
         )
 
     if config.mode == "layerwise":
-        if condition_thresholds is not None:
+        if condition_threshold is not None:
             raise ValueError(
                 "Conditional recirculation currently requires --mode source."
             )
@@ -835,20 +809,6 @@ def recirculate(
             else None
         ),
     )
-    if condition_thresholds is not None and len(condition_thresholds) not in (
-        1,
-        len(config.pairs),
-    ):
-        raise ValueError(
-            "condition_thresholds must contain one value or one value per "
-            f"source/destination pair ({len(config.pairs)})."
-        )
-    if condition_thresholds is not None and len(condition_thresholds) == 1:
-        condition_thresholds = condition_thresholds * len(config.pairs)
-    if not 0 <= gating_pair_index < len(config.pairs):
-        raise ValueError(
-            f"gating_pair_index must be in [0, {len(config.pairs)})."
-        )
     try:
         for position in range(input_ids.shape[1]):
             token = input_ids[:, position : position + 1]
@@ -870,7 +830,7 @@ def recirculate(
                     {
                         source: latent[:, -1, :].detach().clone()
                         for source, latent in first_pass_residuals.items()
-                        if source in hooks.sources
+                        if source == hooks.source_index
                     }
                 )
             if first_pass_logits is not None:
@@ -892,21 +852,21 @@ def recirculate(
             final_logits = first_logits
             hooks.record_adjacent_similarities()
 
-            similarities = (
-                hooks.activation_similarities()
+            similarity = (
+                hooks.activation_similarity()
                 if (
                     similarity_stats is not None
-                    or condition_thresholds is not None
+                    or condition_threshold is not None
                     or first_pass_similarities is not None
                 )
                 else None
             )
             if first_pass_similarities is not None:
-                assert similarities is not None
-                first_pass_similarities.append(similarities)
+                assert similarity is not None
+                first_pass_similarities.append(similarity)
             if similarity_stats is not None:
-                assert similarities is not None
-                similarity_stats.values.append(sum(similarities) / len(similarities))
+                assert similarity is not None
+                similarity_stats.values.append(similarity)
 
             margin_gate = (
                 pre_margin_threshold is None
@@ -918,9 +878,8 @@ def recirculate(
                 or (
                     probability_gate
                     and (
-                        condition_thresholds is None
-                        or similarities[gating_pair_index]
-                        >= condition_thresholds[gating_pair_index]
+                        condition_threshold is None
+                        or similarity >= condition_threshold
                     )
                 )
             )
@@ -933,13 +892,10 @@ def recirculate(
                         or first_margin < post_margin_threshold[1]
                     )
                 )
-            hooks.active_pairs = (
-                tuple(probability_gate for _pair in config.pairs)
-                if condition_thresholds is None
-                else tuple(
-                    should_recirculate and similarity >= threshold
-                    for similarity, threshold in zip(similarities, condition_thresholds)
-                )
+            hooks.active_pair = (
+                probability_gate
+                if condition_threshold is None
+                else should_recirculate
             )
             cached_token_passes = (
                 [capture_cached_token(cache)]
@@ -978,9 +934,7 @@ def recirculate(
                 ):
                     adaptive_recirculation_count += 1
                 retrying_forced_noise = False
-                hooks.injection_sources = {
-                    source: hooks.residuals[source] for source in hooks.sources
-                }
+                hooks.injection_source = hooks.residuals[hooks.source_index]
                 hooks.pass_index = pass_index
                 hooks.noise_level = (
                     config.noise_level_range[1]
@@ -1042,34 +996,24 @@ def recirculate(
                         )
                         for source_index, latent in prepared_debug_latents
                     ]
-                    if hooks.noise_perturbations:
+                    # noise_perturbation is only populated in prepare_injections()
+                    # by the ordinary Gaussian branch.
+                    if hooks.noise_perturbation is not None:
                         assert previous_pass_margin is not None
                         token_initial_decoded_noise_source_latents.extend(
                             decoded_latents
                         )
-                        active_pair_indices = (
-                            pair_index
-                            for pair_index in range(len(config.pairs))
-                            if hooks.active_pairs[pair_index]
-                        )
-                        selected_decoded_latents = []
-                        for pair_index, decoded in zip(
-                            active_pair_indices, decoded_latents
-                        ):
-                            if float(decoded["margin"]) > previous_pass_margin:
-                                source_index, _destination_index = config.pairs[
-                                    pair_index
-                                ]
-                                reversed_latent = hooks.reverse_noise(pair_index)
-                                decoded = decode_injected_source_latent(
+                        if float(decoded_latents[0]["margin"]) > previous_pass_margin:
+                            reversed_latent = hooks.reverse_noise()
+                            decoded_latents = [
+                                decode_injected_source_latent(
                                     token,
-                                    source_index,
+                                    hooks.source_index,
                                     reversed_latent,
                                     cache,
                                     rewind_state,
                                 )
-                            selected_decoded_latents.append(decoded)
-                        decoded_latents = selected_decoded_latents
+                            ]
                     token_decoded_injected_source_latents.extend(decoded_latents)
                 cache = rewind_one(cache)
                 if restore_rewind_state is not None:

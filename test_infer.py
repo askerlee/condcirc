@@ -23,7 +23,7 @@ from infer import (
     format_run_stats,
     has_third_repeated_suffix,
     has_third_repeated_text_suffix,
-    output_recirculation_pairs,
+    output_recirculation_pair,
     parse_args,
     REPETITION_RECOVERY_TOKEN_COUNT,
     periodic_perturbation_active,
@@ -91,7 +91,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("final_pass_same_top1_flags", False),
                     ("rejection_reasons", ()),
                     ("first_pass_logits", logits[:, :1]),
-                    ("first_pass_similarities", (0.5,)),
+                    ("first_pass_similarities", 0.5),
                     ("pass_probability_margins", [0.8]),
                     ("final_pass_cosine_similarities", None),
                     ("pass_cosine_similarities", [0.3] if kwargs.get("force_recirculation") else []),
@@ -698,7 +698,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             decoded_text="Let's try:\nLet's try:\nLet's try:",
@@ -709,7 +709,7 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(settings.pre_margin_threshold, 0.2)
         self.assertEqual(settings.post_margin_threshold, (0.1, 0.2))
         self.assertEqual(settings.post_margin_ratio_threshold, 1.2)
-        self.assertEqual(settings.condition_thresholds, (0.7,))
+        self.assertEqual(settings.condition_threshold, 0.7)
         self.assertFalse(settings.recirculation_allowed)
         self.assertFalse(settings.force_recirculation)
 
@@ -720,7 +720,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
         )
@@ -730,7 +730,7 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertIsNone(settings.pre_margin_threshold)
         self.assertIsNone(settings.post_margin_threshold)
         self.assertIsNone(settings.post_margin_ratio_threshold)
-        self.assertIsNone(settings.condition_thresholds)
+        self.assertIsNone(settings.condition_threshold)
         self.assertTrue(settings.recirculation_allowed)
         self.assertTrue(settings.force_recirculation)
 
@@ -741,7 +741,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
         )
@@ -755,7 +755,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             consecutive_repetition_count=2,
@@ -770,7 +770,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             consecutive_repetition_count=1,
@@ -781,7 +781,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             consecutive_repetition_count=2,
@@ -806,7 +806,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             decoded_text="eight repeated words appear here exactly as before\n" * 3,
@@ -824,7 +824,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             consecutive_repetition_count=2,
@@ -839,7 +839,7 @@ class RecirculationStatsTest(unittest.TestCase):
             0.2,
             (0.1, 0.2),
             1.2,
-            (0.7,),
+            0.7,
             False,
             list(range(8)) * 3,
             enabled=False,
@@ -850,14 +850,14 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(settings.pre_margin_threshold, 0.2)
         self.assertEqual(settings.post_margin_threshold, (0.1, 0.2))
         self.assertEqual(settings.post_margin_ratio_threshold, 1.2)
-        self.assertEqual(settings.condition_thresholds, (0.7,))
+        self.assertEqual(settings.condition_threshold, 0.7)
         self.assertFalse(settings.recirculation_allowed)
         self.assertFalse(settings.force_recirculation)
 
     def test_uses_gemma_specific_default_pair(self) -> None:
         args = parse_args(["--model", "google/gemma-4-26b-a4b-it", "prompt"])
 
-        self.assertEqual(args.pairs, [(25, 19)])
+        self.assertEqual(args.pair, (25, 19))
 
     def test_explicit_pair_overrides_model_default(self) -> None:
         args = parse_args(
@@ -871,7 +871,16 @@ class RecirculationStatsTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.pairs, [[7, 3]])
+        self.assertEqual(args.pair, (7, 3))
+
+    def test_rejects_multiple_pairs_in_one_run(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--pair", "7", "3", "--pair", "8", "2"])
+
+    def test_conditional_similarity_threshold_is_scalar(self) -> None:
+        args = parse_args(["--cond-recirculate", "--act-sim-thres", "0.7"])
+
+        self.assertEqual(args.act_sim_thres, 0.7)
 
     def test_ablation_pair_is_used_for_conditional_output_name(self) -> None:
         args = parse_args(
@@ -886,8 +895,8 @@ class RecirculationStatsTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(args.pairs, [(-5, 5)])
-        self.assertEqual(output_recirculation_pairs(args), [[-5, 12]])
+        self.assertEqual(args.pair, (-5, 5))
+        self.assertEqual(output_recirculation_pair(args), (-5, 12))
 
     def test_ablation_seed_overrides_only_its_run(self) -> None:
         args = parse_args(

@@ -541,6 +541,16 @@ def query_index_signature(argv: Sequence[str]) -> str:
     return signature
 
 
+class SinglePairAction(argparse.Action):
+    def __call__(
+        self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+        values: Sequence[int], option_string: str | None = None,
+    ) -> None:
+        if getattr(namespace, self.dest) is not None:
+            raise argparse.ArgumentError(self, "--pair may be specified only once per run")
+        setattr(namespace, self.dest, tuple(values))
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
     normalized_argv: list[str] = []
@@ -711,14 +721,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--pair",
-        dest="pairs",
-        action="append",
+        dest="pair",
+        action=SinglePairAction,
         type=int,
         nargs=2,
         metavar=("SOURCE", "DESTINATION"),
         default=None,
         help=(
-            "Source/destination pair to recirculate. Repeat for multiple pairs "
+            "Source/destination pair to recirculate "
             "(default: -5 5, or 25 19 for gemma-4-26b-a4b)."
         ),
     )
@@ -732,7 +742,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--override-to-global-attn",
         action="store_true",
         help=(
-            "Snap every --pair layer to the nearest full/global-attention layer, "
+            "Snap both --pair layers to the nearest full/global-attention layer, "
             "for models that interleave sliding and global attention."
         ),
     )
@@ -796,12 +806,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--act-sim-thres",
         type=float,
-        nargs="+",
         default=None,
         metavar="THRESHOLD",
         help=(
-            "Conditional thresholds in --pair order. Provide one value for all "
-            "pairs or one per pair; each pair must meet its own threshold to "
+            "Minimum source/destination activation similarity required to "
             "inject (default: None, disabled if not set)."
         ),
     )
@@ -966,17 +974,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Log the top K tokens decoded from each injected source (default: 4).",
     )
     parser.add_argument(
-        "--gating-pair-index",
-        type=int,
-        default=0,
-        metavar="INDEX",
-        help=(
-            "When multiple (source, destination) pairs are present, this is the "
-            "zero-based --pair index that must meet its threshold before any "
-            "conditional recirculation occurs (default: 0)."
-        ),
-    )
-    parser.add_argument(
         "--debug-layer-sim",
         action="store_true",
         help=(
@@ -1073,9 +1070,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     if "--ablation" not in argv:
         args = parser.parse_args(argv)
-        if args.pairs is None:
+        if args.pair is None:
             model_name = args.model.rsplit("/", 1)[-1].lower()
-            args.pairs = [(25, 19)] if model_name.startswith("gemma-4-26b-a4b") else [(-5, 5)]
+            args.pair = (25, 19) if model_name.startswith("gemma-4-26b-a4b") else (-5, 5)
         args.ablations = False
         args.query_index_signature = query_index_signature(argv)
         args.perturb_mode = args.perturb_mode or (
@@ -1086,9 +1083,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ablations_index = argv.index("--ablation")
     baseline_argv = argv[:ablations_index]
     args = parser.parse_args(baseline_argv)
-    if args.pairs is None:
+    if args.pair is None:
         model_name = args.model.rsplit("/", 1)[-1].lower()
-        args.pairs = [(25, 19)] if model_name.startswith("gemma-4-26b-a4b") else [(-5, 5)]
+        args.pair = (25, 19) if model_name.startswith("gemma-4-26b-a4b") else (-5, 5)
     args.query_index_signature = query_index_signature(argv)
 
     ablation_groups: list[list[str]] = []
@@ -1277,33 +1274,29 @@ def resolve_source(source: int, num_blocks: int) -> int:
     return num_blocks + source if source < 0 else source
 
 
-def resolve_recirculation_pairs(
+def resolve_recirculation_pair(
     args: argparse.Namespace, num_blocks: int, global_attention_layers: Sequence[int] | None
-) -> tuple[tuple[int, int], ...]:
-    requested_pairs = args.pairs
-    pairs = tuple(
-        (resolve_source(source, num_blocks), resolve_source(destination, num_blocks))
-        for source, destination in requested_pairs
+) -> tuple[int, int]:
+    source, destination = args.pair
+    pair = (
+        resolve_source(source, num_blocks), resolve_source(destination, num_blocks)
     )
     if args.override_to_global_attn and global_attention_layers:
-        pairs = tuple(
-            (
-                nearest_global_layer(global_attention_layers, source),
-                nearest_global_layer(global_attention_layers, destination),
-            )
-            for source, destination in pairs
+        pair = (
+            nearest_global_layer(global_attention_layers, pair[0]),
+            nearest_global_layer(global_attention_layers, pair[1]),
         )
-    return pairs
+    return pair
 
 
-def output_recirculation_pairs(args: argparse.Namespace) -> Sequence[Sequence[int]]:
+def output_recirculation_pair(args: argparse.Namespace) -> tuple[int, int]:
     if args.cond_recirculate or not args.ablations:
-        return args.pairs
+        return args.pair
     for overrides in args.ablations:
         values = dict(overrides)
-        if values.get("cond_recirculate") and "pairs" in values:
-            return values["pairs"]
-    return args.pairs
+        if values.get("cond_recirculate") and "pair" in values:
+            return values["pair"]
+    return args.pair
 
 
 def find_global_attention_layer_indices(
@@ -1694,7 +1687,7 @@ class RepetitionRecoverySettings:
     pre_margin_threshold: float | None
     post_margin_threshold: tuple[float, float] | None
     post_margin_ratio_threshold: float | None
-    condition_thresholds: Sequence[float] | None
+    condition_threshold: float | None
     recirculation_allowed: bool
     force_recirculation: bool
 
@@ -1705,7 +1698,7 @@ def repetition_recovery_settings(
     pre_margin_threshold: float,
     post_margin_threshold: tuple[float, float] | None,
     post_margin_ratio_threshold: float | None,
-    condition_thresholds: Sequence[float] | None,
+    condition_threshold: float | None,
     recirculation_allowed: bool,
     token_ids: Sequence[int],
     enabled: bool = True,
@@ -1726,7 +1719,7 @@ def repetition_recovery_settings(
             pre_margin_threshold,
             post_margin_threshold,
             post_margin_ratio_threshold,
-            condition_thresholds,
+            condition_threshold,
             recirculation_allowed,
             False,
         )
@@ -2062,13 +2055,13 @@ def main() -> None:
     )
     if args.output is None:
         output_args = argparse.Namespace(
-            **{**vars(args), "pairs": output_recirculation_pairs(args)}
+            **{**vars(args), "pair": output_recirculation_pair(args)}
         )
-        pairs = resolve_recirculation_pairs(
+        pair = resolve_recirculation_pair(
             output_args, len(blocks), global_attention_layers
         )
         model_slug = args.model.rsplit("/", 1)[-1].lower()
-        pair_slug = "_".join(f"{source}-{destination}" for source, destination in pairs)
+        pair_slug = f"{pair[0]}-{pair[1]}"
         query_signature = "" if args.query_index_signature == "all" else f"-{args.query_index_signature}"
         game24_signature = (
             f"-game24-{format_index_ranges(args.game24_index) or 'all'}"
@@ -2325,7 +2318,7 @@ def main() -> None:
         adjacent_layer_stats = (
             AdjacentLayerSimilarityStats() if run_args.debug_adj_layer_sim else None
         )
-        condition_thresholds = (
+        condition_threshold = (
             run_args.act_sim_thres
             if run_args.cond_recirculate
             else None
@@ -2523,7 +2516,7 @@ def main() -> None:
                     for name, value in summary.items()
                 )
                 print(
-                    f"src_dst_similarity {list(run_config.pairs)}: {formatted}"
+                    f"src_dst_similarity {list(run_config.pair)}: {formatted}"
                 )
             if adjacent_layer_stats is not None:
                 for layer_index, layer_summary in enumerate(
@@ -2554,7 +2547,7 @@ def main() -> None:
                     adjacent_layer_stats=adjacent_layer_stats,
                     passes=run_args.passes,
                     rewind_layer=rewind_dynamic_cache_layer,
-                    condition_thresholds=condition_thresholds,
+                    condition_threshold=condition_threshold,
                     pre_margin_threshold=run_args.pre_margin_thres,
                     post_margin_threshold=run_args.post_margin_thres,
                     post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
@@ -2565,7 +2558,6 @@ def main() -> None:
                     recirculation_allowed=True,
                     cosine_reject=run_args.cosine_reject,
                     cosine_top_k=run_args.cosine_top_k,
-                    gating_pair_index=run_args.gating_pair_index,
                     recirculated_flags=recirculated_flags,
                     rejected_flags=rejected_flags,
                     adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -2682,7 +2674,7 @@ def main() -> None:
                         if run_args.post_margin_thres is not None
                         else None,
                         run_args.post_margin_ratio_thres,
-                        condition_thresholds,
+                        condition_threshold,
                         allow_generated_recirculation(generated_token_count),
                         generated_ids[0, -generated_token_count:].tolist(),
                         enabled=run_args.repetition_recovery,
@@ -2737,7 +2729,7 @@ def main() -> None:
                         adjacent_layer_stats=adjacent_layer_stats,
                         passes=run_args.passes,
                         rewind_layer=rewind_dynamic_cache_layer,
-                        condition_thresholds=recovery_settings.condition_thresholds,
+                        condition_threshold=recovery_settings.condition_threshold,
                         pre_margin_threshold=recovery_settings.pre_margin_threshold,
                         post_margin_threshold=recovery_settings.post_margin_threshold,
                         post_margin_ratio_threshold=(
@@ -2759,7 +2751,6 @@ def main() -> None:
                         ),
                         cosine_reject=recovery_settings.cosine_reject,
                         cosine_top_k=run_args.cosine_top_k,
-                        gating_pair_index=run_args.gating_pair_index,
                         recirculated_flags=recirculated_flags,
                         rejected_flags=rejected_flags,
                         adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -2803,7 +2794,7 @@ def main() -> None:
         similarities: list[dict[str, Any]] = []
         generated_ids = input_ids.clone()
         first_pass_logits: list[Tensor] = []
-        first_pass_similarities: list[tuple[float, ...]] = []
+        first_pass_similarities: list[float] = []
         pass_probability_margins: list[list[float]] = []
         final_pass_cosine_similarities: list[float | None] = []
         pass_cosine_similarities: list[list[float]] = []
@@ -2827,7 +2818,7 @@ def main() -> None:
             adjacent_layer_stats=adjacent_layer_stats,
             passes=run_args.passes if use_recirculation else 1,
             rewind_layer=rewind_dynamic_cache_layer,
-            condition_thresholds=condition_thresholds,
+            condition_threshold=condition_threshold,
             pre_margin_threshold=run_args.pre_margin_thres,
             post_margin_threshold=run_args.post_margin_thres,
             post_margin_ratio_threshold=run_args.post_margin_ratio_thres,
@@ -2838,7 +2829,6 @@ def main() -> None:
             recirculation_allowed=True,
             cosine_reject=run_args.cosine_reject,
             cosine_top_k=run_args.cosine_top_k,
-            gating_pair_index=run_args.gating_pair_index,
             first_pass_logits=first_pass_logits,
             first_pass_similarities=first_pass_similarities,
             pass_probability_margins=pass_probability_margins,
@@ -2870,7 +2860,7 @@ def main() -> None:
             finalize_token_cache=finalize_dynamic_cache_token,
         )
         teacher_logits = first_pass_logits[-1]
-        teacher_src_dst_sim = sum(first_pass_similarities[-1]) / len(run_config.pairs)
+        teacher_src_dst_sim = first_pass_similarities[-1]
         teacher_next_logits = teacher_logits[:, -1, :]
         student_next_logits = student_logits[:, -1, :]
         current_token = input_ids[:, -1:]
@@ -3068,7 +3058,7 @@ def main() -> None:
                 if run_args.post_margin_thres is not None
                 else None,
                 run_args.post_margin_ratio_thres,
-                condition_thresholds,
+                condition_threshold,
                 allow_generated_recirculation(token_index + 1),
                 generated_token_ids,
                 enabled=run_args.repetition_recovery,
@@ -3154,7 +3144,7 @@ def main() -> None:
                 adjacent_layer_stats=adjacent_layer_stats,
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
-                condition_thresholds=recovery_settings.condition_thresholds,
+                condition_threshold=recovery_settings.condition_threshold,
                 pre_margin_threshold=recovery_settings.pre_margin_threshold,
                 post_margin_threshold=recovery_settings.post_margin_threshold,
                 post_margin_ratio_threshold=(
@@ -3176,7 +3166,6 @@ def main() -> None:
                 ),
                 cosine_reject=recovery_settings.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
-                gating_pair_index=run_args.gating_pair_index,
                 first_pass_logits=first_pass_logits,
                 first_pass_similarities=first_pass_similarities,
                 pass_probability_margins=pass_probability_margins,
@@ -3214,7 +3203,7 @@ def main() -> None:
             current_token = next_token
             teacher_logits = first_pass_logits[-1]
             teacher_src_dst_sim = (
-                sum(first_pass_similarities[-1]) / len(run_config.pairs)
+                first_pass_similarities[-1]
             )
             teacher_next_logits = teacher_logits[:, -1, :]
             student_next_logits = student_logits[:, -1, :]
@@ -3241,11 +3230,11 @@ def main() -> None:
                 torch.cuda.synchronize(gpu)
 
     def run_recirculation_config(run_args: argparse.Namespace) -> RecirculationConfig:
-        pairs = resolve_recirculation_pairs(
+        pair = resolve_recirculation_pair(
             run_args, len(blocks), global_attention_layers
         )
         run_config = RecirculationConfig(
-            pairs=pairs,
+            pair=pair,
             alpha=run_args.alpha,
             beta=run_args.beta,
             noise_level_range=tuple(run_args.noise_level_range),
@@ -3256,16 +3245,12 @@ def main() -> None:
             noise_decay_per_pass=run_args.noise_decay_per_pass,
             mode=run_args.mode,
         )
-        if not run_config.pairs or any(
-            not 0 <= destination < source < len(blocks)
-            for source, destination in run_config.pairs
-        ):
+        source, destination = run_config.pair
+        if not 0 <= destination < source < len(blocks):
             raise ValueError(
                 f"The model has {len(blocks)} decoder blocks, but the requested "
-                f"source/destination pairs were {run_config.pairs}."
+                f"source/destination pair was {run_config.pair}."
             )
-        if run_config.mode == "layerwise" and len(run_config.pairs) != 1:
-            raise ValueError("--mode layerwise requires exactly one --pair.")
         return run_config
 
     def score_knowedit_target(
@@ -3294,7 +3279,7 @@ def main() -> None:
                 config=run_config,
                 passes=run_args.passes if use_recirculation else 1,
                 rewind_layer=rewind_dynamic_cache_layer,
-                condition_thresholds=(
+                condition_threshold=(
                     run_args.act_sim_thres if run_args.cond_recirculate else None
                 ),
                 pre_margin_threshold=run_args.pre_margin_thres,
@@ -3311,7 +3296,6 @@ def main() -> None:
                 ),
                 cosine_reject=run_args.cosine_reject,
                 cosine_top_k=run_args.cosine_top_k,
-                gating_pair_index=run_args.gating_pair_index,
                 decode_injected_source_latent=(
                     decoded_latent_stats
                     if run_config.noise_level_range[1] > 0

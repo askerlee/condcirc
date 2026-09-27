@@ -70,13 +70,19 @@ class RecirculationStatsTest(unittest.TestCase):
 
         tokenizer = SimpleNamespace(
             eos_token_id=2,
-            apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
-                input_ids=torch.tensor([[3, 4, 5]])
+            apply_chat_template=lambda messages, **_kwargs: SimpleNamespace(
+                input_ids=torch.tensor([[6, 7]]) if "common name" in messages[0]["content"]
+                else torch.tensor([[3, 4, 5]])
             ),
             decode=lambda *_args, **_kwargs: "E",
             encode=encode_target,
         )
         calls = []
+        scored_prompts = []
+
+        def score_tokens(prompt_ids, target_ids, _step, **_kwargs):
+            scored_prompts.append((prompt_ids.tolist(), target_ids.tolist()))
+            return 1.0
 
         def fake_recirculate(tokens, **kwargs):
             calls.append((tokens.tolist(), kwargs["force_recirculation"] if "force_recirculation" in kwargs else False, kwargs["config"]))
@@ -111,8 +117,12 @@ class RecirculationStatsTest(unittest.TestCase):
             return logits, kwargs["cache"]
 
         with tempfile.TemporaryDirectory() as directory:
-            for debug, knowedit in ((False, False), (True, False), (True, True)):
-                with self.subTest(debug=debug, knowedit=knowedit):
+            for debug, knowedit, portability_query, replay_file in (
+                (False, False, False, None), (True, False, False, None),
+                (True, True, False, None), (False, True, True, None),
+                (True, True, False, "perturb-knowedit-2.pt"),
+            ):
+                with self.subTest(debug=debug, knowedit=knowedit, portability_query=portability_query, replay_file=replay_file):
                     calls.clear()
                     encoded_targets.clear()
                     with (
@@ -126,11 +136,16 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--noise-injected-source-top-k", "3",
                             "--output", str(Path(directory) / "output.json"),
                             *(["--knowedit-file", "example.json"] if knowedit else []),
+                            *(["--knowedit-portability"] if portability_query else []),
+                            *(["--replay-perturbation", replay_file] if replay_file else []),
                             *(["--debug"] if debug else []),
                         ]),
-                        patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(source="s", subject="s", target_new="E", reference=None)]),
-                        patch.object(infer, "format_knowedit_prompt", return_value="question"),
-                        patch.object(infer, "teacher_forced_token_accuracy", return_value=1.0),
+                        patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(
+                            source="s", subject="s", target_new="E", reference=None,
+                            portability=(("Reasoning", "What is the common name?", "Owlet moths"),),
+                        )]),
+                        patch.object(infer, "format_knowedit_prompt", side_effect=lambda _example, prompt=None: prompt or "question"),
+                        patch.object(infer, "teacher_forced_token_accuracy", side_effect=score_tokens),
                         patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
                         patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
                         patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
@@ -143,22 +158,48 @@ class RecirculationStatsTest(unittest.TestCase):
                         infer.main()
                     result = json.loads((Path(directory) / "output.json").read_text())
 
-                    self.assertEqual([tokens for tokens, _, _ in calls], [[[3, 4]], [[5]], [[1]]])
+                    self.assertEqual(
+                        [tokens for tokens, _, _ in calls],
+                        [[[6]], [[7]], [[1]]] if portability_query else [[[3, 4]], [[5]], [[1]]],
+                    )
                     self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
                     self.assertIsNone(calls[0][2].perturbation_direction)
                     self.assertEqual(calls[1][2].periodic_perturbation_candidate_count, 4)
                     self.assertEqual(calls[1][2].periodic_perturbation_steps, 2)
                     self.assertEqual(calls[1][2].periodic_perturbation_step_decay, 0.5)
+                    self.assertEqual(
+                        calls[1][2].replay_perturbation,
+                        Path(replay_file) if replay_file else None,
+                    )
+                    self.assertEqual(
+                        calls[1][2].save_perturbation,
+                        Path("perturb-knowedit-1-port.pt" if portability_query else "perturb-knowedit-1.pt")
+                        if knowedit else Path("perturb.pt"),
+                    )
                     if knowedit:
-                        self.assertEqual(encoded_targets, ["E", "E"])
+                        self.assertEqual(
+                            encoded_targets,
+                            ["Owlet moths", "E", "Owlet moths"] if portability_query
+                            else ["E", "E", "Owlet moths"],
+                        )
                         self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
+                        self.assertEqual(scored_prompts, [([[3, 4, 5]], [[1]]), ([[6, 7]], [[1]])])
+                        self.assertEqual(
+                            result[0]["prompt"],
+                            "What is the common name?" if portability_query else "question",
+                        )
+                        self.assertEqual(result[0]["runs"][0]["knowedit_portability"], [{
+                            "category": "Reasoning", "prompt": "What is the common name?",
+                            "ground_truth": "Owlet moths", "accuracy": 1.0,
+                        }])
                     else:
                         self.assertEqual(encoded_targets, [])
                         self.assertIsNotNone(calls[1][2].perturbation_direction)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
+                    scored_prompts.clear()
                     if debug:
                         comparisons = json.loads(
-                            (Path(directory) / "output-debug.json").read_text()
+                            (Path(directory) / ("output-rep-2-debug.json" if replay_file else "output-debug.json")).read_text()
                         )[0]["similarities"]
                         self.assertTrue(comparisons[0]["recirculated"])
                         self.assertEqual(comparisons[0]["injected_noise_levels"], [0.3])
@@ -414,6 +455,17 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.save_perturbation, Path("saved.pt"))
         self.assertEqual(args.replay_perturbation, Path("replay.pt"))
+        self.assertEqual(
+            infer.indexed_perturbation_file(args.save_perturbation, 2),
+            Path("saved-knowedit-2.pt"),
+        )
+        self.assertEqual(
+            infer.indexed_perturbation_file(args.save_perturbation, 2, True),
+            Path("saved-knowedit-2-port.pt"),
+        )
+        self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2.pt")), "2")
+        self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port.pt")), "2-port")
+        self.assertEqual(infer.replay_file_signature(Path("custom.pt")), "custom")
 
     def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:
         self.assertEqual(

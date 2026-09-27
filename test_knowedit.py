@@ -47,6 +47,29 @@ class KnowEditTest(unittest.TestCase):
         self.assertEqual(example.target_new, "male")
         self.assertIsNone(example.reference)
 
+    def test_loads_portability_questions_and_answers(self) -> None:
+        records = [{
+            "subject": "Epaspidoceras",
+            "prompt": "Which family does Epaspidoceras belong to?",
+            "target_new": "Noctuidae",
+            "portability": {"Reasoning": [{
+                "prompt": "What is the common name for the family Epaspidoceras belongs to?",
+                "ground_truth": "Owlet moths",
+            }]},
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ZsRE-test-all.json"
+            path.write_text(json.dumps(records), encoding="utf-8")
+            example, = load_examples(path)
+
+        self.assertEqual(example.portability, ((
+            "Reasoning", "What is the common name for the family Epaspidoceras belongs to?", "Owlet moths",
+        ),))
+        self.assertNotIn("Owlet moths", format_prompt(example))
+        portability_prompt = format_prompt(example, example.portability[0][1])
+        self.assertIn("What is the common name for the family Epaspidoceras belongs to?", portability_prompt)
+        self.assertNotIn("Owlet moths", portability_prompt)
+
     def test_wikibio_continuation_and_invalid_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "wikibio-test-all.json"

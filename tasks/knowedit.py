@@ -14,6 +14,7 @@ class KnowEditExample:
     subject: str
     source: str
     reference: str | None = None
+    portability: tuple[tuple[str, str, str], ...] = ()
 
 
 def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
@@ -48,18 +49,27 @@ def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
             )
         if original is not None and not isinstance(original, str):
             raise ValueError(f"Invalid KnowEdit ground_truth in record {index} of {path}.")
-        examples.append(KnowEditExample(prompt, target, subject, source, original))
+        portability = []
+        for category, questions in record.get("portability", {}).items():
+            for question in questions:
+                portability_prompt = question["prompt"]
+                portability_answer = question["ground_truth"]
+                if not all(isinstance(value, str) and value.strip() for value in (portability_prompt, portability_answer)):
+                    raise ValueError(f"Invalid KnowEdit portability in record {index} of {path}.")
+                portability.append((category, portability_prompt, portability_answer))
+        examples.append(KnowEditExample(prompt, target, subject, source, original, tuple(portability)))
     return tuple(examples)
 
 
-def format_prompt(example: KnowEditExample) -> str:
+def format_prompt(example: KnowEditExample, prompt: str | None = None) -> str:
+    question = example.prompt if prompt is None else prompt
     if example.source == "wikibio":
         return (
             "Continue the following passage with the next factual sentence only.\n\n"
-            f"{example.prompt.rstrip()}"
+            f"{question.rstrip()}"
         )
     return (
         "Answer the question or complete the statement with only the requested fact.\n\n"
-        f"{example.prompt.strip()}"
+        f"{question.strip()}"
     )
 

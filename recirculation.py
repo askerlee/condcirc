@@ -181,7 +181,7 @@ def _distribution_cosine_similarity(
 
 def perturbation_replay(
     normalized_source: Tensor, path: Path, sequence: PerturbationSequence
-) -> Tensor:
+) -> Tensor | None:
     if sequence.replayed is None:
         sequence.replayed = torch.load(path, map_location="cpu", weights_only=True)
     perturbations = sequence.replayed
@@ -195,10 +195,7 @@ def perturbation_replay(
             f"(N, {', '.join(map(str, normalized_source.shape))})."
         )
     if sequence.replay_index >= len(perturbations):
-        raise ValueError(
-            f"Replay perturbations in {path} exhausted after "
-            f"{sequence.replay_index} perturbed tokens."
-        )
+        return None
     perturbation = perturbations[sequence.replay_index].to(
         device=normalized_source.device, dtype=normalized_source.dtype
     )
@@ -443,6 +440,10 @@ class _Hooks:
                 ).squeeze(0)
         if self.cfg.save_perturbation is not None:
             sequence = self.cfg.perturbation_sequence
+            if not sequence.saved and sequence.replayed is not None:
+                sequence.saved.extend(
+                    sequence.replayed[:sequence.replay_index].unbind(0)
+                )
             sequence.saved.append(
                 (normalized_source - initial_normalized_source).detach().cpu().clone()
             )
@@ -516,13 +517,20 @@ class _Hooks:
             normalized_source = normalized_source + normalized_perturbation
         if select_perturbation_candidate:
             if self.cfg.replay_perturbation is not None:
-                normalized_source = perturbation_replay(
+                replayed_source = perturbation_replay(
                     normalized_source,
                     self.cfg.replay_perturbation,
                     self.cfg.perturbation_sequence,
                 )
             else:
-                assert perturbation_probe is not None
+                replayed_source = None
+            if replayed_source is not None:
+                normalized_source = replayed_source
+            else:
+                if perturbation_probe is None:
+                    raise ValueError(
+                        "Candidate search requires a perturbation probe after replay is exhausted."
+                    )
                 normalized_source = self.iteratively_find_perturbation_candidate(
                     source_index,
                     destination_index,

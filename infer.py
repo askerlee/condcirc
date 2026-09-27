@@ -492,6 +492,19 @@ def parse_perturbation_file(value: str) -> Path:
     return Path(value if value.endswith(".pt") else f"{value}.pt")
 
 
+def indexed_perturbation_file(
+    path: Path | str, index: int, portability: bool = False
+) -> Path:
+    path = Path(path)
+    suffix = "-port" if portability else ""
+    return path.with_name(f"{path.stem}-knowedit-{index}{suffix}{path.suffix}")
+
+
+def replay_file_signature(path: Path) -> str:
+    match = re.search(r"(?:^|-)knowedit-(\d+(?:-port)?)$", path.stem)
+    return match.group(1) if match is not None else path.stem
+
+
 def parse_bbeh_indices(value: str) -> tuple[int, ...]:
     return parse_benchmark_indices(value, "BBEH")
 
@@ -692,6 +705,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=(),
         metavar="INDEX[-INDEX][,...]",
         help="1-based KnowEdit JSON indices; negative values count from the end (default: all).",
+    )
+    parser.add_argument(
+        "--knowedit-portability",
+        action="store_true",
+        help="Generate from the first portability question of each KnowEdit record.",
     )
     parser.add_argument(
         "--eval-provider",
@@ -965,14 +983,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=parse_perturbation_file,
         default="perturb.pt",
         metavar="FILE.pt",
-        help="Save selected token perturbations in order as a stacked .pt tensor.",
+        help="Save selected token perturbations as a stacked .pt tensor; KnowEdit adds -knowedit-INDEX[-port].",
     )
     parser.add_argument(
         "--replay-perturbation",
         type=parse_perturbation_file,
         default=None,
         metavar="FILE.pt",
-        help="Replay saved token perturbations in order instead of searching for candidates.",
+        help="Replay saved token perturbations in order, then search for candidates.",
     )
     parser.add_argument(
         "--cosine-top-k",
@@ -1924,6 +1942,8 @@ def main() -> None:
         raise ValueError("--bbeh-index requires --bbeh-file.")
     if args.knowedit_index and args.knowedit_file is None:
         raise ValueError("--knowedit-index requires --knowedit-file.")
+    if args.knowedit_portability and args.knowedit_file is None:
+        raise ValueError("--knowedit-portability requires --knowedit-file.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -2110,6 +2130,7 @@ def main() -> None:
         )
         knowedit_signature = (
             f"-knowedit-{args.knowedit_file.stem}-{format_index_ranges(args.knowedit_index) or 'all'}"
+            f"{'-portability' if args.knowedit_portability else ''}"
             if args.knowedit_file is not None
             else ""
         )
@@ -2121,8 +2142,13 @@ def main() -> None:
             f"{query_signature}.json"
         )
     if args.similarities_output is None:
+        replay_signature = (
+            f"-rep-{replay_file_signature(args.replay_perturbation)}"
+            if args.replay_perturbation is not None
+            else ""
+        )
         args.similarities_output = args.output.with_name(
-            f"{args.output.stem}-debug{args.output.suffix}"
+            f"{args.output.stem}{replay_signature}-debug{args.output.suffix}"
         )
 
     def model_step(
@@ -3259,7 +3285,13 @@ def main() -> None:
             periodic_perturbation_candidate_count=run_args.periodic_perturbation_candidate_count,
             periodic_perturbation_steps=run_args.periodic_perturbation_steps,
             periodic_perturbation_step_decay=run_args.periodic_perturbation_step_decay,
-            save_perturbation=run_args.save_perturbation,
+            save_perturbation=(
+                indexed_perturbation_file(
+                    run_args.save_perturbation, prompt_index, args.knowedit_portability
+                )
+                if knowedit_example is not None and run_args.save_perturbation is not None
+                else run_args.save_perturbation
+            ),
             replay_perturbation=run_args.replay_perturbation,
             perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
@@ -3490,6 +3522,10 @@ def main() -> None:
         if knowedit_examples is not None
         else ()
     )
+    if args.knowedit_portability:
+        for index in knowedit_indices:
+            if not knowedit_examples[index - 1].portability:
+                raise ValueError(f"KnowEdit record {index} has no portability question.")
     prompts = (
         ((1, args.prompt, None, None, None, None, None),)
         if args.prompt is not None
@@ -3548,7 +3584,10 @@ def main() -> None:
         else tuple(
             (
                 index,
-                format_knowedit_prompt(knowedit_examples[index - 1]),
+                format_knowedit_prompt(
+                    knowedit_examples[index - 1],
+                    knowedit_examples[index - 1].portability[0][1],
+                ) if args.knowedit_portability else format_knowedit_prompt(knowedit_examples[index - 1]),
                 None,
                 None,
                 None,
@@ -3636,7 +3675,8 @@ def main() -> None:
                 target_token_id = None
                 if run_args.perturb_mode == "towards-target":
                     target_ids = tokenizer.encode(
-                        knowedit_example.target_new.strip(),
+                        (knowedit_example.portability[0][2] if args.knowedit_portability
+                         else knowedit_example.target_new).strip(),
                         add_special_tokens=False,
                     )
                     if not target_ids:
@@ -3691,6 +3731,15 @@ def main() -> None:
                 if knowedit_example is not None:
                     emit(f"knowedit_ground_truth = {knowedit_example.reference if knowedit_example.reference is not None else 'n/a'}")
                     emit(f"knowedit_target_new = {knowedit_example.target_new}")
+                    original_ids = input_ids
+                    if args.knowedit_portability:
+                        original_ids = tokenizer.apply_chat_template(
+                            [{"role": "user", "content": format_knowedit_prompt(knowedit_example)}],
+                            tokenize=True,
+                            add_generation_prompt=True,
+                            enable_thinking=False,
+                            return_tensors="pt",
+                        ).input_ids.to(input_device)
                     for score_name, reference in (
                         ("knowedit_ground_truth_acc", knowedit_example.reference),
                         ("knowedit_target_new_acc", knowedit_example.target_new),
@@ -3698,9 +3747,32 @@ def main() -> None:
                         if reference is None:
                             continue
                         run_record[score_name] = score_knowedit_target(
-                            input_ids, reference, run_args, use_recirculation, score_name
+                            original_ids, reference, run_args, use_recirculation, score_name
                         )
                         emit(f"{score_name} = {run_record[score_name]:.4f}")
+                    if knowedit_example.portability:
+                        portability_scores = []
+                        for category, portability_prompt, reference in knowedit_example.portability:
+                            question = format_knowedit_prompt(knowedit_example, portability_prompt)
+                            portability_ids = input_ids if args.knowedit_portability and question == prompt else tokenizer.apply_chat_template(
+                                [{"role": "user", "content": question}],
+                                tokenize=True,
+                                add_generation_prompt=True,
+                                enable_thinking=False,
+                                return_tensors="pt",
+                            ).input_ids.to(input_device)
+                            score_name = f"knowedit_portability_{len(portability_scores) + 1}_acc"
+                            accuracy = score_knowedit_target(
+                                portability_ids, reference, run_args, use_recirculation, score_name
+                            )
+                            portability_scores.append({
+                                "category": category,
+                                "prompt": question,
+                                "ground_truth": reference,
+                                "accuracy": accuracy,
+                            })
+                            emit(f"{score_name} = {accuracy:.4f}")
+                        run_record["knowedit_portability"] = portability_scores
                 if args.do_eval and knowedit_example is None:
                     evaluation = evaluate_single_answer(
                         prompt,
@@ -3788,6 +3860,17 @@ def main() -> None:
                         f"{sum(run[score_name] for run in scored_runs) / len(scored_runs):.4f} "
                         f"({len(scored_runs)}/{len(completed_runs)} with reference)"
                     )
+            portability_scores = [
+                item["accuracy"]
+                for run in completed_runs
+                for item in run.get("knowedit_portability", ())
+            ]
+            if portability_scores:
+                emit(
+                    "knowedit_portability_acc = "
+                    f"{sum(portability_scores) / len(portability_scores):.4f} "
+                    f"({len(portability_scores)} questions)"
+                )
             if args.do_eval and knowedit_examples is None:
                 emit(format_average_eval_rating([run["score"] for run in completed_runs]))
     finally:

@@ -218,6 +218,39 @@ class RecirculationCacheTest(unittest.TestCase):
         finally:
             hooks.close()
 
+    def test_candidate_search_only_runs_before_second_pass(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(pair=(2, 0), alpha=0.5, perturbation_target_token_id=1),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+        probe = lambda *_args: torch.zeros((1, 2))
+
+        try:
+            with patch.object(
+                hooks, "iteratively_find_perturbation_candidate",
+                return_value=torch.tensor([[[1.2, 1.0]]]),
+            ) as search:
+                hooks.prepare_injections(probe)
+                search.assert_called_once()
+                torch.testing.assert_close(
+                    hooks.prepared_source, torch.tensor([[[1.2, 1.0]]])
+                )
+
+                hooks.pass_index = 2
+                hooks.injection_source = torch.tensor([[[2.0, 0.0]]])
+                with patch("recirculation.torch.randn_like", side_effect=AssertionError):
+                    hooks.prepare_injections(probe)
+                search.assert_called_once()
+                torch.testing.assert_close(
+                    hooks.prepared_source, torch.tensor([[[2**0.5, 0.0]]])
+                )
+        finally:
+            hooks.close()
+
     def test_saves_and_replays_accumulated_perturbation(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         with tempfile.TemporaryDirectory() as directory:

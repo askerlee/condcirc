@@ -491,6 +491,11 @@ class _Hooks:
                 or self.cfg.perturbation_target_token_id is not None
             )
         )
+        # Don't search for perturbation candidates after the first recirculation pass
+        if select_perturbation_candidate and self.pass_index > 1:
+            self.prepared_source = normalized_source
+            return debug_latents
+        
         direction_weight = self.noise_level * (
             self.cfg.noise_decay_per_pass ** (self.pass_index - 1)
         )

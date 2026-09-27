@@ -495,11 +495,18 @@ class _Hooks:
         if select_perturbation_candidate:
             debug_latents.append((source_index, normalized_source.detach().clone()))
         return debug_latents
-
+    
+    # reverse_noise() is called when a Gaussian-noise injection has been recorded
+    # and decoding that noisy latent produces a margin greater than the 
+    # preceding pass’s margin
     def reverse_noise(self) -> Tensor:
         assert self.noise_perturbation is not None
         assert self.prepared_source is not None
         assert self.injection_source is not None
+        # prepared_source is the normalized source latent + normalized_perturbation.
+        # (To be precise, it can also contain a direct-direction offset when perturbation_direction 
+        # is set and no probe is supplied)
+        # To reverse the noise, we subtract twice the normalized perturbation from the prepared source.
         normalized_perturbation, raw_perturbation = self.noise_perturbation
         self.prepared_source -= 2 * normalized_perturbation
         source_index = self.source_index

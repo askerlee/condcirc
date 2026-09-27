@@ -48,6 +48,13 @@ import torch.nn.functional as F
 FORCED_NOISE_MAX_ATTEMPTS = 1
 
 
+@dataclass
+class PerturbationSequence:
+    saved: list[Tensor] = field(default_factory=list)
+    replayed: Tensor | None = None
+    replay_index: int = 0
+
+
 @dataclass(frozen=True)
 class RecirculationConfig:
     pair: tuple[int, int]
@@ -62,6 +69,9 @@ class RecirculationConfig:
     periodic_perturbation_step_decay: float = 1.0
     save_perturbation: Path | None = None
     replay_perturbation: Path | None = None
+    perturbation_sequence: PerturbationSequence = field(
+        default_factory=PerturbationSequence, repr=False, compare=False
+    )
     perturb_pre_margin_thres: float = 0.05
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
@@ -169,16 +179,31 @@ def _distribution_cosine_similarity(
     return float(similarity.mean().item())
 
 
-def perturbation_replay(normalized_source: Tensor, path: Path) -> Tensor:
-    perturbation = torch.load(path, map_location="cpu", weights_only=True)
-    if not isinstance(perturbation, Tensor) or perturbation.shape != normalized_source.shape:
+def perturbation_replay(
+    normalized_source: Tensor, path: Path, sequence: PerturbationSequence
+) -> Tensor:
+    if sequence.replayed is None:
+        sequence.replayed = torch.load(path, map_location="cpu", weights_only=True)
+    perturbations = sequence.replayed
+    if (
+        not isinstance(perturbations, Tensor)
+        or perturbations.ndim != normalized_source.ndim + 1
+        or perturbations.shape[1:] != normalized_source.shape
+    ):
         raise ValueError(
-            f"Replay perturbation in {path} must be a tensor with shape "
-            f"{tuple(normalized_source.shape)}."
+            f"Replay perturbations in {path} must be a tensor with shape "
+            f"(N, {', '.join(map(str, normalized_source.shape))})."
         )
-    return normalized_source + perturbation.to(
+    if sequence.replay_index >= len(perturbations):
+        raise ValueError(
+            f"Replay perturbations in {path} exhausted after "
+            f"{sequence.replay_index} perturbed tokens."
+        )
+    perturbation = perturbations[sequence.replay_index].to(
         device=normalized_source.device, dtype=normalized_source.dtype
     )
+    sequence.replay_index += 1
+    return normalized_source + perturbation
 
 
 class _Hooks:
@@ -417,8 +442,12 @@ class _Hooks:
                     ),
                 ).squeeze(0)
         if self.cfg.save_perturbation is not None:
+            sequence = self.cfg.perturbation_sequence
+            sequence.saved.append(
+                (normalized_source - initial_normalized_source).detach().cpu().clone()
+            )
             torch.save(
-                (normalized_source - initial_normalized_source).detach().cpu(),
+                torch.stack(sequence.saved),
                 self.cfg.save_perturbation,
             )
         return normalized_source
@@ -488,7 +517,9 @@ class _Hooks:
         if select_perturbation_candidate:
             if self.cfg.replay_perturbation is not None:
                 normalized_source = perturbation_replay(
-                    normalized_source, self.cfg.replay_perturbation
+                    normalized_source,
+                    self.cfg.replay_perturbation,
+                    self.cfg.perturbation_sequence,
                 )
             else:
                 assert perturbation_probe is not None

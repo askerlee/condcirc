@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -240,8 +241,8 @@ class RecirculationCacheTest(unittest.TestCase):
                 ]):
                     hooks.prepare_injections(lambda *_args: torch.zeros((1, 2)))
                 saved = torch.load(path, map_location="cpu", weights_only=True)
-                torch.testing.assert_close(saved, hooks.prepared_source - 1)
-                torch.testing.assert_close(saved, torch.tensor([[[0.3, 0.0]]]))
+                torch.testing.assert_close(saved[0], hooks.prepared_source - 1)
+                torch.testing.assert_close(saved, torch.tensor([[[[0.3, 0.0]]]]))
             finally:
                 hooks.close()
 
@@ -269,6 +270,101 @@ class RecirculationCacheTest(unittest.TestCase):
                 )
             finally:
                 replay_hooks.close()
+
+    def test_replays_each_perturbed_token_in_order_across_config_copies(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perturbations.pt"
+            save_config = RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=1,
+                save_perturbation=path,
+            )
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 1.0]]]),
+            ]):
+                for noise_level in (0.2, 0.4):
+                    hooks = _Hooks(blocks, replace(save_config))
+                    hooks.residuals[0] = torch.ones((1, 1, 2))
+                    hooks.injection_source = torch.ones((1, 1, 2))
+                    hooks.noise_level = noise_level
+                    try:
+                        hooks.prepare_injections(lambda *_args: torch.zeros((1, 2)))
+                    finally:
+                        hooks.close()
+
+            saved = torch.load(path, map_location="cpu", weights_only=True)
+            torch.testing.assert_close(
+                saved, torch.tensor([[[[0.2, 0.0]]], [[[0.0, 0.4]]]])
+            )
+
+            replay_config = RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                replay_perturbation=path,
+            )
+            for source, expected in (
+                (torch.ones((1, 1, 2)), torch.tensor([[[1.2, 1.0]]])),
+                (torch.tensor([[[2.0, 0.0]]]), torch.tensor([[[2**0.5, 0.4]]])),
+            ):
+                hooks = _Hooks(blocks, replace(replay_config))
+                hooks.residuals[0] = torch.ones((1, 1, 2))
+                hooks.injection_source = source
+                try:
+                    if replay_config.perturbation_sequence.replay_index == 1:
+                        hooks.active_pair = False
+                        hooks.prepare_injections()
+                        self.assertEqual(replay_config.perturbation_sequence.replay_index, 1)
+                        hooks.active_pair = True
+                    hooks.prepare_injections()
+                    torch.testing.assert_close(hooks.prepared_source, expected)
+                finally:
+                    hooks.close()
+
+            exhausted = _Hooks(blocks, replace(replay_config))
+            exhausted.residuals[0] = torch.ones((1, 1, 2))
+            exhausted.injection_source = torch.ones((1, 1, 2))
+            try:
+                with self.assertRaisesRegex(ValueError, "exhausted"):
+                    exhausted.prepare_injections()
+            finally:
+                exhausted.close()
+
+            fresh_save = _Hooks(
+                blocks, RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                    periodic_perturbation_candidate_count=1,
+                    save_perturbation=path,
+                ),
+            )
+            fresh_save.residuals[0] = torch.ones((1, 1, 2))
+            fresh_save.injection_source = torch.ones((1, 1, 2))
+            fresh_save.noise_level = 0.1
+            try:
+                with patch("recirculation.torch.randn_like", return_value=torch.tensor([[[1.0, 0.0]]])):
+                    fresh_save.prepare_injections(lambda *_args: torch.zeros((1, 2)))
+            finally:
+                fresh_save.close()
+            torch.testing.assert_close(
+                torch.load(path, map_location="cpu", weights_only=True),
+                torch.tensor([[[[0.1, 0.0]]]]),
+            )
+
+            fresh_replay = _Hooks(
+                blocks, RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                    replay_perturbation=path,
+                ),
+            )
+            fresh_replay.residuals[0] = torch.ones((1, 1, 2))
+            fresh_replay.injection_source = torch.ones((1, 1, 2))
+            try:
+                fresh_replay.prepare_injections()
+                torch.testing.assert_close(
+                    fresh_replay.prepared_source, torch.tensor([[[1.1, 1.0]]])
+                )
+            finally:
+                fresh_replay.close()
 
     def test_replay_rejects_wrong_perturbation_shape(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])

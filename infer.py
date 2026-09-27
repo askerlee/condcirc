@@ -965,14 +965,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=parse_perturbation_file,
         default="perturb.pt",
         metavar="FILE.pt",
-        help="Save the final candidate perturbation to a .pt file when one is selected.",
+        help="Save selected token perturbations in order as a stacked .pt tensor.",
     )
     parser.add_argument(
         "--replay-perturbation",
         type=parse_perturbation_file,
         default=None,
         metavar="FILE.pt",
-        help="Apply a saved perturbation instead of searching for candidates.",
+        help="Replay saved token perturbations in order instead of searching for candidates.",
     )
     parser.add_argument(
         "--cosine-top-k",

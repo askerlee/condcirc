@@ -4,3 +4,4 @@ ratings.md
 /*.json
 *.log
 logs/*
+*.pt

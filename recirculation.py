@@ -292,6 +292,125 @@ class _Hooks:
 
         return hook
 
+    def iteratively_find_perturbation_candidate(
+        self,
+        source_index: int,
+        destination_index: int,
+        destination: Tensor,
+        source: Tensor,
+        destination_norm: Tensor,
+        normalized_source: Tensor,
+        direction_weight: float,
+        perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor],
+        candidate_target_token_probabilities: list[float] | None,
+        aggregate_target_token_probabilities: list[float] | None,
+    ) -> Tensor:
+        target_token_id = self.cfg.perturbation_target_token_id
+        if target_token_id is None:
+            assert self.cfg.perturbation_direction is not None
+            downstream_direction = self.cfg.perturbation_direction.to(
+                device=source.device, dtype=torch.float32
+            )
+            baseline_output = source[:, -1, :]
+        steps = self.cfg.periodic_perturbation_steps
+        candidates_per_step = self.cfg.periodic_perturbation_candidate_count
+        average_candidate_norm = None
+        for _step in range(steps):
+            candidates = []
+            scores = []
+            for _ in range(candidates_per_step):
+                epsilon = (
+                    direction_weight
+                    * self.cfg.perturbation_direction_scale
+                    * destination_norm
+                    * torch.randn_like(source)
+                    / source.shape[-1] ** 0.5
+                )
+                candidate = normalized_source + epsilon
+                candidate_output = perturbation_probe(
+                    source_index, destination_index, destination, candidate
+                )
+                if target_token_id is not None:
+                    reversed_output = perturbation_probe(
+                        source_index,
+                        destination_index,
+                        destination,
+                        normalized_source - epsilon,
+                    )
+                    forward_score = torch.log_softmax(
+                        candidate_output.float(), dim=-1
+                    )[:, target_token_id]
+                    reversed_score = torch.log_softmax(
+                        reversed_output.float(), dim=-1
+                    )[:, target_token_id]
+                    keep_forward = (forward_score >= reversed_score).to(
+                        epsilon.device
+                    )
+                    candidates.append(
+                        torch.where(keep_forward[:, None, None], epsilon, -epsilon)
+                    )
+                    scores.append(torch.maximum(forward_score, reversed_score))
+                else:
+                    candidates.append(candidate)
+                    direction = downstream_direction.reshape_as(candidate_output)
+                    scores.append(
+                        torch.sum(
+                            (candidate_output - baseline_output) * direction,
+                            dim=-1,
+                        )
+                    )
+            if target_token_id is not None:
+                candidate_weights = torch.softmax(torch.stack(scores, dim=0), dim=0)
+                if candidate_target_token_probabilities is not None:
+                    candidate_target_token_probabilities.extend(
+                        float(score.exp().item()) for score in scores
+                    )
+                candidate_weights = candidate_weights.masked_fill(
+                    candidate_weights <= 0.5 / candidates_per_step,
+                    0.0,
+                )
+                candidate_weights = candidate_weights / candidate_weights.sum(
+                    dim=0, keepdim=True
+                )
+                candidate_tensor = torch.stack(candidates, dim=0)
+                weighted_perturbation = (
+                    candidate_tensor
+                    * candidate_weights.to(source.device)[:, :, None, None]
+                ).sum(dim=0)
+                if average_candidate_norm is None:
+                    average_candidate_norm = torch.linalg.vector_norm(
+                        candidate_tensor, dim=-1, keepdim=True
+                    ).mean(dim=0)
+                weighted_perturbation = (
+                    weighted_perturbation
+                    * average_candidate_norm
+                    / torch.linalg.vector_norm(
+                        weighted_perturbation, dim=-1, keepdim=True
+                    ).clamp_min(self.cfg.eps)
+                )
+                normalized_source = normalized_source + (
+                    self.cfg.periodic_perturbation_step_decay ** _step
+                ) * weighted_perturbation
+                if aggregate_target_token_probabilities is not None:
+                    aggregate_output = perturbation_probe(
+                        source_index, destination_index, destination, normalized_source
+                    )
+                    aggregate_target_token_probabilities.append(
+                        float(torch.softmax(aggregate_output.float(), dim=-1)[:, target_token_id].item())
+                    )
+                #breakpoint()
+            else:
+                candidate_tensor = torch.stack(candidates, dim=0)
+                score_tensor = torch.stack(scores, dim=0)
+                best_index = score_tensor.argmin(dim=0)
+                normalized_source = candidate_tensor.gather(
+                    0,
+                    best_index.to(candidate_tensor.device).view(1, -1, 1, 1).expand(
+                        1, *candidate_tensor.shape[1:]
+                    ),
+                ).squeeze(0)
+        return normalized_source
+
     def prepare_injections(
         self,
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor] | None = None,
@@ -361,110 +480,18 @@ class _Hooks:
                 normalized_source = normalized_source + normalized_perturbation
             if select_perturbation_candidate:
                 assert perturbation_probe is not None
-                target_token_id = self.cfg.perturbation_target_token_id
-                if target_token_id is None:
-                    assert self.cfg.perturbation_direction is not None
-                    downstream_direction = self.cfg.perturbation_direction.to(
-                        device=source.device, dtype=torch.float32
-                    )
-                    baseline_output = source[:, -1, :]
-                steps = self.cfg.periodic_perturbation_steps
-                candidates_per_step = self.cfg.periodic_perturbation_candidate_count
-                average_candidate_norm = None
-                for _step in range(steps):
-                    candidates = []
-                    scores = []
-                    for _ in range(candidates_per_step):
-                        epsilon = (
-                            direction_weight
-                            * self.cfg.perturbation_direction_scale
-                            * destination_norm
-                            * torch.randn_like(source)
-                            / source.shape[-1] ** 0.5
-                        )
-                        candidate = normalized_source + epsilon
-                        candidate_output = perturbation_probe(
-                            source_index, destination_index, destination, candidate
-                        )
-                        if target_token_id is not None:
-                            reversed_output = perturbation_probe(
-                                source_index,
-                                destination_index,
-                                destination,
-                                normalized_source - epsilon,
-                            )
-                            forward_score = torch.log_softmax(
-                                candidate_output.float(), dim=-1
-                            )[:, target_token_id]
-                            reversed_score = torch.log_softmax(
-                                reversed_output.float(), dim=-1
-                            )[:, target_token_id]
-                            keep_forward = (forward_score >= reversed_score).to(
-                                epsilon.device
-                            )
-                            candidates.append(
-                                torch.where(keep_forward[:, None, None], epsilon, -epsilon)
-                            )
-                            scores.append(torch.maximum(forward_score, reversed_score))
-                        else:
-                            candidates.append(candidate)
-                            direction = downstream_direction.reshape_as(candidate_output)
-                            scores.append(
-                                torch.sum(
-                                    (candidate_output - baseline_output) * direction,
-                                    dim=-1,
-                                )
-                            )
-                    if target_token_id is not None:
-                        candidate_weights = torch.softmax(torch.stack(scores, dim=0), dim=0)
-                        if candidate_target_token_probabilities is not None:
-                            candidate_target_token_probabilities.extend(
-                                float(score.exp().item()) for score in scores
-                            )
-                        candidate_weights = candidate_weights.masked_fill(
-                            candidate_weights <= 0.5 / candidates_per_step,
-                            0.0,
-                        )
-                        candidate_weights = candidate_weights / candidate_weights.sum(
-                            dim=0, keepdim=True
-                        )
-                        candidate_tensor = torch.stack(candidates, dim=0)
-                        weighted_perturbation = (
-                            candidate_tensor
-                            * candidate_weights.to(source.device)[:, :, None, None]
-                        ).sum(dim=0)
-                        if average_candidate_norm is None:
-                            average_candidate_norm = torch.linalg.vector_norm(
-                                candidate_tensor, dim=-1, keepdim=True
-                            ).mean(dim=0)
-                        weighted_perturbation = (
-                            weighted_perturbation
-                            * average_candidate_norm
-                            / torch.linalg.vector_norm(
-                                weighted_perturbation, dim=-1, keepdim=True
-                            ).clamp_min(self.cfg.eps)
-                        )
-                        normalized_source = normalized_source + (
-                            self.cfg.periodic_perturbation_step_decay ** _step
-                        ) * weighted_perturbation
-                        if aggregate_target_token_probabilities is not None:
-                            aggregate_output = perturbation_probe(
-                                source_index, destination_index, destination, normalized_source
-                            )
-                            aggregate_target_token_probabilities.append(
-                                float(torch.softmax(aggregate_output.float(), dim=-1)[:, target_token_id].item())
-                            )
-                        #breakpoint()
-                    else:
-                        candidate_tensor = torch.stack(candidates, dim=0)
-                        score_tensor = torch.stack(scores, dim=0)
-                        best_index = score_tensor.argmin(dim=0)
-                        normalized_source = candidate_tensor.gather(
-                            0,
-                            best_index.to(candidate_tensor.device).view(1, -1, 1, 1).expand(
-                                1, *candidate_tensor.shape[1:]
-                            ),
-                        ).squeeze(0)
+                normalized_source = self.iteratively_find_perturbation_candidate(
+                    source_index,
+                    destination_index,
+                    destination,
+                    source,
+                    destination_norm,
+                    normalized_source,
+                    direction_weight,
+                    perturbation_probe,
+                    candidate_target_token_probabilities,
+                    aggregate_target_token_probabilities,
+                )
             # Without a downstream probe, preserve the original direct-direction behavior.
             elif self.cfg.perturbation_direction is not None:
                 direction = self.cfg.perturbation_direction.to(
@@ -480,24 +507,22 @@ class _Hooks:
                     * destination_norm
                     * direction
                 )
-            '''
-            normalized_source = (
-                normalized_source
-                * destination_norm
-                / torch.linalg.vector_norm(
-                    normalized_source, dim=-1, keepdim=True
-                ).clamp_min(self.cfg.eps)
-            )
-            '''
             self.prepared_sources[pair_index] = normalized_source
             if select_perturbation_candidate:
                 debug_latents.append((source_index, normalized_source.detach().clone()))
         return debug_latents
 
+    # reverse_noise() is called when a Gaussian-noise injection has been recorded
+    # and decoding that noisy latent produces a margin greater than the 
+    # preceding pass’s margin
     def reverse_noise(self, pair_index: int) -> Tensor:
         normalized_perturbation, raw_perturbation = self.noise_perturbations[
             pair_index
         ]
+        # prepared_sources[pair_index] is the normalized source latent + normalized_perturbation.
+        # (To be precise, it can also contain a direct-direction offset when perturbation_direction 
+        # is set and no probe is supplied)
+        # To reverse the noise, we subtract twice the normalized perturbation from the prepared source.
         self.prepared_sources[pair_index] -= 2 * normalized_perturbation
         source_index, _destination_index = self.cfg.pairs[pair_index]
         reversed_latent = (

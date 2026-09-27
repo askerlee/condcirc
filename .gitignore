@@ -3,3 +3,4 @@ results*.txt
 ratings.md
 /*.json
 *.log
+logs/*

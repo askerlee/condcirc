@@ -85,7 +85,7 @@ class KnowEditTest(unittest.TestCase):
     def test_selects_indexed_variants_and_their_targets(self) -> None:
         records = [{
             "prompt": "Main question", "target_new": "New answer",
-            "rephrase": "Rephrased question",
+            "rephrase_prompt": "Rephrased question",
             "portability": {"Reasoning": [
                 {"prompt": "First portable", "ground_truth": [["First answer", "Alias"]]},
                 {"prompt": "Second portable", "ground_truth": "Second answer"},
@@ -101,6 +101,8 @@ class KnowEditTest(unittest.TestCase):
             example, = load_examples(path)
 
         self.assertEqual(select_variant(example, "rephrased_prompt", 1), ("Rephrased question", "New answer"))
+        with self.assertRaisesRegex(ValueError, "index 2 is unavailable"):
+            select_variant(example, "rephrased_prompt", 2)
         self.assertEqual(select_variant(example, "portability", 1), ("First portable", "First answer"))
         self.assertEqual(select_variant(example, "portability", 2), ("Second portable", "Second answer"))
         self.assertEqual(select_variant(example, "locality", 2), ("Second local", "Other answer"))
@@ -108,6 +110,21 @@ class KnowEditTest(unittest.TestCase):
             select_variant(example, "locality", 3)
         with self.assertRaisesRegex(ValueError, "index 0 is unavailable"):
             select_variant(example, "portability", 0)
+
+        records[0]["rephrase_prompt"] = ["Rephrased question"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "variants.json"
+            path.write_text(json.dumps(records), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Invalid KnowEdit rephrased_prompt"):
+                load_examples(path)
+            records[0].pop("rephrase_prompt")
+            records[0]["rephrase"] = "Rephrased question"
+            records[0]["rephrased_prompt"] = "Other rephrased question"
+            path.write_text(json.dumps(records), encoding="utf-8")
+            alias_example, = load_examples(path)
+        self.assertIsNone(alias_example.rephrased_prompt)
+        with self.assertRaisesRegex(ValueError, "index 1 is unavailable"):
+            select_variant(alias_example, "rephrased_prompt", 1)
 
 
 if __name__ == "__main__":

@@ -15,13 +15,13 @@ class KnowEditExample:
     source: str
     reference: str | None = None
     portability: tuple[tuple[str, str, str], ...] = ()
-    rephrased_prompts: tuple[str, ...] = ()
+    rephrased_prompt: str | None = None
     locality: tuple[tuple[str, str, str], ...] = ()
 
 
 def select_variant(example: KnowEditExample, variant: str, index: int) -> tuple[str, str]:
     if variant == "rephrased_prompt":
-        prompts = tuple((prompt, example.target_new) for prompt in example.rephrased_prompts)
+        prompts = ((example.rephrased_prompt, example.target_new),) if example.rephrased_prompt is not None else ()
     elif variant == "portability":
         prompts = tuple((prompt, answer) for _, prompt, answer in example.portability)
     elif variant == "locality":
@@ -86,12 +86,8 @@ def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
                 if not isinstance(portability_prompt, str) or not portability_prompt.strip() or portability_answer is None:
                     raise ValueError(f"Invalid KnowEdit portability in record {index} of {path}.")
                 portability.append((category, portability_prompt, portability_answer))
-        rephrased = record.get("rephrased_prompt", record.get("rephrase", []))
-        if isinstance(rephrased, str):
-            rephrased = [rephrased]
-        if not isinstance(rephrased, list) or any(
-            not isinstance(item, str) or not item.strip() for item in rephrased
-        ):
+        rephrased = record.get("rephrase_prompt")
+        if rephrased is not None and (not isinstance(rephrased, str) or not rephrased.strip()):
             raise ValueError(f"Invalid KnowEdit rephrased_prompt in record {index} of {path}.")
         locality = []
         for category, questions in record.get("locality", {}).items():
@@ -101,7 +97,7 @@ def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
                 if not isinstance(locality_prompt, str) or not locality_prompt.strip() or locality_answer is None:
                     raise ValueError(f"Invalid KnowEdit locality in record {index} of {path}.")
                 locality.append((category, locality_prompt, locality_answer))
-        examples.append(KnowEditExample(prompt, target, subject, source, original, tuple(portability), tuple(rephrased), tuple(locality)))
+        examples.append(KnowEditExample(prompt, target, subject, source, original, tuple(portability), rephrased, tuple(locality)))
     return tuple(examples)
 
 

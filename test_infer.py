@@ -157,7 +157,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             portability=(("Reasoning", "What is the common name?", "Owlet moths"),),
                             locality=(("Relation_Specificity", "First local", "First answer"),
                                       ("Relation_Specificity", "Second local", "Second answer")),
-                            rephrased_prompts=("Rephrased question",),
+                            rephrased_prompt="Rephrased question",
                         )]),
                         patch.object(infer, "format_knowedit_prompt", side_effect=lambda _example, prompt=None: prompt or "question"),
                         patch.object(infer, "teacher_forced_token_accuracy", side_effect=score_tokens),
@@ -270,10 +270,12 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual(emitted["pre_recirculation_topk_tokens"], ["E"] * 3)
                         if knowedit:
                             self.assertEqual(emitted["target_token"], "E")
-                            self.assertAlmostEqual(
+                            self.assertEqual(
                                 emitted["pre_recirculation_target_token_probability"],
-                                torch.softmax(torch.tensor([0.0, 5.0, 0.0]), dim=-1)[1].item(),
+                                "9.87e-01",
                             )
+                            if latent_tokens > 1:
+                                self.assertEqual(comparisons[0]["pre_recirculation_target_token_probability"], "9.87e-01")
                             self.assertEqual(emitted["candidate_target_token_probabilities"], [
                                 ["3.00e-01", "7.00e-01", "4.00e-01", "8.00e-01"],
                                 ["2.00e-01", "6.00e-01", "5.00e-01", "9.00e-01"],
@@ -353,7 +355,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("pass_probability_margins", [0.8]),
                     ("final_pass_cosine_similarities", None),
                     ("pass_cosine_similarities", []),
-                    ("pass_top_k_token_ids", [[target_id if target_attempt == hit_pass and not replay_exit else 2, 2]] if target_id is not None else []),
+                    ("pass_top_k_token_ids", [] if no_attempt and target_id == 0 else [[target_id if target_attempt == hit_pass and not replay_exit else 2, 2]] if target_id is not None else []),
                     ("pass_target_token_probabilities", []),
                     ("candidate_target_token_probabilities", []),
                     ("aggregate_target_token_probabilities", []),
@@ -367,13 +369,14 @@ class RecirculationStatsTest(unittest.TestCase):
             return logits, kwargs["cache"]
 
         with tempfile.TemporaryDirectory() as directory:
-            for debug, latent_tokens, hit_pass, replay_exit in (
-                (False, 2, 1, False), (True, 2, 1, False),
-                (False, 2, 2, False), (True, 2, 2, False),
-                (False, 3, 1, False), (True, 3, 1, False),
-                (False, 3, 2, False), (True, 3, 2, False),
-                (False, 3, 1, True), (True, 3, 1, True),
-                (False, 3, 2, True), (True, 3, 2, True),
+            for debug, latent_tokens, hit_pass, replay_exit, no_attempt in (
+                (False, 2, 1, False, False), (True, 2, 1, False, False),
+                (False, 2, 2, False, False), (True, 2, 2, False, False),
+                (False, 3, 1, False, False), (True, 3, 1, False, False),
+                (False, 3, 2, False, False), (True, 3, 2, False, False),
+                (False, 3, 1, True, False), (True, 3, 1, True, False),
+                (False, 3, 2, True, False), (True, 3, 2, True, False),
+                (False, 3, 1, False, True), (True, 3, 1, False, True),
             ):
                 stream = io.StringIO()
                 with (
@@ -429,6 +432,8 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual([record["token_index"] for record in comparisons if not record.get("emitted", True)],
                                          [0] * (hit_pass - 1) + [1] * (hit_pass - 1))
                         self.assertEqual(len(comparisons), 2 * hit_pass)
+                        if no_attempt:
+                            self.assertEqual(emitted[1]["pass_recirculation_topk_tokens"], [])
 
     def test_towards_target_stops_perturbing_when_target_is_exhausted(self) -> None:
         model = nn.Module()

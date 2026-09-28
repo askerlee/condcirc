@@ -2488,9 +2488,12 @@ def main() -> None:
                 )
                 target_found = bool(
                     target_token_id is not None
-                    and top_k_token_ids
-                    and top_k_token_ids[-1]
-                    and top_k_token_ids[-1][-1][0] == target_token_id
+                    and (
+                        top_k_token_ids and top_k_token_ids[-1]
+                        and top_k_token_ids[-1][-1][0] == target_token_id
+                        or not top_k_token_ids[-1]
+                        and logits[0, -1].argmax().item() == target_token_id
+                    )
                 )
                 remaining = run_args.perturb_latent_tokens - latent_index - 1
                 replay_exit = replay_skips_remaining_latents(kwargs["config"], remaining)
@@ -2900,8 +2903,12 @@ def main() -> None:
                         if (
                             periodic_perturbation
                             and target_token_id is not None
-                            and token_pass_top_k_token_ids[-1]
-                            and token_pass_top_k_token_ids[-1][-1][0] == target_token_id
+                            and (
+                                token_pass_top_k_token_ids[-1]
+                                and token_pass_top_k_token_ids[-1][-1][0] == target_token_id
+                                or not token_pass_top_k_token_ids[-1]
+                                and token_logits[0, -1].argmax().item() == target_token_id
+                            )
                         ) or replay_exit:
                             early_target_pass = latent_index + 1
                             save_skipped_latent_perturbations(token_run_config, remaining, replay_exit)
@@ -2989,8 +2996,8 @@ def main() -> None:
             )
             if target_token_id is not None:
                 latent_record["target_token"] = tokenizer.decode(target_token_id)
-                latent_record["pre_recirculation_target_token_probability"] = float(
-                    torch.softmax(teacher_next[0].float(), dim=-1)[target_token_id].item()
+                latent_record["pre_recirculation_target_token_probability"] = (
+                    f"{torch.softmax(teacher_next[0].float(), dim=-1)[target_token_id].item():.2e}"
                 )
                 latent_record["aggregate_target_token_probabilities"] = [
                     f"{probability:.2e}"
@@ -3134,8 +3141,8 @@ def main() -> None:
             )
             if target_token_id is not None:
                 comparison["target_token"] = tokenizer.decode(target_token_id)
-                comparison["pre_recirculation_target_token_probability"] = float(
-                    torch.softmax(teacher_next_logits[0].float(), dim=-1)[target_token_id].item()
+                comparison["pre_recirculation_target_token_probability"] = (
+                    f"{torch.softmax(teacher_next_logits[0].float(), dim=-1)[target_token_id].item():.2e}"
                 )
                 candidates_per_step = student_run_config.periodic_perturbation_candidate_count
                 probabilities = candidate_target_token_probabilities[-1]
@@ -3452,8 +3459,12 @@ def main() -> None:
                 if periodic_perturbation:
                     target_found = bool(
                         target_token_id is not None
-                        and pass_top_k_token_ids[-1]
-                        and pass_top_k_token_ids[-1][-1][0] == target_token_id
+                        and (
+                            pass_top_k_token_ids[-1]
+                            and pass_top_k_token_ids[-1][-1][0] == target_token_id
+                            or not pass_top_k_token_ids[-1]
+                            and student_logits[0, -1].argmax().item() == target_token_id
+                        )
                     )
                     remaining = run_args.perturb_latent_tokens - latent_index - 1
                     replay_exit = replay_skips_remaining_latents(student_run_config, remaining)

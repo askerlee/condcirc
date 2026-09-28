@@ -3224,7 +3224,7 @@ def main() -> None:
             )
             if early_target_pass is not None:
                 comparison["latent_pass"] = early_target_pass
-                comparison["latent_passes"] = run_args.perturb_latent_tokens
+                # comparison["latent_passes"] = run_args.perturb_latent_tokens
             early_target_pass = None
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
             if on_generated_token is not None:

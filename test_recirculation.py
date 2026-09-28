@@ -221,7 +221,7 @@ class RecirculationCacheTest(unittest.TestCase):
         finally:
             hooks.close()
 
-    def test_periodic_probe_discards_noise_below_pre_recirculation_probability(self) -> None:
+    def test_periodic_probe_uses_candidates_below_pre_recirculation_probability(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -249,15 +249,15 @@ class RecirculationCacheTest(unittest.TestCase):
                 hooks.prepare_injections(
                     probe, candidate_target_token_probabilities=candidate_probabilities,
                     aggregate_target_token_probabilities=aggregate_probabilities,
-                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.9)).item(),
                 )
-            torch.testing.assert_close(hooks.prepared_source, torch.ones((1, 1, 2)))
+            self.assertLess(hooks.prepared_source[0, 0, 0].item(), 1.0)
+            self.assertGreater(hooks.prepared_source[0, 0, 1].item(), 1.0)
             self.assertEqual(len(candidate_probabilities), 2)
-            self.assertEqual(aggregate_probabilities, [])
+            self.assertEqual(len(aggregate_probabilities), 1)
         finally:
             hooks.close()
 
-    def test_periodic_probe_weights_only_noise_improving_pre_recirculation_probability(self) -> None:
+    def test_periodic_probe_weights_higher_scoring_noise(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -282,7 +282,6 @@ class RecirculationCacheTest(unittest.TestCase):
             ]):
                 hooks.prepare_injections(
                     probe,
-                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.5)).item(),
                 )
             torch.testing.assert_close(
                 hooks.prepared_source, torch.tensor([[[1.2, 1.0]]])
@@ -290,7 +289,7 @@ class RecirculationCacheTest(unittest.TestCase):
         finally:
             hooks.close()
 
-    def test_periodic_probe_does_not_reject_weighted_noise_after_candidate_filtering(self) -> None:
+    def test_periodic_probe_does_not_reject_weighted_noise(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
             blocks,
@@ -316,7 +315,6 @@ class RecirculationCacheTest(unittest.TestCase):
             ]):
                 hooks.prepare_injections(
                     probe, aggregate_target_token_probabilities=aggregate_probabilities,
-                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.5)).item(),
                 )
             torch.testing.assert_close(
                 hooks.prepared_source,

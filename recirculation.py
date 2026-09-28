@@ -376,7 +376,6 @@ class _Hooks:
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor],
         candidate_target_token_probabilities: list[float] | None,
         aggregate_target_token_probabilities: list[float] | None,
-        pre_recirculation_target_log_probability: float | None = None,
     ) -> Tensor:
         target_token_id = self.cfg.perturbation_target_token_id
         if target_token_id is None:
@@ -392,7 +391,6 @@ class _Hooks:
         for _step in range(steps):
             candidates = []
             scores = []
-            viable_candidates = []
             for _ in range(candidates_per_step):
                 epsilon = (
                     direction_weight
@@ -426,10 +424,6 @@ class _Hooks:
                     )
                     best_score = torch.maximum(forward_score, reversed_score)
                     scores.append(best_score)
-                    if pre_recirculation_target_log_probability is not None:
-                        viable_candidates.append(
-                            best_score >= pre_recirculation_target_log_probability
-                        )
                 else:
                     candidates.append(candidate)
                     direction = downstream_direction.reshape_as(candidate_output)
@@ -445,11 +439,6 @@ class _Hooks:
                         float(score.exp().item()) for score in scores
                     )
                 score_tensor = torch.stack(scores, dim=0)
-                if viable_candidates:
-                    viable = torch.stack(viable_candidates, dim=0)
-                    if not viable.any():
-                        continue
-                    score_tensor = score_tensor.masked_fill(~viable, -torch.inf)
                 candidate_weights = torch.softmax(score_tensor, dim=0)
                 candidate_weights = candidate_weights.masked_fill(
                     candidate_weights <= 0.5 / candidates_per_step,
@@ -515,7 +504,6 @@ class _Hooks:
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor] | None = None,
         candidate_target_token_probabilities: list[float] | None = None,
         aggregate_target_token_probabilities: list[float] | None = None,
-        pre_recirculation_target_log_probability: float | None = None,
         pre_recirculation_top_token_id: int | None = None,
     ) -> list[tuple[int, Tensor]]:
         self.prepared_source = None
@@ -630,7 +618,6 @@ class _Hooks:
                     perturbation_probe,
                     candidate_target_token_probabilities,
                     aggregate_target_token_probabilities,
-                    pre_recirculation_target_log_probability,
                 )
         elif self.cfg.perturbation_direction is not None:
             direction = self.cfg.perturbation_direction.to(
@@ -1149,11 +1136,6 @@ def recirculate(
                     aggregate_target_token_probabilities=(
                         token_aggregate_target_token_probabilities
                         if aggregate_target_token_probabilities is not None
-                        else None
-                    ),
-                    pre_recirculation_target_log_probability=(
-                        float(torch.log_softmax(first_logits[0, -1, :].float(), dim=-1)[config.perturbation_target_token_id].item())
-                        if config.perturbation_target_token_id is not None
                         else None
                     ),
                     pre_recirculation_top_token_id=(

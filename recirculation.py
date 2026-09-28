@@ -505,6 +505,7 @@ class _Hooks:
         candidate_target_token_probabilities: list[float] | None = None,
         aggregate_target_token_probabilities: list[float] | None = None,
         pre_recirculation_top_token_id: int | None = None,
+        normalized_source_override: Tensor | None = None,
     ) -> list[tuple[int, Tensor]]:
         self.prepared_source = None
         self.noise_perturbation = None
@@ -532,6 +533,13 @@ class _Hooks:
             self.cfg.eps
         )
         self.cfg.perturbation_sequence.source_shape = tuple(normalized_source.shape)
+        if normalized_source_override is not None:
+            if normalized_source_override.shape != normalized_source.shape:
+                raise ValueError("The saved normalized source has an incompatible shape.")
+            self.prepared_source = normalized_source_override.to(
+                device=destination.device, dtype=normalized_source.dtype
+            )
+            return debug_latents
         select_perturbation_candidate = (
             (perturbation_probe is not None or self.cfg.replay_perturbation is not None)
             and (
@@ -811,6 +819,8 @@ def recirculate(
     injected_noise_levels: list[list[float]] | None = None,
     injected_source_latents: list[list[tuple[int, Tensor]]] | None = None,
     source_latents: list[dict[int, Tensor]] | None = None,
+    normalized_sources: list[Tensor] | None = None,
+    normalized_source_override: Tensor | None = None,
     decode_injected_source_latent: Callable[[Tensor, int, Tensor, Any, Any], Any]
     | None = None,
     initial_decoded_noise_source_latents: list[list[Any]] | None = None,
@@ -1143,7 +1153,13 @@ def recirculate(
                         if config.perturbation_target_token_id is not None
                         else None
                     ),
+                    normalized_source_override=(
+                        normalized_source_override if pass_index == 1 else None
+                    ),
                 )
+                if normalized_sources is not None and pass_index == 1:
+                    assert hooks.prepared_source is not None
+                    normalized_sources.append(hooks.prepared_source.detach().clone())
                 if not prepared_debug_latents:
                     prepared_debug_latents = noise_debug_latents
                 if decode_injected_source_latent is not None:

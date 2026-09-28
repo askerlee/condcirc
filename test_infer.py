@@ -26,6 +26,7 @@ from infer import (
     output_recirculation_pair,
     parse_args,
     REPETITION_RECOVERY_TOKEN_COUNT,
+    rewind_non_emitting_latent,
     periodic_perturbation_active,
     periodic_perturbation_direction_scale,
     periodic_perturbation_history_direction,
@@ -82,16 +83,34 @@ class RecirculationStatsTest(unittest.TestCase):
             encode=encode_target,
         )
         calls = []
+        cache_lengths = []
         cosine_rejects = []
+        source_overrides = []
         scored_prompts = []
+
+        class Cache:
+            def __init__(self):
+                self.tokens = []
+                self.layers = []
+
+            def activate_past_recording(self):
+                pass
+
+            def crop(self, tokens_to_remove):
+                del self.tokens[tokens_to_remove:]
 
         def score_tokens(prompt_ids, target_ids, _step, **_kwargs):
             scored_prompts.append((prompt_ids.tolist(), target_ids.tolist()))
             return 1.0
 
         def fake_recirculate(tokens, **kwargs):
+            kwargs["cache"].tokens.extend(tokens[0].tolist())
+            cache_lengths.append(len(kwargs["cache"].tokens))
             calls.append((tokens.tolist(), kwargs["force_recirculation"] if "force_recirculation" in kwargs else False, kwargs["config"]))
             cosine_rejects.append(kwargs.get("cosine_reject"))
+            source_overrides.append(kwargs.get("normalized_source_override"))
+            if kwargs.get("normalized_sources") is not None:
+                kwargs["normalized_sources"].append(torch.tensor([len(calls)], dtype=torch.float32))
             logits = torch.tensor([[[0.0, 5.0, 0.0]]]).expand(1, tokens.shape[1], 3)
             for _ in range(tokens.shape[1]):
                 for name, value in (
@@ -107,7 +126,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("pass_probability_margins", [0.8]),
                     ("final_pass_cosine_similarities", None),
                     ("pass_cosine_similarities", [0.3] if kwargs.get("force_recirculation") else []),
-                    ("pass_top_k_token_ids", [[1, 0, 2]] if kwargs.get("force_recirculation") else []),
+                    ("pass_top_k_token_ids", [[2, 1, 0]] if kwargs.get("force_recirculation") and latent_tokens == 3 and knowedit else [[1, 0, 2]] if kwargs.get("force_recirculation") else []),
                     ("pass_target_token_probabilities", [0.9] if kwargs.get("force_recirculation") else []),
                     ("candidate_target_token_probabilities", [0.3, 0.7, 0.4, 0.8, 0.2, 0.6, 0.5, 0.9] if kwargs.get("force_recirculation") else []),
                     ("aggregate_target_token_probabilities", [0.45, 0.75] if kwargs.get("force_recirculation") else []),
@@ -123,17 +142,21 @@ class RecirculationStatsTest(unittest.TestCase):
             return logits, kwargs["cache"]
 
         with tempfile.TemporaryDirectory() as directory:
-            for debug, knowedit, portability_query, replay_file, latent_tokens in (
-                (False, False, False, None, 1), (True, False, False, None, 1),
-                (True, True, False, None, 1), (False, True, True, None, 1),
-                (False, True, "locality", None, 1),
-                (False, True, "rephrased_prompt", None, 1),
-                (True, True, False, "perturb-knowedit-2.pt", 1),
-                (False, False, False, None, 3), (True, False, False, None, 3),
+            for debug, knowedit, portability_query, replay_file, latent_tokens, keep_last in (
+                (False, False, False, None, 1, False), (True, False, False, None, 1, False),
+                (True, True, False, None, 1, False), (False, True, True, None, 1, False),
+                (False, True, "locality", None, 1, False),
+                (False, True, "rephrased_prompt", None, 1, False),
+                (True, True, False, "perturb-knowedit-2.pt", 1, False),
+                (False, False, False, None, 3, False), (True, False, False, None, 3, False),
+                (True, True, False, None, 3, False),
+                (False, False, False, None, 3, True), (True, False, False, None, 3, True),
             ):
                 with self.subTest(debug=debug, knowedit=knowedit, portability_query=portability_query, replay_file=replay_file, latent_tokens=latent_tokens):
                     calls.clear()
+                    cache_lengths.clear()
                     cosine_rejects.clear()
+                    source_overrides.clear()
                     encoded_targets.clear()
                     stream = io.StringIO()
                     with (
@@ -142,6 +165,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
                             "--perturb-latent-tokens", str(latent_tokens),
+                            *(["--perturb-latent-tokens-keep-last-in-kv"] if keep_last else []),
                             "--periodic-perturbation-candidate-count", "4",
                             "--periodic-perturbation-steps", "2",
                             "--periodic-perturbation-step-decay", "0.5",
@@ -164,7 +188,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
                         patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
                         patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
-                        patch.object(infer, "DynamicCache", return_value=SimpleNamespace(activate_past_recording=lambda: None)),
+                        patch.object(infer, "DynamicCache", side_effect=lambda config: Cache()),
                         patch.object(infer, "recirculate", side_effect=fake_recirculate),
                         patch.object(infer, "enable_fp32_output_projection"),
                         patch.object(infer.torch.cuda, "is_available", return_value=False),
@@ -178,6 +202,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         output_file = next(
                             path for path in Path(directory).glob("test-model-2-0-passes*-tokens1-lat3*.json")
                             if not path.stem.endswith("-debug")
+                            and ("-kvlast" in path.stem) == keep_last
                         )
                         self.assertIn("-lat3", output_file.stem)
                         if debug:
@@ -190,7 +215,16 @@ class RecirculationStatsTest(unittest.TestCase):
                         if portability_query is True else [[[3, 4]], *[[[5]]] * latent_tokens, *[[[1]]] * latent_tokens],
                     )
                     self.assertEqual([forced for _, forced, _ in calls], [False] + [True] * (2 * latent_tokens))
+                    if keep_last:
+                        self.assertEqual(cache_lengths, [2, 3, 3, 3, 4, 4, 4])
+                        self.assertIn("-kvlast", output_file.stem)
+                    elif latent_tokens == 3:
+                        self.assertEqual(cache_lengths, [2, 3, 4, 5, 6, 7, 8])
                     self.assertEqual(cosine_rejects, [0.8] + ([None] * (latent_tokens - 1) + [0.8]) * 2)
+                    if latent_tokens == 3 and knowedit:
+                        self.assertEqual([source.item() for source in source_overrides[1:4] if source is not None], [2.0])
+                    else:
+                        self.assertTrue(all(source is None for source in source_overrides))
                     self.assertIsNone(calls[0][2].perturbation_direction)
                     self.assertEqual(calls[1][2].periodic_perturbation_candidate_count, 4)
                     self.assertEqual(calls[1][2].periodic_perturbation_steps, 2)
@@ -238,7 +272,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual(len(comparisons), 2 * latent_tokens - 1)
                         self.assertEqual([record.get("latent_pass") for record in comparisons],
                                          list(range(1, latent_tokens)) +
-                                         ([1] if knowedit else [None]) +
+                                         ([1] if knowedit and latent_tokens == 1 else [None]) +
                                          list(range(1, latent_tokens)))
                         self.assertEqual(
                             [record["latent_passes"] for record in comparisons if not record.get("emitted", True)],
@@ -676,8 +710,36 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
         self.assertEqual(parse_args(["--perturb-latent-tokens", "3", "prompt"]).perturb_latent_tokens, 3)
+        self.assertFalse(parse_args(["prompt"]).perturb_latent_tokens_keep_last_in_kv)
+        self.assertTrue(parse_args([
+            "--perturb-latent-tokens-keep-last-in-kv", "prompt"
+        ]).perturb_latent_tokens_keep_last_in_kv)
         with self.assertRaisesRegex(ValueError, "--perturb-latent-tokens"):
             validate_run_arguments(parse_args(["--perturb-latent-tokens", "0", "prompt"]))
+
+    def test_rewind_non_emitting_latent_restores_cache_state(self) -> None:
+        class Cache:
+            def __init__(self):
+                self.tokens = [1, 2, 3]
+                self.layers = [SimpleNamespace(
+                    recurrent_states={0: torch.tensor([9.0])},
+                    has_previous_state={0: True},
+                )]
+
+            def crop(self, tokens_to_remove):
+                del self.tokens[tokens_to_remove:]
+
+        cache = Cache()
+        saved = infer.capture_dynamic_cache_rewind_state(cache)
+        cache.tokens.append(4)
+        cache.layers[0].recurrent_states[0].fill_(5.0)
+        cache.layers[0].has_previous_state.clear()
+
+        rewind_non_emitting_latent(cache, saved)
+
+        self.assertEqual(cache.tokens, [1, 2, 3])
+        torch.testing.assert_close(cache.layers[0].recurrent_states[0], torch.tensor([9.0]))
+        self.assertEqual(cache.layers[0].has_previous_state, {0: True})
 
     def test_periodic_perturbation_candidate_count_is_positive(self) -> None:
         self.assertEqual(parse_args(["prompt"]).periodic_perturbation_candidate_count, 16)

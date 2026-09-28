@@ -945,6 +945,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Process each periodically perturbed input token L times before emitting the next token (default: 1).",
     )
     parser.add_argument(
+        "--perturb-latent-tokens-keep-last-in-kv",
+        action="store_true",
+        help="Keep only the emitting latent pass in the KV cache (default: disabled).",
+    )
+    parser.add_argument(
         "--perturb-recent-m-tokens",
         type=int,
         default=32,
@@ -1477,6 +1482,11 @@ def restore_dynamic_cache_rewind_state(
         restore_tensor_states(layer.recurrent_states, recurrent_states)
         layer.has_previous_state.clear()
         layer.has_previous_state.update(has_previous_state)
+
+
+def rewind_non_emitting_latent(cache: DynamicCache, rewind_state: Any) -> None:
+    rewind_dynamic_cache(cache)
+    restore_dynamic_cache_rewind_state(cache, rewind_state)
 
 
 def capture_dynamic_cache_token(cache: DynamicCache) -> tuple[dict[str, Any], ...]:
@@ -2164,6 +2174,7 @@ def main() -> None:
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
             f"-tokens{args.max_new_tokens}-lat{args.perturb_latent_tokens}"
+            f"{'-kvlast' if args.perturb_latent_tokens_keep_last_in_kv else ''}"
             f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
             f"{game24_signature}{countdown_signature}{sudoku_signature}{bbeh_signature}{knowedit_signature}"
             f"{query_signature}.json"
@@ -2428,6 +2439,29 @@ def main() -> None:
         early_target_pass: int | None = None
         last_pass_replayed = False
 
+        def next_latent_source(
+            latent_index: int,
+            target_id: int | None,
+            logits: Tensor,
+            pass_probabilities: list[list[float]],
+            sources: list[Tensor],
+            previous_post_probability: float | None,
+        ) -> tuple[Tensor | None, float | None]:
+            if target_id is None:
+                return None, None
+            post_probability = float(
+                torch.softmax(logits[0, -1].float(), dim=-1)[target_id].item()
+            )
+            if (
+                0 < latent_index < run_args.perturb_latent_tokens - 1
+                and previous_post_probability is not None
+                and pass_probabilities[-1]
+                and len(sources) >= 2
+                and pass_probabilities[-1][-1] < previous_post_probability
+            ):
+                return sources[-2], post_probability
+            return None, post_probability
+
         def recirculate_prompt(**kwargs: Any) -> tuple[Tensor, DynamicCache]:
             nonlocal early_target_pass, last_pass_replayed
             if (
@@ -2477,12 +2511,32 @@ def main() -> None:
                 top_k_token_ids = []
                 kwargs["pass_top_k_token_ids"] = top_k_token_ids
             print("(perturb at 0)", flush=True)
+            latent_rewind_state = (
+                capture_dynamic_cache_rewind_state(kwargs["cache"])
+                if run_args.perturb_latent_tokens_keep_last_in_kv else None
+            )
+            latent_sources: list[Tensor] = []
+            latent_pass_probabilities: list[list[float]] = kwargs.get("pass_target_token_probabilities")
+            if latent_pass_probabilities is None:
+                latent_pass_probabilities = []
+            previous_post_probability: float | None = None
+            source_override: Tensor | None = None
+            kwargs["target_token_id"] = target_token_id
+            kwargs["pass_target_token_probabilities"] = latent_pass_probabilities
+            kwargs["normalized_sources"] = latent_sources
             for latent_index in range(run_args.perturb_latent_tokens):
+                if latent_index and latent_rewind_state is not None:
+                    rewind_non_emitting_latent(kwargs["cache"], latent_rewind_state)
                 kwargs["cosine_reject"] = (
                     None if latent_index < run_args.perturb_latent_tokens - 1 else cosine_reject
                 )
+                kwargs["normalized_source_override"] = source_override
                 replay_count = run_config.perturbation_sequence.replay_application_count
                 logits, kwargs["cache"] = recirculate(input_ids[:, -1:], **kwargs)
+                source_override, previous_post_probability = next_latent_source(
+                    latent_index, target_token_id, logits, latent_pass_probabilities,
+                    latent_sources, previous_post_probability,
+                )
                 last_pass_replayed = (
                     run_config.perturbation_sequence.replay_application_count > replay_count
                 )
@@ -2834,9 +2888,20 @@ def main() -> None:
                     # When not debug, this recirculate() processes each newly selected token to produce logits for the next one. 
                     # It can adjust or force recirculation for repetition recovery and periodic perturbation.
                     token_pass_top_k_token_ids: list[list[list[int]]] = []
+                    latent_sources: list[Tensor] = []
+                    latent_pass_probabilities: list[list[float]] = []
+                    previous_post_probability: float | None = None
+                    source_override: Tensor | None = None
+                    latent_rewind_state = (
+                        capture_dynamic_cache_rewind_state(student_cache)
+                        if periodic_perturbation and run_args.perturb_latent_tokens_keep_last_in_kv
+                        else None
+                    )
                     for latent_index in range(
                         run_args.perturb_latent_tokens if periodic_perturbation else 1
                     ):
+                        if latent_index and latent_rewind_state is not None:
+                            rewind_non_emitting_latent(student_cache, latent_rewind_state)
                         token_logits, student_cache = recirculate(
                             # next_token: the token just emitted, used as the input token. 
                             # This loop repeats this input token for perturb_latent_tokens iterations if periodic_perturbation is enabled.
@@ -2877,6 +2942,10 @@ def main() -> None:
                             ),
                             cosine_top_k=run_args.cosine_top_k,
                             pass_top_k_token_ids=token_pass_top_k_token_ids if target_token_id is not None else None,
+                            target_token_id=target_token_id,
+                            pass_target_token_probabilities=latent_pass_probabilities,
+                            normalized_sources=latent_sources,
+                            normalized_source_override=source_override,
                             recirculated_flags=recirculated_flags,
                             rejected_flags=rejected_flags,
                             adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -2896,6 +2965,12 @@ def main() -> None:
                             restore_rewind_state=restore_dynamic_cache_rewind_state,
                             finalize_token_cache=finalize_dynamic_cache_token,
                         )
+                        if periodic_perturbation:
+                            source_override, previous_post_probability = next_latent_source(
+                                latent_index, target_token_id, token_logits,
+                                latent_pass_probabilities, latent_sources,
+                                previous_post_probability,
+                            )
                         remaining = run_args.perturb_latent_tokens - latent_index - 1
                         replay_exit = periodic_perturbation and replay_skips_remaining_latents(
                             token_run_config, remaining
@@ -3381,9 +3456,19 @@ def main() -> None:
             )
             # This recirculate() processes the generated token and collects first-pass logits, margins,
             # similarities, and any applicable noise diagnostics for comparison.
+            latent_rewind_state = (
+                capture_dynamic_cache_rewind_state(student_cache)
+                if periodic_perturbation and run_args.perturb_latent_tokens_keep_last_in_kv
+                else None
+            )
+            latent_sources: list[Tensor] = []
+            previous_post_probability: float | None = None
+            source_override: Tensor | None = None
             for latent_index in range(
                 run_args.perturb_latent_tokens if periodic_perturbation else 1
             ):
+                if latent_index and latent_rewind_state is not None:
+                    rewind_non_emitting_latent(student_cache, latent_rewind_state)
                 replay_count = run_config.perturbation_sequence.replay_application_count
                 student_logits, student_cache = recirculate(
                     next_token,
@@ -3437,6 +3522,8 @@ def main() -> None:
                     pass_top_k_token_ids=pass_top_k_token_ids,
                     target_token_id=target_token_id,
                     pass_target_token_probabilities=pass_target_token_probabilities,
+                    normalized_sources=latent_sources,
+                    normalized_source_override=source_override,
                     candidate_target_token_probabilities=candidate_target_token_probabilities,
                     aggregate_target_token_probabilities=aggregate_target_token_probabilities,
                     cosine_reject_thresholds=cosine_reject_thresholds,
@@ -3453,6 +3540,12 @@ def main() -> None:
                     restore_rewind_state=restore_dynamic_cache_rewind_state,
                     finalize_token_cache=finalize_dynamic_cache_token,
                 )
+                if periodic_perturbation:
+                    source_override, previous_post_probability = next_latent_source(
+                        latent_index, target_token_id, student_logits,
+                        pass_target_token_probabilities, latent_sources,
+                        previous_post_probability,
+                    )
                 last_pass_replayed = (
                     run_config.perturbation_sequence.replay_application_count > replay_count
                 )
@@ -3653,6 +3746,7 @@ def main() -> None:
             "perturb_mode",
             "perturb_for_k_tokens",
             "perturb_latent_tokens",
+            "perturb_latent_tokens_keep_last_in_kv",
             "perturb_recent_m_tokens",
             "perturb_history_decay",
             "periodic_perturbation_candidate_count",

@@ -20,6 +20,23 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_saved_normalized_source_replaces_next_injection(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(blocks, RecirculationConfig(pair=(2, 0), alpha=0.5))
+        try:
+            hooks.injection_source = torch.tensor([[[1.0, 0.0]]])
+            hooks.residuals[0] = torch.tensor([[[0.0, 2.0]]])
+            saved_source = torch.tensor([[[0.0, -3.0]]])
+            hooks.prepare_injections(normalized_source_override=saved_source)
+            torch.testing.assert_close(hooks.prepared_source, saved_source)
+            hooks.mode = "inject"
+            torch.testing.assert_close(
+                blocks[1](torch.zeros_like(saved_source)),
+                (hooks.residuals[0] + saved_source) * 0.5,
+            )
+        finally:
+            hooks.close()
+
     def test_records_cosine_for_each_forced_noise_attempt(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         pass_logits = (

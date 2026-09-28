@@ -927,6 +927,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--perturb-latent-tokens",
+        type=int,
+        default=1,
+        metavar="L",
+        help="Process each periodically perturbed input token L times before emitting the next token (default: 1).",
+    )
+    parser.add_argument(
         "--perturb-recent-m-tokens",
         type=int,
         default=32,
@@ -1832,6 +1839,8 @@ def validate_run_arguments(args: argparse.Namespace) -> None:
         raise ValueError("--perturb-every-n-tokens must be nonnegative.")
     if args.perturb_for_k_tokens < 1:
         raise ValueError("--perturb-for-k-tokens must be at least 1.")
+    if args.perturb_latent_tokens < 1:
+        raise ValueError("--perturb-latent-tokens must be at least 1.")
     if args.perturb_recent_m_tokens < 1:
         raise ValueError("--perturb-recent-m-tokens must be at least 1.")
     if args.periodic_perturbation_candidate_count < 1:
@@ -2439,7 +2448,10 @@ def main() -> None:
                 run_args.ada_recirculate, run_args.cond_recirculate, True
             )
             kwargs["perturbation_probe"] = probe_periodic_perturbation
-            return recirculate(input_ids[:, -1:], **kwargs)
+            logits, kwargs["cache"] = recirculate(input_ids[:, -1:], **kwargs)
+            for _ in range(1, run_args.perturb_latent_tokens):
+                logits, kwargs["cache"] = recirculate(input_ids[:, -1:], **kwargs)
+            return logits, kwargs["cache"]
 
         recirculated_flags: list[bool] = []
         rejected_flags: list[bool] = []
@@ -2762,58 +2774,62 @@ def main() -> None:
                     )
                     # When not debug, this recirculate() processes each newly selected token to produce logits for the next one. 
                     # It can adjust or force recirculation for repetition recovery and periodic perturbation.
-                    token_logits, student_cache = recirculate(
-                        next_token,
-                        blocks=blocks,
-                        cache=student_cache,
-                        step=student_step,
-                        rewind_one=rewind_dynamic_cache,
-                        config=token_run_config,
-                        similarity_stats=similarity_stats,
-                        adjacent_layer_stats=adjacent_layer_stats,
-                        passes=run_args.passes,
-                        rewind_layer=rewind_dynamic_cache_layer,
-                        condition_threshold=recovery_settings.condition_threshold,
-                        pre_margin_threshold=recovery_settings.pre_margin_threshold,
-                        post_margin_threshold=recovery_settings.post_margin_threshold,
-                        post_margin_ratio_threshold=(
-                            recovery_settings.post_margin_ratio_threshold
-                        ),
-                        adaptive_recirculation=effective_adaptive_recirculation(
-                            run_args.ada_recirculate,
-                            run_args.cond_recirculate,
-                            repetition_recovery_active
-                            or periodic_perturbation,
-                        ),
-                        recirculation_allowed=(
-                            recovery_settings.recirculation_allowed
-                            or periodic_perturbation
-                        ),
-                        force_recirculation=(
-                            recovery_settings.force_recirculation
-                            or periodic_perturbation
-                        ),
-                        cosine_reject=recovery_settings.cosine_reject,
-                        cosine_top_k=run_args.cosine_top_k,
-                        recirculated_flags=recirculated_flags,
-                        rejected_flags=rejected_flags,
-                        adaptive_recirculated_flags=adaptive_recirculated_flags,
-                        adaptive_rejected_flags=adaptive_rejected_flags,
-                        adaptive_recirculation_counts=adaptive_recirculation_counts,
-                        final_pass_same_top1_flags=final_pass_same_top1_flags,
-                        rejection_reasons=rejection_reasons,
-                        decode_injected_source_latent=(
-                            decoded_latent_stats
-                            if token_run_config.noise_level_range[1] > 0
-                            else None
-                        ),
-                        perturbation_probe=probe_periodic_perturbation,
-                        capture_cached_token=capture_dynamic_cache_token,
-                        restore_cached_token=restore_dynamic_cache_token,
-                        capture_rewind_state=capture_dynamic_cache_rewind_state,
-                        restore_rewind_state=restore_dynamic_cache_rewind_state,
-                        finalize_token_cache=finalize_dynamic_cache_token,
-                    )
+                    for _ in range(
+                        run_args.perturb_latent_tokens if periodic_perturbation else 1
+                    ):
+                        token_logits, student_cache = recirculate(
+                            # next_token: the token just emitted, used as the input token. 
+                            # This loop repeats this input token for perturb_latent_tokens iterations if periodic_perturbation is enabled.
+                            next_token,     
+                            blocks=blocks,
+                            cache=student_cache,
+                            step=student_step,
+                            rewind_one=rewind_dynamic_cache,
+                            config=token_run_config,
+                            similarity_stats=similarity_stats,
+                            adjacent_layer_stats=adjacent_layer_stats,
+                            passes=run_args.passes,
+                            rewind_layer=rewind_dynamic_cache_layer,
+                            condition_threshold=recovery_settings.condition_threshold,
+                            pre_margin_threshold=recovery_settings.pre_margin_threshold,
+                            post_margin_threshold=recovery_settings.post_margin_threshold,
+                            post_margin_ratio_threshold=(
+                                recovery_settings.post_margin_ratio_threshold
+                            ),
+                            adaptive_recirculation=effective_adaptive_recirculation(
+                                run_args.ada_recirculate,
+                                run_args.cond_recirculate,
+                                repetition_recovery_active or periodic_perturbation,
+                            ),
+                            recirculation_allowed=(
+                                recovery_settings.recirculation_allowed
+                                or periodic_perturbation
+                            ),
+                            force_recirculation=(
+                                recovery_settings.force_recirculation
+                                or periodic_perturbation
+                            ),
+                            cosine_reject=recovery_settings.cosine_reject,
+                            cosine_top_k=run_args.cosine_top_k,
+                            recirculated_flags=recirculated_flags,
+                            rejected_flags=rejected_flags,
+                            adaptive_recirculated_flags=adaptive_recirculated_flags,
+                            adaptive_rejected_flags=adaptive_rejected_flags,
+                            adaptive_recirculation_counts=adaptive_recirculation_counts,
+                            final_pass_same_top1_flags=final_pass_same_top1_flags,
+                            rejection_reasons=rejection_reasons,
+                            decode_injected_source_latent=(
+                                decoded_latent_stats
+                                if token_run_config.noise_level_range[1] > 0
+                                else None
+                            ),
+                            perturbation_probe=probe_periodic_perturbation,
+                            capture_cached_token=capture_dynamic_cache_token,
+                            restore_cached_token=restore_dynamic_cache_token,
+                            capture_rewind_state=capture_dynamic_cache_rewind_state,
+                            restore_rewind_state=restore_dynamic_cache_rewind_state,
+                            finalize_token_cache=finalize_dynamic_cache_token,
+                        )
                 else:
                     token_logits, student_cache = plain_step(
                         next_token, student_cache
@@ -3177,70 +3193,72 @@ def main() -> None:
             )
             # This recirculate() processes the generated token and collects first-pass logits, margins,
             # similarities, and any applicable noise diagnostics for comparison.
-            student_logits, student_cache = recirculate(
-                next_token,
-                blocks=blocks,
-                cache=student_cache,
-                step=student_step,
-                rewind_one=rewind_dynamic_cache,
-                config=student_run_config,
-                similarity_stats=similarity_stats,
-                adjacent_layer_stats=adjacent_layer_stats,
-                passes=run_args.passes if use_recirculation else 1,
-                rewind_layer=rewind_dynamic_cache_layer,
-                condition_threshold=recovery_settings.condition_threshold,
-                pre_margin_threshold=recovery_settings.pre_margin_threshold,
-                post_margin_threshold=recovery_settings.post_margin_threshold,
-                post_margin_ratio_threshold=(
-                    recovery_settings.post_margin_ratio_threshold
-                ),
-                adaptive_recirculation=effective_adaptive_recirculation(
-                    run_args.ada_recirculate,
-                    run_args.cond_recirculate,
-                    repetition_recovery_active
-                    or periodic_perturbation,
-                ),
-                recirculation_allowed=(
-                    recovery_settings.recirculation_allowed
-                    or periodic_perturbation
-                ),
-                force_recirculation=(
-                    recovery_settings.force_recirculation
-                    or periodic_perturbation
-                ),
-                cosine_reject=recovery_settings.cosine_reject,
-                cosine_top_k=run_args.cosine_top_k,
-                first_pass_logits=first_pass_logits,
-                first_pass_similarities=first_pass_similarities,
-                pass_probability_margins=pass_probability_margins,
-                recirculated_flags=recirculated_flags,
-                rejected_flags=rejected_flags,
-                adaptive_recirculated_flags=adaptive_recirculated_flags,
-                adaptive_rejected_flags=adaptive_rejected_flags,
-                adaptive_recirculation_counts=adaptive_recirculation_counts,
-                final_pass_same_top1_flags=final_pass_same_top1_flags,
-                rejection_reasons=rejection_reasons,
-                final_pass_cosine_similarities=final_pass_cosine_similarities,
-                pass_cosine_similarities=pass_cosine_similarities,
-                pass_top_k_token_ids=pass_top_k_token_ids,
-                target_token_id=target_token_id,
-                pass_target_token_probabilities=pass_target_token_probabilities,
-                candidate_target_token_probabilities=candidate_target_token_probabilities,
-                aggregate_target_token_probabilities=aggregate_target_token_probabilities,
-                cosine_reject_thresholds=cosine_reject_thresholds,
-                injected_noise_levels=injected_noise_levels,
-                decode_injected_source_latent=decoded_latent_stats,
-                perturbation_probe=probe_periodic_perturbation,
-                initial_decoded_noise_source_latents=(
-                    initial_decoded_noise_source_latents
-                ),
-                decoded_injected_source_latents=decoded_injected_source_latents,
-                capture_cached_token=capture_dynamic_cache_token,
-                restore_cached_token=restore_dynamic_cache_token,
-                capture_rewind_state=capture_dynamic_cache_rewind_state,
-                restore_rewind_state=restore_dynamic_cache_rewind_state,
-                finalize_token_cache=finalize_dynamic_cache_token,
-            )
+            for _ in range(
+                run_args.perturb_latent_tokens if periodic_perturbation else 1
+            ):
+                student_logits, student_cache = recirculate(
+                    next_token,
+                    blocks=blocks,
+                    cache=student_cache,
+                    step=student_step,
+                    rewind_one=rewind_dynamic_cache,
+                    config=student_run_config,
+                    similarity_stats=similarity_stats,
+                    adjacent_layer_stats=adjacent_layer_stats,
+                    passes=run_args.passes if use_recirculation else 1,
+                    rewind_layer=rewind_dynamic_cache_layer,
+                    condition_threshold=recovery_settings.condition_threshold,
+                    pre_margin_threshold=recovery_settings.pre_margin_threshold,
+                    post_margin_threshold=recovery_settings.post_margin_threshold,
+                    post_margin_ratio_threshold=(
+                        recovery_settings.post_margin_ratio_threshold
+                    ),
+                    adaptive_recirculation=effective_adaptive_recirculation(
+                        run_args.ada_recirculate,
+                        run_args.cond_recirculate,
+                        repetition_recovery_active or periodic_perturbation,
+                    ),
+                    recirculation_allowed=(
+                        recovery_settings.recirculation_allowed
+                        or periodic_perturbation
+                    ),
+                    force_recirculation=(
+                        recovery_settings.force_recirculation
+                        or periodic_perturbation
+                    ),
+                    cosine_reject=recovery_settings.cosine_reject,
+                    cosine_top_k=run_args.cosine_top_k,
+                    first_pass_logits=first_pass_logits,
+                    first_pass_similarities=first_pass_similarities,
+                    pass_probability_margins=pass_probability_margins,
+                    recirculated_flags=recirculated_flags,
+                    rejected_flags=rejected_flags,
+                    adaptive_recirculated_flags=adaptive_recirculated_flags,
+                    adaptive_rejected_flags=adaptive_rejected_flags,
+                    adaptive_recirculation_counts=adaptive_recirculation_counts,
+                    final_pass_same_top1_flags=final_pass_same_top1_flags,
+                    rejection_reasons=rejection_reasons,
+                    final_pass_cosine_similarities=final_pass_cosine_similarities,
+                    pass_cosine_similarities=pass_cosine_similarities,
+                    pass_top_k_token_ids=pass_top_k_token_ids,
+                    target_token_id=target_token_id,
+                    pass_target_token_probabilities=pass_target_token_probabilities,
+                    candidate_target_token_probabilities=candidate_target_token_probabilities,
+                    aggregate_target_token_probabilities=aggregate_target_token_probabilities,
+                    cosine_reject_thresholds=cosine_reject_thresholds,
+                    injected_noise_levels=injected_noise_levels,
+                    decode_injected_source_latent=decoded_latent_stats,
+                    perturbation_probe=probe_periodic_perturbation,
+                    initial_decoded_noise_source_latents=(
+                        initial_decoded_noise_source_latents
+                    ),
+                    decoded_injected_source_latents=decoded_injected_source_latents,
+                    capture_cached_token=capture_dynamic_cache_token,
+                    restore_cached_token=restore_dynamic_cache_token,
+                    capture_rewind_state=capture_dynamic_cache_rewind_state,
+                    restore_rewind_state=restore_dynamic_cache_rewind_state,
+                    finalize_token_cache=finalize_dynamic_cache_token,
+                )
             repetition_recovery_tokens_remaining = max(
                 0, repetition_recovery_tokens_remaining - 1
             )
@@ -3414,6 +3432,7 @@ def main() -> None:
             "perturb_every_n_tokens",
             "perturb_mode",
             "perturb_for_k_tokens",
+            "perturb_latent_tokens",
             "perturb_recent_m_tokens",
             "perturb_history_decay",
             "periodic_perturbation_candidate_count",

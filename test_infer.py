@@ -117,12 +117,13 @@ class RecirculationStatsTest(unittest.TestCase):
             return logits, kwargs["cache"]
 
         with tempfile.TemporaryDirectory() as directory:
-            for debug, knowedit, portability_query, replay_file in (
-                (False, False, False, None), (True, False, False, None),
-                (True, True, False, None), (False, True, True, None),
-                (True, True, False, "perturb-knowedit-2.pt"),
+            for debug, knowedit, portability_query, replay_file, latent_tokens in (
+                (False, False, False, None, 1), (True, False, False, None, 1),
+                (True, True, False, None, 1), (False, True, True, None, 1),
+                (True, True, False, "perturb-knowedit-2.pt", 1),
+                (False, False, False, None, 3), (True, False, False, None, 3),
             ):
-                with self.subTest(debug=debug, knowedit=knowedit, portability_query=portability_query, replay_file=replay_file):
+                with self.subTest(debug=debug, knowedit=knowedit, portability_query=portability_query, replay_file=replay_file, latent_tokens=latent_tokens):
                     calls.clear()
                     encoded_targets.clear()
                     with (
@@ -130,6 +131,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "infer.py", *([] if knowedit else ["question"]), "--model", "test-model",
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
+                            "--perturb-latent-tokens", str(latent_tokens),
                             "--periodic-perturbation-candidate-count", "4",
                             "--periodic-perturbation-steps", "2",
                             "--periodic-perturbation-step-decay", "0.5",
@@ -160,9 +162,10 @@ class RecirculationStatsTest(unittest.TestCase):
 
                     self.assertEqual(
                         [tokens for tokens, _, _ in calls],
-                        [[[6]], [[7]], [[1]]] if portability_query else [[[3, 4]], [[5]], [[1]]],
+                        [[[6]], *[[[7]]] * latent_tokens, *[[[1]]] * latent_tokens]
+                        if portability_query else [[[3, 4]], *[[[5]]] * latent_tokens, *[[[1]]] * latent_tokens],
                     )
-                    self.assertEqual([forced for _, forced, _ in calls], [False, True, True])
+                    self.assertEqual([forced for _, forced, _ in calls], [False] + [True] * (2 * latent_tokens))
                     self.assertIsNone(calls[0][2].perturbation_direction)
                     self.assertEqual(calls[1][2].periodic_perturbation_candidate_count, 4)
                     self.assertEqual(calls[1][2].periodic_perturbation_steps, 2)
@@ -196,6 +199,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual(encoded_targets, [])
                         self.assertIsNotNone(calls[1][2].perturbation_direction)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
+                    self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["total"], 1)
                     scored_prompts.clear()
                     if debug:
                         comparisons = json.loads(
@@ -382,8 +386,12 @@ class RecirculationStatsTest(unittest.TestCase):
 
         self.assertEqual(args.perturb_every_n_tokens, 4)
         self.assertEqual(args.perturb_for_k_tokens, 2)
+        self.assertEqual(args.perturb_latent_tokens, 1)
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
+        self.assertEqual(parse_args(["--perturb-latent-tokens", "3", "prompt"]).perturb_latent_tokens, 3)
+        with self.assertRaisesRegex(ValueError, "--perturb-latent-tokens"):
+            validate_run_arguments(parse_args(["--perturb-latent-tokens", "0", "prompt"]))
 
     def test_periodic_perturbation_candidate_count_is_positive(self) -> None:
         self.assertEqual(parse_args(["prompt"]).periodic_perturbation_candidate_count, 16)

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tasks.knowedit import format_prompt, load_examples
+from tasks.knowedit import format_prompt, load_examples, select_variant
 
 
 class KnowEditTest(unittest.TestCase):
@@ -81,6 +81,33 @@ class KnowEditTest(unittest.TestCase):
             path.write_text(json.dumps([{"prompt": "Missing target"}]), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "missing prompt or target"):
                 load_examples(path)
+
+    def test_selects_indexed_variants_and_their_targets(self) -> None:
+        records = [{
+            "prompt": "Main question", "target_new": "New answer",
+            "rephrase": "Rephrased question",
+            "portability": {"Reasoning": [
+                {"prompt": "First portable", "ground_truth": [["First answer", "Alias"]]},
+                {"prompt": "Second portable", "ground_truth": "Second answer"},
+            ]},
+            "locality": {"Relation_Specificity": [
+                {"prompt": "First local", "ground_truth": ["Local answer"]},
+                {"prompt": "Second local", "ground_truth": [["Other answer", "Alias"]]},
+            ]},
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "variants.json"
+            path.write_text(json.dumps(records), encoding="utf-8")
+            example, = load_examples(path)
+
+        self.assertEqual(select_variant(example, "rephrased_prompt", 1), ("Rephrased question", "New answer"))
+        self.assertEqual(select_variant(example, "portability", 1), ("First portable", "First answer"))
+        self.assertEqual(select_variant(example, "portability", 2), ("Second portable", "Second answer"))
+        self.assertEqual(select_variant(example, "locality", 2), ("Second local", "Other answer"))
+        with self.assertRaisesRegex(ValueError, "index 3 is unavailable"):
+            select_variant(example, "locality", 3)
+        with self.assertRaisesRegex(ValueError, "index 0 is unavailable"):
+            select_variant(example, "portability", 0)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,35 @@ class KnowEditExample:
     source: str
     reference: str | None = None
     portability: tuple[tuple[str, str, str], ...] = ()
+    rephrased_prompts: tuple[str, ...] = ()
+    locality: tuple[tuple[str, str, str], ...] = ()
+
+
+def select_variant(example: KnowEditExample, variant: str, index: int) -> tuple[str, str]:
+    if variant == "rephrased_prompt":
+        prompts = tuple((prompt, example.target_new) for prompt in example.rephrased_prompts)
+    elif variant == "portability":
+        prompts = tuple((prompt, answer) for _, prompt, answer in example.portability)
+    elif variant == "locality":
+        prompts = tuple((prompt, answer) for _, prompt, answer in example.locality)
+    else:
+        raise ValueError(f"Unknown KnowEdit variant: {variant}.")
+    if not 1 <= index <= len(prompts):
+        raise ValueError(
+            f"KnowEdit variant {variant} has {len(prompts)} prompts; index {index} is unavailable."
+        )
+    return prompts[index - 1]
+
+
+def first_answer(value: object) -> str | None:
+    if isinstance(value, str):
+        return value if value.strip() else None
+    if isinstance(value, list):
+        for item in value:
+            answer = first_answer(item)
+            if answer is not None:
+                return answer
+    return None
 
 
 def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
@@ -53,11 +82,26 @@ def load_examples(path: Path) -> tuple[KnowEditExample, ...]:
         for category, questions in record.get("portability", {}).items():
             for question in questions:
                 portability_prompt = question["prompt"]
-                portability_answer = question["ground_truth"]
-                if not all(isinstance(value, str) and value.strip() for value in (portability_prompt, portability_answer)):
+                portability_answer = first_answer(question["ground_truth"])
+                if not isinstance(portability_prompt, str) or not portability_prompt.strip() or portability_answer is None:
                     raise ValueError(f"Invalid KnowEdit portability in record {index} of {path}.")
                 portability.append((category, portability_prompt, portability_answer))
-        examples.append(KnowEditExample(prompt, target, subject, source, original, tuple(portability)))
+        rephrased = record.get("rephrased_prompt", record.get("rephrase", []))
+        if isinstance(rephrased, str):
+            rephrased = [rephrased]
+        if not isinstance(rephrased, list) or any(
+            not isinstance(item, str) or not item.strip() for item in rephrased
+        ):
+            raise ValueError(f"Invalid KnowEdit rephrased_prompt in record {index} of {path}.")
+        locality = []
+        for category, questions in record.get("locality", {}).items():
+            for question in questions:
+                locality_prompt = question["prompt"]
+                locality_answer = first_answer(question["ground_truth"])
+                if not isinstance(locality_prompt, str) or not locality_prompt.strip() or locality_answer is None:
+                    raise ValueError(f"Invalid KnowEdit locality in record {index} of {path}.")
+                locality.append((category, locality_prompt, locality_answer))
+        examples.append(KnowEditExample(prompt, target, subject, source, original, tuple(portability), tuple(rephrased), tuple(locality)))
     return tuple(examples)
 
 

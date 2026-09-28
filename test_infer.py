@@ -126,6 +126,8 @@ class RecirculationStatsTest(unittest.TestCase):
             for debug, knowedit, portability_query, replay_file, latent_tokens in (
                 (False, False, False, None, 1), (True, False, False, None, 1),
                 (True, True, False, None, 1), (False, True, True, None, 1),
+                (False, True, "locality", None, 1),
+                (False, True, "rephrased_prompt", None, 1),
                 (True, True, False, "perturb-knowedit-2.pt", 1),
                 (False, False, False, None, 3), (True, False, False, None, 3),
             ):
@@ -146,13 +148,16 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--noise-injected-source-top-k", "3",
                             *([] if latent_tokens == 3 else ["--output", str(Path(directory) / "output.json")]),
                             *(["--knowedit-file", "example.json"] if knowedit else []),
-                            *(["--knowedit-portability"] if portability_query else []),
+                            *(["--knowedit-variant", "locality", "--knowedit-variant-index", "2"] if portability_query == "locality" else ["--knowedit-variant", "rephrased_prompt"] if portability_query == "rephrased_prompt" else ["--knowedit-variant", "portability"] if portability_query else []),
                             *(["--replay-perturbation", replay_file] if replay_file else []),
                             *(["--debug"] if debug else []),
                         ]),
                         patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(
                             source="s", subject="s", target_new="E", reference=None,
                             portability=(("Reasoning", "What is the common name?", "Owlet moths"),),
+                            locality=(("Relation_Specificity", "First local", "First answer"),
+                                      ("Relation_Specificity", "Second local", "Second answer")),
+                            rephrased_prompts=("Rephrased question",),
                         )]),
                         patch.object(infer, "format_knowedit_prompt", side_effect=lambda _example, prompt=None: prompt or "question"),
                         patch.object(infer, "teacher_forced_token_accuracy", side_effect=score_tokens),
@@ -182,7 +187,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     self.assertEqual(
                         [tokens for tokens, _, _ in calls],
                         [[[6]], *[[[7]]] * latent_tokens, *[[[1]]] * latent_tokens]
-                        if portability_query else [[[3, 4]], *[[[5]]] * latent_tokens, *[[[1]]] * latent_tokens],
+                        if portability_query is True else [[[3, 4]], *[[[5]]] * latent_tokens, *[[[1]]] * latent_tokens],
                     )
                     self.assertEqual([forced for _, forced, _ in calls], [False] + [True] * (2 * latent_tokens))
                     self.assertEqual(cosine_rejects, [0.8] + ([None] * (latent_tokens - 1) + [0.8]) * 2)
@@ -196,13 +201,13 @@ class RecirculationStatsTest(unittest.TestCase):
                     )
                     self.assertEqual(
                         calls[1][2].save_perturbation,
-                        Path(f"perturb-knowedit-1{'-port' if portability_query else ''}-lat{latent_tokens}.pt")
+                        Path(f"perturb-knowedit-1{'-portability-1' if portability_query is True else '-locality-2' if portability_query == 'locality' else '-rephrased_prompt-1' if portability_query == 'rephrased_prompt' else ''}-lat{latent_tokens}.pt")
                         if knowedit else Path(f"perturb-lat{latent_tokens}.pt"),
                     )
                     if knowedit:
                         self.assertEqual(
                             encoded_targets,
-                            ["E", "E", "Owlet moths"],
+                            ["Owlet moths" if portability_query is True else "Second answer" if portability_query == "locality" else "E", "E", "Owlet moths"],
                         )
                         self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
                         self.assertEqual(
@@ -212,7 +217,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertEqual(scored_prompts, [([[3, 4, 5]], [[1]]), ([[6, 7]], [[1]])])
                         self.assertEqual(
                             result[0]["prompt"],
-                            "What is the common name?" if portability_query else "question",
+                            "What is the common name?" if portability_query is True else "Second local" if portability_query == "locality" else "Rephrased question" if portability_query == "rephrased_prompt" else "question",
                         )
                         self.assertEqual(result[0]["runs"][0]["knowedit_portability"], [{
                             "category": "Reasoning", "prompt": "What is the common name?",
@@ -744,14 +749,36 @@ class RecirculationStatsTest(unittest.TestCase):
             Path("saved-knowedit-2.pt"),
         )
         self.assertEqual(
-            infer.indexed_perturbation_file(args.save_perturbation, 2, True),
-            Path("saved-knowedit-2-port.pt"),
+            infer.indexed_perturbation_file(args.save_perturbation, 2, "portability"),
+            Path("saved-knowedit-2-portability-1.pt"),
+        )
+        self.assertEqual(
+            infer.indexed_perturbation_file(args.save_perturbation, 2, "locality", 3),
+            Path("saved-knowedit-2-locality-3.pt"),
+        )
+        self.assertEqual(
+            infer.replay_file_signature(Path("saved-knowedit-2-locality-3-lat2.pt")),
+            "2-locality-3-lat2",
         )
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2.pt")), "2")
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port.pt")), "2-port")
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-lat3.pt")), "2-lat3")
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port-lat3.pt")), "2-port-lat3")
         self.assertEqual(infer.replay_file_signature(Path("custom.pt")), "custom")
+
+    def test_knowedit_variant_requires_valid_index_and_file(self) -> None:
+        self.assertEqual(
+            parse_args(["--knowedit-file", "example.json", "--knowedit-variant", "locality", "--knowedit-variant-index", "2"]).knowedit_variant_index,
+            2,
+        )
+        for options, message in (
+            (["--knowedit-variant", "locality"], "requires --knowedit-file"),
+            (["--knowedit-variant-index", "2"], "requires --knowedit-variant"),
+            (["--knowedit-file", "example.json", "--knowedit-variant", "portability", "--knowedit-variant-index", "0"], "must be at least 1"),
+        ):
+            with self.subTest(options=options), patch.object(sys, "argv", ["infer.py", *options]), patch.object(infer.torch.cuda, "device_count", return_value=0), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, message):
+                    infer.main()
 
     def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:
         self.assertEqual(

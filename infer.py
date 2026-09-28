@@ -57,6 +57,7 @@ from tasks.game24 import load_puzzles as load_game24_puzzles  # noqa: E402
 from tasks.game24 import score_countdown_output  # noqa: E402
 from tasks.knowedit import format_prompt as format_knowedit_prompt  # noqa: E402
 from tasks.knowedit import load_examples as load_knowedit_examples  # noqa: E402
+from tasks.knowedit import select_variant as select_knowedit_variant  # noqa: E402
 from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
@@ -495,15 +496,15 @@ def parse_perturbation_file(value: str) -> Path:
 
 
 def indexed_perturbation_file(
-    path: Path | str, index: int, portability: bool = False
+    path: Path | str, index: int, variant: str | None = None, variant_index: int = 1
 ) -> Path:
     path = Path(path)
-    suffix = "-port" if portability else ""
+    suffix = f"-{variant}-{variant_index}" if variant is not None else ""
     return path.with_name(f"{path.stem}-knowedit-{index}{suffix}{path.suffix}")
 
 
 def replay_file_signature(path: Path) -> str:
-    match = re.search(r"(?:^|-)knowedit-(\d+(?:-port)?(?:-lat\d+)?)$", path.stem)
+    match = re.search(r"(?:^|-)knowedit-(\d+(?:-[a-z_]+-\d+|-port)?(?:-lat\d+)?)$", path.stem)
     return match.group(1) if match is not None else path.stem
 
 
@@ -709,9 +710,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="1-based KnowEdit JSON indices; negative values count from the end (default: all).",
     )
     parser.add_argument(
-        "--knowedit-portability",
-        action="store_true",
-        help="Generate from the first portability question of each KnowEdit record.",
+        "--knowedit-variant",
+        choices=("portability", "rephrased_prompt", "locality"),
+        default=None,
+        help="Generate from a KnowEdit variant instead of the main prompt.",
+    )
+    parser.add_argument(
+        "--knowedit-variant-index",
+        type=int,
+        default=1,
+        metavar="INDEX",
+        help="1-based prompt index within the selected KnowEdit variant (default: 1).",
     )
     parser.add_argument(
         "--eval-provider",
@@ -1953,8 +1962,12 @@ def main() -> None:
         raise ValueError("--bbeh-index requires --bbeh-file.")
     if args.knowedit_index and args.knowedit_file is None:
         raise ValueError("--knowedit-index requires --knowedit-file.")
-    if args.knowedit_portability and args.knowedit_file is None:
-        raise ValueError("--knowedit-portability requires --knowedit-file.")
+    if args.knowedit_variant is not None and args.knowedit_file is None:
+        raise ValueError("--knowedit-variant requires --knowedit-file.")
+    if args.knowedit_variant_index < 1:
+        raise ValueError("--knowedit-variant-index must be at least 1.")
+    if args.knowedit_variant is None and args.knowedit_variant_index != 1:
+        raise ValueError("--knowedit-variant-index requires --knowedit-variant.")
 
     if args.max_new_tokens < 0:
         raise ValueError("--max-new-tokens must be nonnegative.")
@@ -2141,7 +2154,10 @@ def main() -> None:
         )
         knowedit_signature = (
             f"-knowedit-{args.knowedit_file.stem}-{format_index_ranges(args.knowedit_index) or 'all'}"
-            f"{'-portability' if args.knowedit_portability else ''}"
+            + (
+                f"-variant-{args.knowedit_variant}-{args.knowedit_variant_index}"
+                if args.knowedit_variant is not None else ""
+            )
             if args.knowedit_file is not None
             else ""
         )
@@ -3489,7 +3505,7 @@ def main() -> None:
         if save_path is not None:
             if knowedit_example is not None:
                 save_path = indexed_perturbation_file(
-                    save_path, prompt_index, args.knowedit_portability
+                    save_path, prompt_index, args.knowedit_variant, args.knowedit_variant_index
                 )
             save_path = save_path.with_name(
                 f"{save_path.stem}-lat{run_args.perturb_latent_tokens}{save_path.suffix}"
@@ -3734,10 +3750,15 @@ def main() -> None:
         if knowedit_examples is not None
         else ()
     )
-    if args.knowedit_portability:
+    selected_knowedit_variants = {}
+    if args.knowedit_variant is not None:
         for index in knowedit_indices:
-            if not knowedit_examples[index - 1].portability:
-                raise ValueError(f"KnowEdit record {index} has no portability question.")
+            try:
+                selected_knowedit_variants[index] = select_knowedit_variant(
+                    knowedit_examples[index - 1], args.knowedit_variant, args.knowedit_variant_index
+                )
+            except ValueError as error:
+                raise ValueError(f"KnowEdit record {index}: {error}") from error
     prompts = (
         ((1, args.prompt, None, None, None, None, None),)
         if args.prompt is not None
@@ -3798,8 +3819,8 @@ def main() -> None:
                 index,
                 format_knowedit_prompt(
                     knowedit_examples[index - 1],
-                    knowedit_examples[index - 1].portability[0][1],
-                ) if args.knowedit_portability else format_knowedit_prompt(knowedit_examples[index - 1]),
+                    selected_knowedit_variants[index][0],
+                ) if args.knowedit_variant is not None else format_knowedit_prompt(knowedit_examples[index - 1]),
                 None,
                 None,
                 None,
@@ -3886,8 +3907,13 @@ def main() -> None:
                     similarities_writer.start_run(prompt, label, run_args.seed)
                 target_ids = None
                 if run_args.perturb_mode == "towards-target":
+                    target = (
+                        selected_knowedit_variants[prompt_index][1]
+                        if args.knowedit_variant is not None
+                        else knowedit_example.target_new
+                    )
                     target_ids = tokenizer.encode(
-                        knowedit_example.target_new.strip(),
+                        target.strip(),
                         add_special_tokens=False,
                     )
                     if not target_ids:
@@ -3942,7 +3968,7 @@ def main() -> None:
                     emit(f"knowedit_ground_truth = {knowedit_example.reference if knowedit_example.reference is not None else 'n/a'}")
                     emit(f"knowedit_target_new = {knowedit_example.target_new}")
                     original_ids = input_ids
-                    if args.knowedit_portability:
+                    if args.knowedit_variant is not None:
                         original_ids = tokenizer.apply_chat_template(
                             [{"role": "user", "content": format_knowedit_prompt(knowedit_example)}],
                             tokenize=True,
@@ -3964,7 +3990,7 @@ def main() -> None:
                         portability_scores = []
                         for category, portability_prompt, reference in knowedit_example.portability:
                             question = format_knowedit_prompt(knowedit_example, portability_prompt)
-                            portability_ids = input_ids if args.knowedit_portability and question == prompt else tokenizer.apply_chat_template(
+                            portability_ids = input_ids if args.knowedit_variant is not None and question == prompt else tokenizer.apply_chat_template(
                                 [{"role": "user", "content": question}],
                                 tokenize=True,
                                 add_generation_prompt=True,

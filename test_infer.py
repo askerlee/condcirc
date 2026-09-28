@@ -165,7 +165,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--device-map", "none", "--pair", "2", "0",
                             "--max-new-tokens", "1", "--perturb-every-n-tokens", "1",
                             "--perturb-latent-tokens", str(latent_tokens),
-                            *(["--perturb-latent-tokens-keep-last-in-kv"] if keep_last else []),
+                            "--perturb-latent-tokens-keep-last-in-kv" if keep_last else "--no-perturb-latent-tokens-keep-last-in-kv",
                             "--periodic-perturbation-candidate-count", "4",
                             "--periodic-perturbation-steps", "2",
                             "--periodic-perturbation-step-decay", "0.5",
@@ -419,6 +419,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         "infer.py", "--knowedit-file", "example.json", "--model", "test-model",
                         "--device-map", "none", "--pair", "2", "0", "--max-new-tokens", "2",
                         "--perturb-every-n-tokens", "1", "--perturb-latent-tokens", str(latent_tokens),
+                        "--no-perturb-latent-tokens-keep-last-in-kv",
                         "--output", str(Path(directory) / "output.json"),
                         *(["--replay-perturbation", str(Path(directory) / "replay.pt")] if replay_exit else []),
                         *(["--debug"] if debug else []),
@@ -532,6 +533,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "infer.py", "--model", "test-model", "--device-map", "none",
                             "--pair", "2", "0", "--knowedit-file", "example.json",
                             "--max-new-tokens", "4", "--perturb-every-n-tokens", "1",
+                            "--no-perturb-latent-tokens-keep-last-in-kv",
                             "--no-repetition-recovery", "--output", str(Path(directory) / "output.json"),
                             *(["--debug"] if debug else []),
                         ]),
@@ -710,9 +712,12 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(args.perturb_recent_m_tokens, 12)
         self.assertEqual(args.perturb_history_decay, 0.6)
         self.assertEqual(parse_args(["--perturb-latent-tokens", "3", "prompt"]).perturb_latent_tokens, 3)
-        self.assertFalse(parse_args(["prompt"]).perturb_latent_tokens_keep_last_in_kv)
+        self.assertTrue(parse_args(["prompt"]).perturb_latent_tokens_keep_last_in_kv)
         self.assertTrue(parse_args([
             "--perturb-latent-tokens-keep-last-in-kv", "prompt"
+        ]).perturb_latent_tokens_keep_last_in_kv)
+        self.assertFalse(parse_args([
+            "--no-perturb-latent-tokens-keep-last-in-kv", "prompt"
         ]).perturb_latent_tokens_keep_last_in_kv)
         with self.assertRaisesRegex(ValueError, "--perturb-latent-tokens"):
             validate_run_arguments(parse_args(["--perturb-latent-tokens", "0", "prompt"]))

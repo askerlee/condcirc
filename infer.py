@@ -946,8 +946,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--perturb-latent-tokens-keep-last-in-kv",
-        action="store_true",
-        help="Keep only the emitting latent pass in the KV cache (default: disabled).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep only the emitting latent pass in the KV cache (default: enabled).",
     )
     parser.add_argument(
         "--perturb-recent-m-tokens",

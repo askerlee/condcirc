@@ -12,7 +12,10 @@ from recirculation import (
     RecirculationConfig,
     _Hooks,
     _adaptive_noise_level,
+    perturbation_replay,
     recirculate,
+    replay_skips_remaining_latents,
+    save_skipped_latent_perturbations,
 )
 
 
@@ -218,6 +221,111 @@ class RecirculationCacheTest(unittest.TestCase):
         finally:
             hooks.close()
 
+    def test_periodic_probe_discards_noise_below_pre_recirculation_probability(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=2,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+        candidate_probabilities: list[float] = []
+        aggregate_probabilities: list[float] = []
+
+        def probe(_source, _destination, _target, candidate):
+            return torch.stack(
+                (candidate[:, -1, 0], torch.zeros_like(candidate[:, -1, 0])), dim=-1
+            )
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 1.0]]]),
+            ]):
+                hooks.prepare_injections(
+                    probe, candidate_target_token_probabilities=candidate_probabilities,
+                    aggregate_target_token_probabilities=aggregate_probabilities,
+                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.9)).item(),
+                )
+            torch.testing.assert_close(hooks.prepared_source, torch.ones((1, 1, 2)))
+            self.assertEqual(len(candidate_probabilities), 2)
+            self.assertEqual(aggregate_probabilities, [])
+        finally:
+            hooks.close()
+
+    def test_periodic_probe_weights_only_noise_improving_pre_recirculation_probability(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=2,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+
+        def probe(_source, _destination, _target, candidate):
+            improves = candidate[:, -1, 0] > 1.1
+            target_logit = torch.where(improves, 2.0, -2.0)
+            return torch.stack((torch.zeros_like(target_logit), target_logit), dim=-1)
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 1.0]]]),
+            ]):
+                hooks.prepare_injections(
+                    probe,
+                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.5)).item(),
+                )
+            torch.testing.assert_close(
+                hooks.prepared_source, torch.tensor([[[1.2, 1.0]]])
+            )
+        finally:
+            hooks.close()
+
+    def test_periodic_probe_does_not_reject_weighted_noise_after_candidate_filtering(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                periodic_perturbation_candidate_count=2,
+            ),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.ones((1, 1, 2))
+        hooks.noise_level = 0.2
+        aggregate_probabilities: list[float] = []
+
+        def probe(_source, _destination, _target, candidate):
+            improves = (candidate[:, -1, :] > 1.19).any(dim=-1)
+            target_logit = torch.where(improves, 2.0, -2.0)
+            return torch.stack((torch.zeros_like(target_logit), target_logit), dim=-1)
+
+        try:
+            with patch("recirculation.torch.randn_like", side_effect=[
+                torch.tensor([[[1.0, 0.0]]]),
+                torch.tensor([[[0.0, 1.0]]]),
+            ]):
+                hooks.prepare_injections(
+                    probe, aggregate_target_token_probabilities=aggregate_probabilities,
+                    pre_recirculation_target_log_probability=torch.log(torch.tensor(0.5)).item(),
+                )
+            torch.testing.assert_close(
+                hooks.prepared_source,
+                torch.ones((1, 1, 2)) + torch.tensor(0.2 / 2**0.5),
+            )
+            self.assertLess(aggregate_probabilities[0], 0.5)
+        finally:
+            hooks.close()
+
     def test_candidate_search_only_runs_before_second_pass(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(
@@ -250,6 +358,72 @@ class RecirculationCacheTest(unittest.TestCase):
                 )
         finally:
             hooks.close()
+
+    def test_target_already_top_one_skips_candidate_search(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(
+            blocks,
+            RecirculationConfig(pair=(2, 0), alpha=0.5, perturbation_target_token_id=1),
+        )
+        hooks.residuals[0] = torch.ones((1, 1, 2))
+        hooks.injection_source = torch.tensor([[[2.0, 1.0]]])
+        hooks.noise_level = 0.2
+        expected = hooks.injection_source * 2**0.5 / 5**0.5
+        candidate_probabilities: list[float] = []
+
+        try:
+            with patch.object(
+                hooks, "iteratively_find_perturbation_candidate", side_effect=AssertionError
+            ):
+                debug_latents = hooks.prepare_injections(
+                    lambda *_args: torch.zeros((1, 2)),
+                    candidate_target_token_probabilities=candidate_probabilities,
+                    pre_recirculation_top_token_id=1,
+                )
+            torch.testing.assert_close(hooks.prepared_source, expected)
+            self.assertEqual(candidate_probabilities, [])
+            self.assertEqual(debug_latents, [])
+        finally:
+            hooks.close()
+
+    def test_recirculate_skips_target_search_when_first_pass_top_one_matches(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        injected_inputs: list[torch.Tensor] = []
+        blocks[1].register_forward_pre_hook(
+            lambda _block, inputs: injected_inputs.append(inputs[0].clone())
+        )
+        call_count = 0
+        recirculated_flags: list[bool] = []
+        candidate_probabilities: list[list[float]] = []
+
+        def step(_token, cache):
+            nonlocal call_count
+            hidden = torch.tensor([[[2.0, 1.0]]])
+            for block in blocks:
+                hidden = block(hidden)
+            call_count += 1
+            return torch.tensor([[[0.0, 2.0]]]), cache
+
+        with patch("recirculation.torch.randn_like", side_effect=AssertionError):
+            logits, _ = recirculate(
+                torch.tensor([[1]]), blocks=blocks, cache=[], step=step,
+                rewind_one=lambda cache: cache,
+                config=RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                ),
+                passes=1, force_recirculation=True,
+                perturbation_probe=lambda *_args: self.fail("unexpected target probe"),
+                capture_cached_token=lambda _cache: None,
+                restore_cached_token=lambda _cache, _token: None,
+                recirculated_flags=recirculated_flags,
+                candidate_target_token_probabilities=candidate_probabilities,
+            )
+
+        self.assertEqual(call_count, 1)
+        torch.testing.assert_close(logits, torch.tensor([[[0.0, 2.0]]]))
+        self.assertEqual(len(injected_inputs), 1)
+        self.assertEqual(recirculated_flags, [False])
+        self.assertEqual(candidate_probabilities, [[]])
 
     def test_saves_and_replays_accumulated_perturbation(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
@@ -305,6 +479,66 @@ class RecirculationCacheTest(unittest.TestCase):
             finally:
                 replay_hooks.close()
 
+    def test_saves_and_replays_early_exit_placeholders(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perturbations.pt"
+            config = RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                save_perturbation=path,
+            )
+            hooks = _Hooks(blocks, config)
+            hooks.residuals[0] = torch.ones((1, 1, 2))
+            hooks.injection_source = torch.ones((1, 1, 2))
+            try:
+                hooks.prepare_injections(
+                    lambda *_args: self.fail("candidate search ran"),
+                    pre_recirculation_top_token_id=1,
+                )
+                hooks.pass_index = 2
+                hooks.prepare_injections(
+                    lambda *_args: self.fail("candidate search ran"),
+                    pre_recirculation_top_token_id=1,
+                )
+                self.assertEqual(len(torch.load(path, weights_only=True)), 1)
+            finally:
+                hooks.close()
+            save_skipped_latent_perturbations(config, 2)
+            self.assertEqual(tuple(torch.load(path, weights_only=True).shape), (3, 1, 1, 2))
+            self.assertFalse(torch.count_nonzero(torch.load(path, weights_only=True)))
+
+            config.perturbation_sequence.saved.append(torch.tensor([[[0.2, 0.0]]]))
+            torch.save(torch.stack(config.perturbation_sequence.saved), path)
+            replay_config = replace(config, replay_perturbation=path,
+                                    perturbation_sequence=PerturbationSequence())
+            source = torch.ones((1, 1, 2))
+            torch.testing.assert_close(
+                perturbation_replay(source, path, replay_config.perturbation_sequence), source
+            )
+            self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
+            self.assertEqual(replay_config.perturbation_sequence.replay_index, 3)
+            save_skipped_latent_perturbations(replay_config, 2, replayed_skips=True)
+            self.assertEqual(len(torch.load(path, weights_only=True)), 3)
+            torch.testing.assert_close(
+                perturbation_replay(source, path, replay_config.perturbation_sequence),
+                source + torch.tensor([[[0.2, 0.0]]]),
+            )
+            skipped_config = replace(
+                replay_config, perturbation_sequence=PerturbationSequence(
+                    replayed=replay_config.perturbation_sequence.replayed, replay_index=3
+                )
+            )
+            skipped = _Hooks(blocks, skipped_config)
+            skipped.residuals[0] = source
+            skipped.injection_source = source
+            skipped.pass_index = 1
+            try:
+                skipped.prepare_injections(pre_recirculation_top_token_id=1)
+                self.assertEqual(skipped_config.perturbation_sequence.replay_index, 4)
+                self.assertEqual(skipped_config.perturbation_sequence.replay_application_count, 0)
+            finally:
+                skipped.close()
+
     def test_replays_each_perturbed_token_in_order_across_config_copies(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         with tempfile.TemporaryDirectory() as directory:
@@ -353,6 +587,10 @@ class RecirculationCacheTest(unittest.TestCase):
                         hooks.active_pair = True
                     hooks.prepare_injections()
                     torch.testing.assert_close(hooks.prepared_source, expected)
+                    self.assertEqual(
+                        replay_config.perturbation_sequence.replay_application_count,
+                        replay_config.perturbation_sequence.replay_index,
+                    )
                 finally:
                     hooks.close()
 
@@ -367,6 +605,7 @@ class RecirculationCacheTest(unittest.TestCase):
                     exhausted.prepared_source, torch.tensor([[[1.3, 1.0]]])
                 )
                 self.assertEqual(replay_config.perturbation_sequence.replay_index, 2)
+                self.assertEqual(replay_config.perturbation_sequence.replay_application_count, 2)
                 with self.assertRaisesRegex(ValueError, "probe after replay is exhausted"):
                     exhausted.prepare_injections()
             finally:

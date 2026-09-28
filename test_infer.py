@@ -3,7 +3,7 @@ import json
 import io
 import sys
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
@@ -66,7 +66,7 @@ class RecirculationStatsTest(unittest.TestCase):
 
         def encode_target(text, **kwargs):
             encoded_targets.append(text)
-            return torch.tensor([[1]]) if kwargs.get("return_tensors") else [1]
+            return torch.tensor([[1]]) if kwargs.get("return_tensors") else [1, 0]
 
         tokenizer = SimpleNamespace(
             eos_token_id=2,
@@ -74,10 +74,15 @@ class RecirculationStatsTest(unittest.TestCase):
                 input_ids=torch.tensor([[6, 7]]) if "common name" in messages[0]["content"]
                 else torch.tensor([[3, 4, 5]])
             ),
-            decode=lambda *_args, **_kwargs: "E",
+            decode=lambda token, **_kwargs: (
+                "P" if torch.as_tensor(token).numel() == 1 and torch.as_tensor(token).item() == 5
+                else "Q" if torch.as_tensor(token).numel() == 1 and torch.as_tensor(token).item() == 7
+                else "E"
+            ),
             encode=encode_target,
         )
         calls = []
+        cosine_rejects = []
         scored_prompts = []
 
         def score_tokens(prompt_ids, target_ids, _step, **_kwargs):
@@ -86,6 +91,7 @@ class RecirculationStatsTest(unittest.TestCase):
 
         def fake_recirculate(tokens, **kwargs):
             calls.append((tokens.tolist(), kwargs["force_recirculation"] if "force_recirculation" in kwargs else False, kwargs["config"]))
+            cosine_rejects.append(kwargs.get("cosine_reject"))
             logits = torch.tensor([[[0.0, 5.0, 0.0]]]).expand(1, tokens.shape[1], 3)
             for _ in range(tokens.shape[1]):
                 for name, value in (
@@ -105,7 +111,7 @@ class RecirculationStatsTest(unittest.TestCase):
                     ("pass_target_token_probabilities", [0.9] if kwargs.get("force_recirculation") else []),
                     ("candidate_target_token_probabilities", [0.3, 0.7, 0.4, 0.8, 0.2, 0.6, 0.5, 0.9] if kwargs.get("force_recirculation") else []),
                     ("aggregate_target_token_probabilities", [0.45, 0.75] if kwargs.get("force_recirculation") else []),
-                    ("cosine_reject_thresholds", 0.2 if kwargs.get("force_recirculation") else 0.8),
+                    ("cosine_reject_thresholds", min(kwargs["cosine_reject"], 0.2) if kwargs.get("force_recirculation") and kwargs.get("cosine_reject") is not None else kwargs.get("cosine_reject")),
                     ("injected_noise_levels", [0.3] if kwargs.get("force_recirculation") else []),
                     ("initial_decoded_noise_source_latents", []),
                     ("decoded_injected_source_latents", [
@@ -125,7 +131,9 @@ class RecirculationStatsTest(unittest.TestCase):
             ):
                 with self.subTest(debug=debug, knowedit=knowedit, portability_query=portability_query, replay_file=replay_file, latent_tokens=latent_tokens):
                     calls.clear()
+                    cosine_rejects.clear()
                     encoded_targets.clear()
+                    stream = io.StringIO()
                     with (
                         patch.object(sys, "argv", [
                             "infer.py", *([] if knowedit else ["question"]), "--model", "test-model",
@@ -136,7 +144,7 @@ class RecirculationStatsTest(unittest.TestCase):
                             "--periodic-perturbation-steps", "2",
                             "--periodic-perturbation-step-decay", "0.5",
                             "--noise-injected-source-top-k", "3",
-                            "--output", str(Path(directory) / "output.json"),
+                            *([] if latent_tokens == 3 else ["--output", str(Path(directory) / "output.json")]),
                             *(["--knowedit-file", "example.json"] if knowedit else []),
                             *(["--knowedit-portability"] if portability_query else []),
                             *(["--replay-perturbation", replay_file] if replay_file else []),
@@ -155,10 +163,21 @@ class RecirculationStatsTest(unittest.TestCase):
                         patch.object(infer, "recirculate", side_effect=fake_recirculate),
                         patch.object(infer, "enable_fp32_output_projection"),
                         patch.object(infer.torch.cuda, "is_available", return_value=False),
-                        redirect_stdout(io.StringIO()),
+                        chdir(directory),
+                        redirect_stdout(stream),
                     ):
                         infer.main()
-                    result = json.loads((Path(directory) / "output.json").read_text())
+                    self.assertIn("(perturb at 0)\nE", stream.getvalue())
+                    output_file = Path(directory) / "output.json"
+                    if latent_tokens == 3:
+                        output_file = next(
+                            path for path in Path(directory).glob("test-model-2-0-passes*-tokens1-lat3*.json")
+                            if not path.stem.endswith("-debug")
+                        )
+                        self.assertIn("-lat3", output_file.stem)
+                        if debug:
+                            self.assertTrue(output_file.with_name(f"{output_file.stem}-debug.json").exists())
+                    result = json.loads(output_file.read_text())
 
                     self.assertEqual(
                         [tokens for tokens, _, _ in calls],
@@ -166,6 +185,7 @@ class RecirculationStatsTest(unittest.TestCase):
                         if portability_query else [[[3, 4]], *[[[5]]] * latent_tokens, *[[[1]]] * latent_tokens],
                     )
                     self.assertEqual([forced for _, forced, _ in calls], [False] + [True] * (2 * latent_tokens))
+                    self.assertEqual(cosine_rejects, [0.8] + ([None] * (latent_tokens - 1) + [0.8]) * 2)
                     self.assertIsNone(calls[0][2].perturbation_direction)
                     self.assertEqual(calls[1][2].periodic_perturbation_candidate_count, 4)
                     self.assertEqual(calls[1][2].periodic_perturbation_steps, 2)
@@ -176,16 +196,19 @@ class RecirculationStatsTest(unittest.TestCase):
                     )
                     self.assertEqual(
                         calls[1][2].save_perturbation,
-                        Path("perturb-knowedit-1-port.pt" if portability_query else "perturb-knowedit-1.pt")
-                        if knowedit else Path("perturb.pt"),
+                        Path(f"perturb-knowedit-1{'-port' if portability_query else ''}-lat{latent_tokens}.pt")
+                        if knowedit else Path(f"perturb-lat{latent_tokens}.pt"),
                     )
                     if knowedit:
                         self.assertEqual(
                             encoded_targets,
-                            ["Owlet moths", "E", "Owlet moths"] if portability_query
-                            else ["E", "E", "Owlet moths"],
+                            ["E", "E", "Owlet moths"],
                         )
                         self.assertEqual(calls[1][2].perturbation_target_token_id, 1)
+                        self.assertEqual(
+                            calls[1 + latent_tokens][2].perturbation_target_token_id,
+                            0,
+                        )
                         self.assertEqual(scored_prompts, [([[3, 4, 5]], [[1]]), ([[6, 7]], [[1]])])
                         self.assertEqual(
                             result[0]["prompt"],
@@ -200,43 +223,296 @@ class RecirculationStatsTest(unittest.TestCase):
                         self.assertIsNotNone(calls[1][2].perturbation_direction)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["count"], 1)
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["total"], 1)
+                    self.assertEqual(result[0]["runs"][0]["output"], "E")
                     scored_prompts.clear()
                     if debug:
                         comparisons = json.loads(
-                            (Path(directory) / ("output-rep-2-debug.json" if replay_file else "output-debug.json")).read_text()
+                            (Path(directory) / "output-rep-2-debug.json" if replay_file else output_file.with_name(f"{output_file.stem}-debug.json")).read_text()
                         )[0]["similarities"]
-                        self.assertTrue(comparisons[0]["recirculated"])
-                        self.assertEqual(comparisons[0]["injected_noise_levels"], [0.3])
-                        self.assertEqual(comparisons[0]["pass_top_k_cosine_similarities"], [0.3])
-                        self.assertEqual(comparisons[0]["pass_recirculation_topk_tokens"], [["E"] * 3])
+                        emitted = comparisons[latent_tokens - 1]
+                        self.assertEqual(len(comparisons), 2 * latent_tokens - 1)
+                        self.assertEqual([record.get("latent_pass") for record in comparisons],
+                                         list(range(1, latent_tokens)) +
+                                         ([1] if knowedit else [None]) +
+                                         list(range(1, latent_tokens)))
+                        self.assertEqual(
+                            [record["latent_passes"] for record in comparisons if not record.get("emitted", True)],
+                            [latent_tokens] * (2 * (latent_tokens - 1)),
+                        )
+                        for record in comparisons[:latent_tokens - 1]:
+                            self.assertEqual(record["input_token"], "Q" if portability_query else "P")
+                            self.assertIsNone(record["selected_token"])
+                            self.assertIsNone(record["emitted_token"])
+                            self.assertFalse(record["emitted"])
+                            self.assertEqual(record["token_index"], 0)
+                            self.assertEqual(record["pre_recirculation_topk_tokens"], ["E"] * 3)
+                        for record in comparisons[latent_tokens:]:
+                            self.assertEqual(record["input_token"], "E")
+                            self.assertIsNone(record["selected_token"])
+                            self.assertIsNone(record["emitted_token"])
+                            self.assertFalse(record["emitted"])
+                            self.assertEqual(record["token_index"], 1)
+                            self.assertEqual(record["pre_recirculation_topk_tokens"], ["E"] * 3)
+                        self.assertEqual(sum(record.get("emitted", True) for record in comparisons), 1)
+                        self.assertEqual(emitted["input_token"], "Q" if portability_query else "P")
+                        self.assertEqual(emitted["selected_token"], "E")
+                        self.assertEqual(emitted["emitted_token"], "E")
+                        self.assertTrue(emitted["emitted"])
+                        self.assertTrue(emitted["recirculated"])
+                        self.assertEqual(emitted["injected_noise_levels"], [0.3])
+                        self.assertEqual(emitted["pass_top_k_cosine_similarities"], [0.3])
+                        self.assertEqual(emitted["pass_recirculation_topk_tokens"], [["E"] * 3])
+                        self.assertEqual(emitted["pre_recirculation_topk_tokens"], ["E"] * 3)
                         if knowedit:
-                            self.assertEqual(comparisons[0]["target_token"], "E")
+                            self.assertEqual(emitted["target_token"], "E")
                             self.assertAlmostEqual(
-                                comparisons[0]["pre_recirculation_target_token_probability"],
+                                emitted["pre_recirculation_target_token_probability"],
                                 torch.softmax(torch.tensor([0.0, 5.0, 0.0]), dim=-1)[1].item(),
                             )
-                            self.assertEqual(comparisons[0]["candidate_target_token_probabilities"], [["3.00e-01", "7.00e-01", "4.00e-01", "8.00e-01"], ["2.00e-01", "6.00e-01", "5.00e-01", "9.00e-01"]])
-                            self.assertEqual(comparisons[0]["aggregate_target_token_probabilities"], ["4.50e-01", "7.50e-01"])
-                            self.assertNotIn("pass_target_token_probabilities", comparisons[0])
-                            self.assertEqual(comparisons[0]["final_pass_target_token_probability"], "9.00e-01")
-                            self.assertEqual(comparisons[0]["post_recirculation_target_token_probability"], "9.87e-01")
+                            self.assertEqual(emitted["candidate_target_token_probabilities"], [
+                                ["3.00e-01", "7.00e-01", "4.00e-01", "8.00e-01"],
+                                ["2.00e-01", "6.00e-01", "5.00e-01", "9.00e-01"],
+                            ])
+                            self.assertEqual(emitted["aggregate_target_token_probabilities"], ["4.50e-01", "7.50e-01"])
+                            self.assertNotIn("pass_target_token_probabilities", emitted)
+                            self.assertEqual(emitted["final_pass_target_token_probability"], "9.00e-01")
+                            self.assertEqual(emitted["post_recirculation_target_token_probability"], "9.87e-01")
                             self.assertNotEqual(
-                                comparisons[0]["final_pass_target_token_probability"],
-                                comparisons[0]["post_recirculation_target_token_probability"],
+                                emitted["final_pass_target_token_probability"],
+                                emitted["post_recirculation_target_token_probability"],
                             )
                         else:
-                            self.assertNotIn("target_token", comparisons[0])
-                            self.assertNotIn("pre_recirculation_target_token_probability", comparisons[0])
-                            self.assertNotIn("final_pass_target_token_probability", comparisons[0])
-                            self.assertNotIn("post_recirculation_target_token_probability", comparisons[0])
-                        self.assertEqual(comparisons[0]["cosine_reject_threshold"], 0.2)
-                        self.assertEqual(comparisons[0]["post_recirculation_topk_tokens"], ["E"] * 3)
+                            self.assertNotIn("target_token", emitted)
+                            self.assertNotIn("pre_recirculation_target_token_probability", emitted)
+                            self.assertNotIn("final_pass_target_token_probability", emitted)
+                            self.assertNotIn("post_recirculation_target_token_probability", emitted)
                         self.assertEqual(
-                            comparisons[0]["noise_injected_source_topk_tokens"],
+                            [record["cosine_reject_threshold"] for record in comparisons[:latent_tokens - 1]],
+                            [None] * (latent_tokens - 1),
+                        )
+                        self.assertEqual(emitted["cosine_reject_threshold"], 0.2)
+                        self.assertEqual(emitted["post_recirculation_topk_tokens"], ["E"] * 3)
+                        self.assertEqual(
+                            emitted["noise_injected_source_topk_tokens"],
                             [["Earth", "E", "Mars"]],
                         )
-                        self.assertNotIn("noise_injected_source_top1_token", comparisons[0])
-                        self.assertNotIn("noise_injected_source_top2_token", comparisons[0])
+                        self.assertNotIn("noise_injected_source_top1_token", emitted)
+                        self.assertNotIn("noise_injected_source_top2_token", emitted)
+
+    def test_latent_target_hit_emits_before_remaining_passes(self) -> None:
+        model = nn.Module()
+        model.config = SimpleNamespace()
+        model.generation_config = SimpleNamespace(eos_token_id=2, repetition_penalty=1.0)
+        model.embeddings = nn.Embedding(8, 3)
+        model.output = nn.Linear(3, 8)
+        model.get_input_embeddings = lambda: model.embeddings
+        model.get_output_embeddings = lambda: model.output
+        tokenizer = SimpleNamespace(
+            apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
+                input_ids=torch.tensor([[3, 4, 5]])
+            ),
+            encode=lambda *_args, **kwargs: torch.tensor([[1, 0]]) if kwargs.get("return_tensors") else [1, 0],
+            decode=lambda token, **_kwargs: "".join(
+                str(int(token_id)) for token_id in torch.as_tensor(token).flatten()
+            ),
+        )
+        calls = []
+
+        def fake_recirculate(tokens, **kwargs):
+            target_id = kwargs["config"].perturbation_target_token_id
+            calls.append((tokens.tolist(), kwargs.get("cosine_reject"), target_id))
+            target_attempt = sum(call_target == target_id for _, _, call_target in calls) if target_id is not None else 0
+            if replay_exit and target_id is not None:
+                self.assertIsNotNone(kwargs["config"].replay_perturbation)
+                sequence = kwargs["config"].perturbation_sequence
+                if sequence.replayed is None:
+                    sequence.replayed = torch.tensor(
+                        [0.2] * hit_pass + [0.0] * (latent_tokens - hit_pass)
+                    ).repeat(2).reshape(-1, 1, 1, 1)
+                if bool(torch.count_nonzero(sequence.replayed[sequence.replay_index]).item()):
+                    sequence.replay_application_count += 1
+                sequence.replay_index += 1
+            scores = [0.0, 5.0, 0.0] if tokens[0, 0].item() == 1 else [5.0, 0.0, 0.0]
+            logits = torch.tensor([[scores]]).expand(1, tokens.shape[1], 3)
+            for _ in range(tokens.shape[1]):
+                for name, value in (
+                    ("recirculated_flags", kwargs.get("force_recirculation", False)),
+                    ("rejected_flags", False),
+                    ("adaptive_recirculated_flags", False),
+                    ("adaptive_rejected_flags", False),
+                    ("adaptive_recirculation_counts", 0),
+                    ("final_pass_same_top1_flags", False),
+                    ("rejection_reasons", ()),
+                    ("first_pass_logits", logits[:, :1]),
+                    ("first_pass_similarities", 0.5),
+                    ("pass_probability_margins", [0.8]),
+                    ("final_pass_cosine_similarities", None),
+                    ("pass_cosine_similarities", []),
+                    ("pass_top_k_token_ids", [[target_id if target_attempt == hit_pass and not replay_exit else 2, 2]] if target_id is not None else []),
+                    ("pass_target_token_probabilities", []),
+                    ("candidate_target_token_probabilities", []),
+                    ("aggregate_target_token_probabilities", []),
+                    ("cosine_reject_thresholds", kwargs.get("cosine_reject")),
+                    ("injected_noise_levels", []),
+                    ("initial_decoded_noise_source_latents", []),
+                    ("decoded_injected_source_latents", []),
+                ):
+                    if kwargs.get(name) is not None:
+                        kwargs[name].append(value)
+            return logits, kwargs["cache"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            for debug, latent_tokens, hit_pass, replay_exit in (
+                (False, 2, 1, False), (True, 2, 1, False),
+                (False, 2, 2, False), (True, 2, 2, False),
+                (False, 3, 1, False), (True, 3, 1, False),
+                (False, 3, 2, False), (True, 3, 2, False),
+                (False, 3, 1, True), (True, 3, 1, True),
+                (False, 3, 2, True), (True, 3, 2, True),
+            ):
+                stream = io.StringIO()
+                with (
+                    self.subTest(debug=debug, latent_tokens=latent_tokens, hit_pass=hit_pass, replay_exit=replay_exit),
+                    patch.object(sys, "argv", [
+                        "infer.py", "--knowedit-file", "example.json", "--model", "test-model",
+                        "--device-map", "none", "--pair", "2", "0", "--max-new-tokens", "2",
+                        "--perturb-every-n-tokens", "1", "--perturb-latent-tokens", str(latent_tokens),
+                        "--output", str(Path(directory) / "output.json"),
+                        *(["--replay-perturbation", str(Path(directory) / "replay.pt")] if replay_exit else []),
+                        *(["--debug"] if debug else []),
+                    ]),
+                    patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(
+                        source="s", subject="s", target_new="10", reference=None, portability=(),
+                    )]),
+                    patch.object(infer, "format_knowedit_prompt", return_value="question"),
+                    patch.object(infer, "teacher_forced_token_accuracy", return_value=1.0),
+                    patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
+                    patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
+                    patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
+                    patch.object(infer, "DynamicCache", return_value=SimpleNamespace(activate_past_recording=lambda: None)),
+                    patch.object(infer, "recirculate", side_effect=fake_recirculate),
+                    patch.object(infer, "enable_fp32_output_projection"),
+                    patch.object(infer.torch.cuda, "is_available", return_value=False),
+                    chdir(directory), redirect_stdout(stream),
+                ):
+                    calls.clear()
+                    infer.main()
+                    self.assertIn("(perturb at 0)\n0(perturb at 1)\n0", stream.getvalue())
+                    result = json.loads(Path("output.json").read_text())
+                    self.assertEqual(result[0]["runs"][0]["output"], "00")
+                    self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["total"], 2)
+                    self.assertEqual([tokens for tokens, _, _ in calls],
+                                     [[[3, 4]], *[[[5]]] * hit_pass, *[[[0]]] * hit_pass, [[0]]])
+                    self.assertEqual([target for _, _, target in calls],
+                                     [None, *[1] * hit_pass, *[0] * hit_pass, None])
+                    self.assertEqual([threshold for _, threshold, _ in calls],
+                                 [0.8, *([None] * (hit_pass - 1) +
+                                     [0.8 if hit_pass == latent_tokens else None]) * 2, 0.8])
+                    if debug:
+                        debug_file = Path("output-rep-replay-debug.json" if replay_exit else "output-debug.json")
+                        comparisons = json.loads(debug_file.read_text())[0]["similarities"]
+                        emitted = [record for record in comparisons if record.get("emitted", True)]
+                        self.assertEqual(
+                            [record["is_replayed"] for record in comparisons],
+                            [replay_exit] * len(comparisons),
+                        )
+                        self.assertEqual([record["selected_token"] for record in emitted], ["0", "0"])
+                        self.assertEqual([record["latent_pass"] for record in emitted], [hit_pass, hit_pass])
+                        self.assertEqual([record["latent_pass"] for record in comparisons if not record.get("emitted", True)],
+                                         list(range(1, hit_pass)) * 2)
+                        self.assertEqual([record["token_index"] for record in emitted], [0, 1])
+                        self.assertEqual([record["token_index"] for record in comparisons if not record.get("emitted", True)],
+                                         [0] * (hit_pass - 1) + [1] * (hit_pass - 1))
+                        self.assertEqual(len(comparisons), 2 * hit_pass)
+
+    def test_towards_target_stops_perturbing_when_target_is_exhausted(self) -> None:
+        model = nn.Module()
+        model.config = SimpleNamespace()
+        model.generation_config = SimpleNamespace(eos_token_id=2, repetition_penalty=1.0)
+        model.embeddings = nn.Embedding(8, 3)
+        model.output = nn.Linear(3, 8)
+        model.get_input_embeddings = lambda: model.embeddings
+        model.get_output_embeddings = lambda: model.output
+        tokenizer = SimpleNamespace(
+            apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
+                input_ids=torch.tensor([[3, 4]])
+            ),
+            encode=lambda _text, **kwargs: torch.tensor([[1]]) if kwargs.get("return_tensors") else [1, 0],
+            decode=lambda _tokens, **_kwargs: "E",
+        )
+        calls = []
+
+        def fake_recirculate(tokens, **kwargs):
+            target_id = kwargs["config"].perturbation_target_token_id
+            calls.append((target_id, kwargs.get("force_recirculation", False)))
+            scores = (
+                [5.0, 0.0, 0.0]
+                if target_id == 0 and (not miss_second or sum(target == 0 for target, _ in calls) > 1)
+                else [0.0, 5.0, 0.0]
+            )
+            logits = torch.tensor([[scores]]).expand(1, tokens.shape[1], 3)
+            for _ in range(tokens.shape[1]):
+                for name, value in (
+                    ("recirculated_flags", kwargs.get("force_recirculation", False)),
+                    ("rejected_flags", False),
+                    ("adaptive_recirculated_flags", False),
+                    ("adaptive_rejected_flags", False),
+                    ("adaptive_recirculation_counts", 0),
+                    ("final_pass_same_top1_flags", False),
+                    ("rejection_reasons", ()),
+                    ("first_pass_logits", logits[:, :1]),
+                    ("first_pass_similarities", 0.5),
+                    ("pass_probability_margins", [0.8]),
+                    ("final_pass_cosine_similarities", None),
+                    ("pass_cosine_similarities", []),
+                    ("pass_top_k_token_ids", []),
+                    ("pass_target_token_probabilities", []),
+                    ("candidate_target_token_probabilities", []),
+                    ("aggregate_target_token_probabilities", []),
+                    ("cosine_reject_thresholds", None),
+                    ("injected_noise_levels", []),
+                    ("initial_decoded_noise_source_latents", []),
+                    ("decoded_injected_source_latents", []),
+                ):
+                    if kwargs.get(name) is not None:
+                        kwargs[name].append(value)
+            return logits, kwargs["cache"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            for debug, miss_second in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(debug=debug, miss_second=miss_second):
+                    calls.clear()
+                    stream = io.StringIO()
+                    with (
+                        patch.object(sys, "argv", [
+                            "infer.py", "--model", "test-model", "--device-map", "none",
+                            "--pair", "2", "0", "--knowedit-file", "example.json",
+                            "--max-new-tokens", "4", "--perturb-every-n-tokens", "1",
+                            "--no-repetition-recovery", "--output", str(Path(directory) / "output.json"),
+                            *(["--debug"] if debug else []),
+                        ]),
+                        patch.object(infer, "load_knowedit_examples", return_value=[SimpleNamespace(
+                            source="s", subject="s", target_new="E", reference=None, portability=(),
+                        )]),
+                        patch.object(infer, "format_knowedit_prompt", return_value="question"),
+                        patch.object(infer, "teacher_forced_token_accuracy", return_value=1.0),
+                        patch.object(infer.AutoTokenizer, "from_pretrained", return_value=tokenizer),
+                        patch.object(infer.AutoModelForCausalLM, "from_pretrained", return_value=model),
+                        patch.object(infer, "find_decoder_blocks", return_value=nn.ModuleList([nn.Identity() for _ in range(3)])),
+                        patch.object(infer, "DynamicCache", return_value=SimpleNamespace(activate_past_recording=lambda: None)),
+                        patch.object(infer, "recirculate", side_effect=fake_recirculate),
+                        patch.object(infer, "enable_fp32_output_projection"),
+                        patch.object(infer.torch.cuda, "is_available", return_value=False),
+                        redirect_stdout(stream),
+                    ):
+                        infer.main()
+                    self.assertEqual(stream.getvalue().count("(perturb at "), 2)
+                    self.assertEqual(calls, [
+                        (None, False), (1, True), (0, True),
+                        (None, False), (None, False), (None, False),
+                    ])
+                    result = json.loads((Path(directory) / "output.json").read_text())
+                    self.assertEqual(result[0]["runs"][0]["output"], "E")
 
     def test_teacher_forced_accuracy_scores_before_feeding_each_target_token(self) -> None:
         seen_tokens = []
@@ -473,6 +749,8 @@ class RecirculationStatsTest(unittest.TestCase):
         )
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2.pt")), "2")
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port.pt")), "2-port")
+        self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-lat3.pt")), "2-lat3")
+        self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port-lat3.pt")), "2-port-lat3")
         self.assertEqual(infer.replay_file_signature(Path("custom.pt")), "custom")
 
     def test_periodic_perturbation_noise_override_takes_precedence(self) -> None:

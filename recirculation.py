@@ -53,6 +53,8 @@ class PerturbationSequence:
     saved: list[Tensor] = field(default_factory=list)
     replayed: Tensor | None = None
     replay_index: int = 0
+    replay_application_count: int = 0
+    source_shape: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,48 @@ def perturbation_replay(
     return normalized_source + perturbation
 
 
+def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) -> bool:
+    if config.replay_perturbation is None or remaining == 0:
+        return False
+    sequence = config.perturbation_sequence
+    if sequence.replayed is None:
+        sequence.replayed = torch.load(config.replay_perturbation, map_location="cpu", weights_only=True)
+    replayed = sequence.replayed
+    if not isinstance(replayed, Tensor) or sequence.replay_index >= len(replayed):
+        return False
+    if not bool(torch.all(replayed[sequence.replay_index] == 0).item()):
+        return False
+    if sequence.replay_index + remaining > len(replayed) or not bool(
+        torch.all(replayed[sequence.replay_index:sequence.replay_index + remaining] == 0).item()
+    ):
+        raise ValueError("Replay early-exit marker must cover all remaining latent passes.")
+    sequence.replay_index += remaining
+    return True
+
+
+def save_skipped_latent_perturbations(
+    config: RecirculationConfig, remaining: int, replayed_skips: bool = False
+) -> None:
+    if config.save_perturbation is None or remaining == 0:
+        return
+    sequence = config.perturbation_sequence
+    if sequence.replayed is not None and len(sequence.saved) < sequence.replay_index:
+        sequence.saved.extend(
+            sequence.replayed[len(sequence.saved):sequence.replay_index].unbind(0)
+        )
+    if replayed_skips:
+        torch.save(torch.stack(sequence.saved), config.save_perturbation)
+        return
+    if sequence.saved:
+        zero = torch.zeros_like(sequence.saved[-1])
+    elif sequence.source_shape is not None:
+        zero = torch.zeros(sequence.source_shape)
+    else:
+        return
+    sequence.saved.extend(zero.clone() for _ in range(remaining))
+    torch.save(torch.stack(sequence.saved), config.save_perturbation)
+
+
 class _Hooks:
     def __init__(
         self,
@@ -332,6 +376,7 @@ class _Hooks:
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor],
         candidate_target_token_probabilities: list[float] | None,
         aggregate_target_token_probabilities: list[float] | None,
+        pre_recirculation_target_log_probability: float | None = None,
     ) -> Tensor:
         target_token_id = self.cfg.perturbation_target_token_id
         if target_token_id is None:
@@ -347,6 +392,7 @@ class _Hooks:
         for _step in range(steps):
             candidates = []
             scores = []
+            viable_candidates = []
             for _ in range(candidates_per_step):
                 epsilon = (
                     direction_weight
@@ -378,7 +424,12 @@ class _Hooks:
                     candidates.append(
                         torch.where(keep_forward[:, None, None], epsilon, -epsilon)
                     )
-                    scores.append(torch.maximum(forward_score, reversed_score))
+                    best_score = torch.maximum(forward_score, reversed_score)
+                    scores.append(best_score)
+                    if pre_recirculation_target_log_probability is not None:
+                        viable_candidates.append(
+                            best_score >= pre_recirculation_target_log_probability
+                        )
                 else:
                     candidates.append(candidate)
                     direction = downstream_direction.reshape_as(candidate_output)
@@ -389,11 +440,17 @@ class _Hooks:
                         )
                     )
             if target_token_id is not None:
-                candidate_weights = torch.softmax(torch.stack(scores, dim=0), dim=0)
                 if candidate_target_token_probabilities is not None:
                     candidate_target_token_probabilities.extend(
                         float(score.exp().item()) for score in scores
                     )
+                score_tensor = torch.stack(scores, dim=0)
+                if viable_candidates:
+                    viable = torch.stack(viable_candidates, dim=0)
+                    if not viable.any():
+                        continue
+                    score_tensor = score_tensor.masked_fill(~viable, -torch.inf)
+                candidate_weights = torch.softmax(score_tensor, dim=0)
                 candidate_weights = candidate_weights.masked_fill(
                     candidate_weights <= 0.5 / candidates_per_step,
                     0.0,
@@ -417,17 +474,17 @@ class _Hooks:
                         weighted_perturbation, dim=-1, keepdim=True
                     ).clamp_min(self.cfg.eps)
                 )
-                normalized_source = normalized_source + (
+                perturbed_source = normalized_source + (
                     self.cfg.periodic_perturbation_step_decay ** _step
                 ) * weighted_perturbation
                 if aggregate_target_token_probabilities is not None:
                     aggregate_output = perturbation_probe(
-                        source_index, destination_index, destination, normalized_source
+                        source_index, destination_index, destination, perturbed_source
                     )
                     aggregate_target_token_probabilities.append(
                         float(torch.softmax(aggregate_output.float(), dim=-1)[:, target_token_id].item())
                     )
-                #breakpoint()
+                normalized_source = perturbed_source
             else:
                 candidate_tensor = torch.stack(candidates, dim=0)
                 score_tensor = torch.stack(scores, dim=0)
@@ -458,6 +515,8 @@ class _Hooks:
         perturbation_probe: Callable[[int, int, Tensor, Tensor], Tensor] | None = None,
         candidate_target_token_probabilities: list[float] | None = None,
         aggregate_target_token_probabilities: list[float] | None = None,
+        pre_recirculation_target_log_probability: float | None = None,
+        pre_recirculation_top_token_id: int | None = None,
     ) -> list[tuple[int, Tensor]]:
         self.prepared_source = None
         self.noise_perturbation = None
@@ -484,6 +543,7 @@ class _Hooks:
         normalized_source = source * destination_norm / source_norm.clamp_min(
             self.cfg.eps
         )
+        self.cfg.perturbation_sequence.source_shape = tuple(normalized_source.shape)
         select_perturbation_candidate = (
             (perturbation_probe is not None or self.cfg.replay_perturbation is not None)
             and (
@@ -491,6 +551,23 @@ class _Hooks:
                 or self.cfg.perturbation_target_token_id is not None
             )
         )
+        if (
+            select_perturbation_candidate
+            and self.cfg.perturbation_target_token_id is not None
+            and self.cfg.perturbation_target_token_id == pre_recirculation_top_token_id
+        ):
+            # pass_index is the recirculation pass index, not the latent token index.
+            # This guard only checks at the first recirculation pass.
+            if self.pass_index == 1:
+                if self.cfg.replay_perturbation is not None:
+                    perturbation_replay(
+                        normalized_source, self.cfg.replay_perturbation,
+                        self.cfg.perturbation_sequence,
+                    )
+                elif self.cfg.save_perturbation is not None:
+                    save_skipped_latent_perturbations(self.cfg, 1)
+            self.prepared_source = normalized_source
+            return debug_latents
         # Don't search for perturbation candidates after the first recirculation pass
         if select_perturbation_candidate and self.pass_index > 1:
             self.prepared_source = normalized_source
@@ -530,6 +607,12 @@ class _Hooks:
             else:
                 replayed_source = None
             if replayed_source is not None:
+                if bool(torch.count_nonzero(
+                    self.cfg.perturbation_sequence.replayed[
+                        self.cfg.perturbation_sequence.replay_index - 1
+                    ]
+                ).item()):
+                    self.cfg.perturbation_sequence.replay_application_count += 1
                 normalized_source = replayed_source
             else:
                 if perturbation_probe is None:
@@ -547,6 +630,7 @@ class _Hooks:
                     perturbation_probe,
                     candidate_target_token_probabilities,
                     aggregate_target_token_probabilities,
+                    pre_recirculation_target_log_probability,
                 )
         elif self.cfg.perturbation_direction is not None:
             direction = self.cfg.perturbation_direction.to(
@@ -959,6 +1043,10 @@ def recirculate(
                         or similarity >= condition_threshold
                     )
                 )
+            ) and not (
+                config.perturbation_target_token_id is not None
+                and int(first_logits[0, -1, :].argmax().item())
+                == config.perturbation_target_token_id
             )
             if passes == 1 and adaptive_recirculation and not force_recirculation:
                 assert first_margin is not None
@@ -1061,6 +1149,16 @@ def recirculate(
                     aggregate_target_token_probabilities=(
                         token_aggregate_target_token_probabilities
                         if aggregate_target_token_probabilities is not None
+                        else None
+                    ),
+                    pre_recirculation_target_log_probability=(
+                        float(torch.log_softmax(first_logits[0, -1, :].float(), dim=-1)[config.perturbation_target_token_id].item())
+                        if config.perturbation_target_token_id is not None
+                        else None
+                    ),
+                    pre_recirculation_top_token_id=(
+                        int(first_logits[0, -1, :].argmax().item())
+                        if config.perturbation_target_token_id is not None
                         else None
                     ),
                 )

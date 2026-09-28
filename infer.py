@@ -62,6 +62,8 @@ from recirculation import (  # noqa: E402
     RecirculationConfig,
     SimilarityStats,
     recirculate,
+    replay_skips_remaining_latents,
+    save_skipped_latent_perturbations,
 )
 from tasks.sudoku import format_prompt as format_sudoku_prompt  # noqa: E402
 from tasks.sudoku import is_solution as is_sudoku_solution  # noqa: E402
@@ -501,7 +503,7 @@ def indexed_perturbation_file(
 
 
 def replay_file_signature(path: Path) -> str:
-    match = re.search(r"(?:^|-)knowedit-(\d+(?:-port)?)$", path.stem)
+    match = re.search(r"(?:^|-)knowedit-(\d+(?:-port)?(?:-lat\d+)?)$", path.stem)
     return match.group(1) if match is not None else path.stem
 
 
@@ -990,7 +992,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=parse_perturbation_file,
         default="perturb.pt",
         metavar="FILE.pt",
-        help="Save selected token perturbations as a stacked .pt tensor; KnowEdit adds -knowedit-INDEX[-port].",
+        help="Save selected token perturbations as a stacked .pt tensor; KnowEdit adds -knowedit-INDEX[-port], then -latL is appended.",
     )
     parser.add_argument(
         "--replay-perturbation",
@@ -2145,7 +2147,7 @@ def main() -> None:
         )
         args.output = Path(
             f"{model_slug}-{pair_slug}-passes{args.passes}"
-            f"-tokens{args.max_new_tokens}"
+            f"-tokens{args.max_new_tokens}-lat{args.perturb_latent_tokens}"
             f"{gate_signature}{cutoff_signature}{repetition_penalty_signature}"
             f"{game24_signature}{countdown_signature}{sudoku_signature}{bbeh_signature}{knowedit_signature}"
             f"{query_signature}.json"
@@ -2360,11 +2362,13 @@ def main() -> None:
         use_recirculation: bool,
         run_args: argparse.Namespace,
         run_config: RecirculationConfig,
-        target_token_id: int | None = None,
+        target_token_ids: list[int] | None = None,
         on_generated_token: Callable[[Tensor], None] | None = None,
         on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any]]:
         set_random_seed(run_args.seed)
+        target_token_id = target_token_ids[0] if target_token_ids else None
+        target_index = 0
         similarity_stats = (
             SimilarityStats() if run_args.debug_layer_sim else None
         )
@@ -2405,8 +2409,11 @@ def main() -> None:
         )
 
         periodic_perturbation_centroids: list[Tensor] = []
+        early_target_pass: int | None = None
+        last_pass_replayed = False
 
         def recirculate_prompt(**kwargs: Any) -> tuple[Tensor, DynamicCache]:
+            nonlocal early_target_pass, last_pass_replayed
             if (
                 not use_recirculation
                 or run_args.perturb_every_n_tokens != 1
@@ -2448,9 +2455,35 @@ def main() -> None:
                 run_args.ada_recirculate, run_args.cond_recirculate, True
             )
             kwargs["perturbation_probe"] = probe_periodic_perturbation
-            logits, kwargs["cache"] = recirculate(input_ids[:, -1:], **kwargs)
-            for _ in range(1, run_args.perturb_latent_tokens):
+            cosine_reject = kwargs.get("cosine_reject")
+            top_k_token_ids = kwargs.get("pass_top_k_token_ids")
+            if top_k_token_ids is None and target_token_id is not None:
+                top_k_token_ids = []
+                kwargs["pass_top_k_token_ids"] = top_k_token_ids
+            print("(perturb at 0)", flush=True)
+            for latent_index in range(run_args.perturb_latent_tokens):
+                kwargs["cosine_reject"] = (
+                    None if latent_index < run_args.perturb_latent_tokens - 1 else cosine_reject
+                )
+                replay_count = run_config.perturbation_sequence.replay_application_count
                 logits, kwargs["cache"] = recirculate(input_ids[:, -1:], **kwargs)
+                last_pass_replayed = (
+                    run_config.perturbation_sequence.replay_application_count > replay_count
+                )
+                target_found = bool(
+                    target_token_id is not None
+                    and top_k_token_ids
+                    and top_k_token_ids[-1]
+                    and top_k_token_ids[-1][-1][0] == target_token_id
+                )
+                remaining = run_args.perturb_latent_tokens - latent_index - 1
+                replay_exit = replay_skips_remaining_latents(kwargs["config"], remaining)
+                if args.debug and remaining and not (target_found or replay_exit):
+                    record_latent_pass(input_ids[:, -1:], logits, 0, latent_index, last_pass_replayed)
+                if target_found or replay_exit:
+                    early_target_pass = latent_index + 1
+                    save_skipped_latent_perturbations(kwargs["config"], remaining, replay_exit)
+                    break
             return logits, kwargs["cache"]
 
         recirculated_flags: list[bool] = []
@@ -2654,12 +2687,19 @@ def main() -> None:
                     ),
                     run_args.temperature,
                 )
+                early_target_pass = None
                 repetition_recovery_penalty_tokens_remaining = max(
                     0, repetition_recovery_penalty_tokens_remaining - 1
                 )
                 generated_ids = torch.cat((generated_ids, next_token), dim=1)
                 if on_generated_token is not None:
                     on_generated_token(next_token)
+                if target_token_ids:
+                    target_index += 1
+                    target_token_id = (
+                        target_token_ids[target_index]
+                        if target_index < len(target_token_ids) else None
+                    )
                 record_generated_token_stats()
                 generated_token_ids = generated_ids[0, input_ids.shape[1] :]
                 generated_text = tokenizer.decode(
@@ -2693,7 +2733,7 @@ def main() -> None:
                         run_args.perturb_every_n_tokens,
                         run_args.perturb_for_k_tokens,
                         generated_token_count,
-                    )
+                    ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None)
                     periodic_perturbation_direction = None
                     repetition_recovery_direction = None
                     if (
@@ -2774,7 +2814,8 @@ def main() -> None:
                     )
                     # When not debug, this recirculate() processes each newly selected token to produce logits for the next one. 
                     # It can adjust or force recirculation for repetition recovery and periodic perturbation.
-                    for _ in range(
+                    token_pass_top_k_token_ids: list[list[list[int]]] = []
+                    for latent_index in range(
                         run_args.perturb_latent_tokens if periodic_perturbation else 1
                     ):
                         token_logits, student_cache = recirculate(
@@ -2809,8 +2850,14 @@ def main() -> None:
                                 recovery_settings.force_recirculation
                                 or periodic_perturbation
                             ),
-                            cosine_reject=recovery_settings.cosine_reject,
+                            cosine_reject=(
+                                None
+                                if periodic_perturbation
+                                and latent_index < run_args.perturb_latent_tokens - 1
+                                else recovery_settings.cosine_reject
+                            ),
                             cosine_top_k=run_args.cosine_top_k,
+                            pass_top_k_token_ids=token_pass_top_k_token_ids if target_token_id is not None else None,
                             recirculated_flags=recirculated_flags,
                             rejected_flags=rejected_flags,
                             adaptive_recirculated_flags=adaptive_recirculated_flags,
@@ -2830,6 +2877,19 @@ def main() -> None:
                             restore_rewind_state=restore_dynamic_cache_rewind_state,
                             finalize_token_cache=finalize_dynamic_cache_token,
                         )
+                        remaining = run_args.perturb_latent_tokens - latent_index - 1
+                        replay_exit = periodic_perturbation and replay_skips_remaining_latents(
+                            token_run_config, remaining
+                        )
+                        if (
+                            periodic_perturbation
+                            and target_token_id is not None
+                            and token_pass_top_k_token_ids[-1]
+                            and token_pass_top_k_token_ids[-1][-1][0] == target_token_id
+                        ) or replay_exit:
+                            early_target_pass = latent_index + 1
+                            save_skipped_latent_perturbations(token_run_config, remaining, replay_exit)
+                            break
                 else:
                     token_logits, student_cache = plain_step(
                         next_token, student_cache
@@ -2866,6 +2926,93 @@ def main() -> None:
         injected_noise_levels: list[list[float]] = []
         initial_decoded_noise_source_latents: list[list[dict[str, Any]]] = []
         decoded_injected_source_latents: list[list[dict[str, Any]]] = []
+        def record_latent_pass(
+            token: Tensor, logits: Tensor, token_index: int, latent_index: int,
+            is_replayed: bool,
+        ) -> None:
+            teacher_next = first_pass_logits[-1][:, -1, :]
+            student_next = logits[:, -1, :]
+            latent_record: dict[str, Any] = distribution_similarity(teacher_next, student_next)
+            latent_record.update(
+                token_index=token_index,
+                latent_pass=latent_index + 1,
+                latent_passes=run_args.perturb_latent_tokens,
+                emitted=False,
+                is_replayed=is_replayed,
+                input_token=tokenizer.decode(token[0]),
+                selected_token=None,
+                emitted_token=None,
+                teacher_src_dst_sim=round(first_pass_similarities[-1], 3),
+                top1_top2_margin=[round(margin, 3) for margin in pass_probability_margins[-1]],
+                recirculated=recirculated_flags[-1],
+                rejected=rejected_flags[-1],
+                adaptive_recirculated=adaptive_recirculated_flags[-1],
+                adaptive_rejected=adaptive_rejected_flags[-1],
+                adaptive_recirculation_count=adaptive_recirculation_counts[-1],
+                final_pass_same_top1=final_pass_same_top1_flags[-1],
+                rejection_reasons=rejection_reasons[-1],
+                final_pass_top_k_cosine_similarity=(
+                    round(final_pass_cosine_similarities[-1], 6)
+                    if final_pass_cosine_similarities[-1] is not None else None
+                ),
+                pass_top_k_cosine_similarities=[
+                    round(cosine, 6) for cosine in pass_cosine_similarities[-1]
+                ],
+                pass_recirculation_topk_tokens=[
+                    [tokenizer.decode(token_id) for token_id in attempt]
+                    for attempt in pass_top_k_token_ids[-1]
+                ],
+                pre_recirculation_topk_tokens=top_k_decoded_tokens(
+                    teacher_next, tokenizer, run_args.cosine_top_k
+                ),
+                cosine_reject_threshold=cosine_reject_thresholds[-1],
+                cosine_top_k=run_args.cosine_top_k,
+                post_recirculation_topk_tokens=top_k_decoded_tokens(
+                    student_next, tokenizer, run_args.cosine_top_k
+                ),
+            )
+            if target_token_id is not None:
+                latent_record["target_token"] = tokenizer.decode(target_token_id)
+                latent_record["pre_recirculation_target_token_probability"] = float(
+                    torch.softmax(teacher_next[0].float(), dim=-1)[target_token_id].item()
+                )
+                latent_record["aggregate_target_token_probabilities"] = [
+                    f"{probability:.2e}"
+                    for probability in aggregate_target_token_probabilities[-1]
+                ]
+                latent_record["final_pass_target_token_probability"] = (
+                    f"{pass_target_token_probabilities[-1][-1]:.2e}"
+                    if pass_target_token_probabilities[-1] else None
+                )
+                latent_record["post_recirculation_target_token_probability"] = (
+                    f"{torch.softmax(student_next[0].float(), dim=-1)[target_token_id].item():.2e}"
+                )
+            decoded_noise_latents = decoded_injected_source_latents[-1]
+            zero_gap_diagnostics = [
+                stats["zero_gap_bf16_diagnostic"]
+                for stats in decoded_noise_latents
+                if "zero_gap_bf16_diagnostic" in stats
+            ]
+            if zero_gap_diagnostics:
+                latent_record["injected_source_zero_gap_bf16_diagnostics"] = zero_gap_diagnostics
+            if injected_noise_levels[-1]:
+                latent_record["injected_noise_levels"] = [
+                    round(level, 6) for level in injected_noise_levels[-1]
+                ]
+                latent_record["initial_noise_injected_source_top1_top2_margin"] = [
+                    f"{float(stats['margin']):.6e}"
+                    for stats in initial_decoded_noise_source_latents[-1]
+                ]
+                latent_record["noise_injected_source_top1_top2_margin"] = [
+                    f"{float(stats['margin']):.6e}" for stats in decoded_noise_latents
+                ]
+                latent_record["noise_injected_source_topk_tokens"] = [
+                    stats["topk_tokens"] for stats in decoded_noise_latents
+                ]
+            similarities.append(latent_record)
+            if on_debug_comparison is not None:
+                on_debug_comparison(latent_record)
+
         # When debug, this recirculate() does the prompt work while also collecting first-pass logits, margins, 
         # similarities, and noise diagnostics for comparison.
         student_logits, student_cache = recirculate_prompt(
@@ -2966,6 +3113,9 @@ def main() -> None:
                 [tokenizer.decode(token_id) for token_id in attempt]
                 for attempt in pass_top_k_token_ids[-1]
             ]
+            comparison["pre_recirculation_topk_tokens"] = top_k_decoded_tokens(
+                teacher_next_logits, tokenizer, run_args.cosine_top_k
+            )
             if target_token_id is not None:
                 comparison["target_token"] = tokenizer.decode(target_token_id)
                 comparison["pre_recirculation_target_token_probability"] = float(
@@ -3039,14 +3189,29 @@ def main() -> None:
             repetition_recovery_penalty_tokens_remaining = max(
                 0, repetition_recovery_penalty_tokens_remaining - 1
             )
+            emitted_token = tokenizer.decode(next_token[0])
             comparison.update(
                 token_index=token_index,
-                selected_token=tokenizer.decode(next_token[0]),
+                input_token=tokenizer.decode(current_token[0]),
+                selected_token=emitted_token,
+                emitted_token=emitted_token,
+                emitted=True,
+                is_replayed=last_pass_replayed,
                 repetition_penalty=effective_repetition_penalty,
             )
+            if early_target_pass is not None:
+                comparison["latent_pass"] = early_target_pass
+                comparison["latent_passes"] = run_args.perturb_latent_tokens
+            early_target_pass = None
             generated_ids = torch.cat((generated_ids, next_token), dim=1)
             if on_generated_token is not None:
                 on_generated_token(next_token)
+            if target_token_ids:
+                target_index += 1
+                target_token_id = (
+                    target_token_ids[target_index]
+                    if target_index < len(target_token_ids) else None
+                )
 
             if next_token.item() in eos_token_ids:
                 similarities.append(comparison)
@@ -3081,7 +3246,7 @@ def main() -> None:
                 run_args.perturb_every_n_tokens,
                 run_args.perturb_for_k_tokens,
                 token_index + 1,
-            )
+            ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None)
             periodic_perturbation_direction = None
             repetition_recovery_direction = None
             if (
@@ -3193,9 +3358,10 @@ def main() -> None:
             )
             # This recirculate() processes the generated token and collects first-pass logits, margins,
             # similarities, and any applicable noise diagnostics for comparison.
-            for _ in range(
+            for latent_index in range(
                 run_args.perturb_latent_tokens if periodic_perturbation else 1
             ):
+                replay_count = run_config.perturbation_sequence.replay_application_count
                 student_logits, student_cache = recirculate(
                     next_token,
                     blocks=blocks,
@@ -3226,7 +3392,12 @@ def main() -> None:
                         recovery_settings.force_recirculation
                         or periodic_perturbation
                     ),
-                    cosine_reject=recovery_settings.cosine_reject,
+                    cosine_reject=(
+                        None
+                        if periodic_perturbation
+                        and latent_index < run_args.perturb_latent_tokens - 1
+                        else recovery_settings.cosine_reject
+                    ),
                     cosine_top_k=run_args.cosine_top_k,
                     first_pass_logits=first_pass_logits,
                     first_pass_similarities=first_pass_similarities,
@@ -3259,6 +3430,23 @@ def main() -> None:
                     restore_rewind_state=restore_dynamic_cache_rewind_state,
                     finalize_token_cache=finalize_dynamic_cache_token,
                 )
+                last_pass_replayed = (
+                    run_config.perturbation_sequence.replay_application_count > replay_count
+                )
+                if periodic_perturbation:
+                    target_found = bool(
+                        target_token_id is not None
+                        and pass_top_k_token_ids[-1]
+                        and pass_top_k_token_ids[-1][-1][0] == target_token_id
+                    )
+                    remaining = run_args.perturb_latent_tokens - latent_index - 1
+                    replay_exit = replay_skips_remaining_latents(student_run_config, remaining)
+                    if remaining and not (target_found or replay_exit):
+                        record_latent_pass(next_token, student_logits, token_index + 1, latent_index, last_pass_replayed)
+                    if target_found or replay_exit:
+                        early_target_pass = latent_index + 1
+                        save_skipped_latent_perturbations(student_run_config, remaining, replay_exit)
+                        break
             repetition_recovery_tokens_remaining = max(
                 0, repetition_recovery_tokens_remaining - 1
             )
@@ -3270,18 +3458,20 @@ def main() -> None:
             teacher_next_logits = teacher_logits[:, -1, :]
             student_next_logits = student_logits[:, -1, :]
 
-        # recirculated_flags also covers prompt positions and one trailing lookahead
-        # call, neither of which produce a comparison entry, so count from
-        # `similarities` instead to match the tokens actually reported.
+        # Count emitted comparisons only: recirculated_flags also includes prompt
+        # positions and trailing lookahead calls, while similarities includes latent passes.
         print()
+        emitted_comparisons = [
+            comparison for comparison in similarities if comparison.get("emitted", True)
+        ]
         report_stats(
-            [comparison["recirculated"] for comparison in similarities],
-            [comparison["rejected"] for comparison in similarities],
-            [comparison["adaptive_recirculated"] for comparison in similarities],
-            [comparison["adaptive_rejected"] for comparison in similarities],
-            [comparison["adaptive_recirculation_count"] for comparison in similarities],
-            [comparison["final_pass_same_top1"] for comparison in similarities],
-            [comparison["rejection_reasons"] for comparison in similarities],
+            [comparison["recirculated"] for comparison in emitted_comparisons],
+            [comparison["rejected"] for comparison in emitted_comparisons],
+            [comparison["adaptive_recirculated"] for comparison in emitted_comparisons],
+            [comparison["adaptive_rejected"] for comparison in emitted_comparisons],
+            [comparison["adaptive_recirculation_count"] for comparison in emitted_comparisons],
+            [comparison["final_pass_same_top1"] for comparison in emitted_comparisons],
+            [comparison["rejection_reasons"] for comparison in emitted_comparisons],
         )
 
         return generated_ids, similarities, generated_stats()
@@ -3295,6 +3485,15 @@ def main() -> None:
         pair = resolve_recirculation_pair(
             run_args, len(blocks), global_attention_layers
         )
+        save_path = run_args.save_perturbation
+        if save_path is not None:
+            if knowedit_example is not None:
+                save_path = indexed_perturbation_file(
+                    save_path, prompt_index, args.knowedit_portability
+                )
+            save_path = save_path.with_name(
+                f"{save_path.stem}-lat{run_args.perturb_latent_tokens}{save_path.suffix}"
+            )
         run_config = RecirculationConfig(
             pair=pair,
             alpha=run_args.alpha,
@@ -3303,13 +3502,7 @@ def main() -> None:
             periodic_perturbation_candidate_count=run_args.periodic_perturbation_candidate_count,
             periodic_perturbation_steps=run_args.periodic_perturbation_steps,
             periodic_perturbation_step_decay=run_args.periodic_perturbation_step_decay,
-            save_perturbation=(
-                indexed_perturbation_file(
-                    run_args.save_perturbation, prompt_index, args.knowedit_portability
-                )
-                if knowedit_example is not None and run_args.save_perturbation is not None
-                else run_args.save_perturbation
-            ),
+            save_perturbation=save_path,
             replay_perturbation=run_args.replay_perturbation,
             perturb_pre_margin_thres=run_args.perturb_pre_margin_thres,
             noise_decay_per_pass=run_args.noise_decay_per_pass,
@@ -3395,7 +3588,7 @@ def main() -> None:
     def timed_generate(
         use_recirculation: bool,
         run_args: argparse.Namespace,
-        target_token_id: int | None = None,
+        target_token_ids: list[int] | None = None,
         on_generated_token: Callable[[Tensor], None] | None = None,
         on_debug_comparison: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Tensor, list[dict[str, Any]], dict[str, Any], float]:
@@ -3406,7 +3599,7 @@ def main() -> None:
             use_recirculation=use_recirculation,
             run_args=run_args,
             run_config=run_config,
-            target_token_id=target_token_id,
+            target_token_ids=target_token_ids,
             on_generated_token=on_generated_token,
             on_debug_comparison=on_debug_comparison,
         )
@@ -3691,20 +3884,18 @@ def main() -> None:
                 emit(f"\n=== {label} ===")
                 if similarities_writer is not None:
                     similarities_writer.start_run(prompt, label, run_args.seed)
-                target_token_id = None
+                target_ids = None
                 if run_args.perturb_mode == "towards-target":
                     target_ids = tokenizer.encode(
-                        (knowedit_example.portability[0][2] if args.knowedit_portability
-                         else knowedit_example.target_new).strip(),
+                        knowedit_example.target_new.strip(),
                         add_special_tokens=False,
                     )
                     if not target_ids:
                         raise ValueError("KnowEdit target has no tokens after encoding.")
-                    target_token_id = target_ids[0]
                 run_ids, similarities, stats, run_seconds = timed_generate(
                     use_recirculation=use_recirculation,
                     run_args=run_args,
-                    target_token_id=target_token_id,
+                    target_token_ids=target_ids,
                     on_generated_token=lambda token: print(
                         tokenizer.decode(token[0], skip_special_tokens=True),
                         end="",

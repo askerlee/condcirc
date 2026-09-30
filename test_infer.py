@@ -314,6 +314,11 @@ class RecirculationStatsTest(unittest.TestCase):
                                 ["3.00e-01", "7.00e-01", "4.00e-01", "8.00e-01"],
                                 ["2.00e-01", "6.00e-01", "5.00e-01", "9.00e-01"],
                             ])
+                            for record in comparisons:
+                                self.assertEqual(
+                                    record["candidate_target_token_probabilities"],
+                                    emitted["candidate_target_token_probabilities"],
+                                )
                             self.assertEqual(emitted["aggregate_target_token_probabilities"], ["4.50e-01", "7.50e-01"])
                             self.assertNotIn("pass_target_token_probabilities", emitted)
                             self.assertEqual(emitted["final_pass_target_token_probability"], "9.00e-01")

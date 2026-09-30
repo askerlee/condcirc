@@ -3075,6 +3075,12 @@ def main() -> None:
                 latent_record["pre_recirculation_target_token_probability"] = (
                     f"{torch.softmax(teacher_next[0].float(), dim=-1)[target_token_id].item():.2e}"
                 )
+                candidates_per_step = run_config.periodic_perturbation_candidate_count
+                probabilities = candidate_target_token_probabilities[-1]
+                latent_record["candidate_target_token_probabilities"] = [
+                    [f"{probability:.2e}" for probability in probabilities[start:start + candidates_per_step]]
+                    for start in range(0, len(probabilities), candidates_per_step)
+                ]
                 latent_record["aggregate_target_token_probabilities"] = [
                     f"{probability:.2e}"
                     for probability in aggregate_target_token_probabilities[-1]

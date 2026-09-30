@@ -37,6 +37,46 @@ class RecirculationCacheTest(unittest.TestCase):
         finally:
             hooks.close()
 
+    def test_saved_normalized_source_seeds_candidate_search(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        hooks = _Hooks(blocks, RecirculationConfig(
+            pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+            periodic_perturbation_candidate_count=1,
+            periodic_perturbation_steps=1,
+        ))
+        saved_source = torch.tensor([[[0.0, -3.0]]])
+        candidate_probabilities: list[float] = []
+        aggregate_probabilities: list[float] = []
+        probed_sources: list[torch.Tensor] = []
+
+        def probe(_source, _destination, _target, candidate):
+            probed_sources.append(candidate.detach().clone())
+            return torch.stack((torch.zeros_like(candidate[:, -1, 1]), candidate[:, -1, 1]), dim=-1)
+
+        try:
+            hooks.injection_source = torch.tensor([[[1.0, 0.0]]])
+            hooks.residuals[0] = torch.tensor([[[0.0, 2.0]]])
+            hooks.noise_level = 0.2
+            with patch("recirculation.torch.randn_like", return_value=torch.tensor([[[0.0, 2**0.5]]])):
+                debug_latents = hooks.prepare_injections(
+                    probe,
+                    candidate_target_token_probabilities=candidate_probabilities,
+                    aggregate_target_token_probabilities=aggregate_probabilities,
+                    normalized_source_override=saved_source,
+                )
+            expected = saved_source + torch.tensor([[[0.0, 0.4]]])
+            torch.testing.assert_close(probed_sources[0], expected)
+            torch.testing.assert_close(probed_sources[1], saved_source - torch.tensor([[[0.0, 0.4]]]))
+            torch.testing.assert_close(hooks.prepared_source, expected)
+            torch.testing.assert_close(saved_source, torch.tensor([[[0.0, -3.0]]]))
+            self.assertEqual(len(candidate_probabilities), 1)
+            self.assertEqual(len(aggregate_probabilities), 1)
+            self.assertAlmostEqual(candidate_probabilities[0], torch.sigmoid(expected[0, 0, 1]).item())
+            self.assertAlmostEqual(aggregate_probabilities[0], candidate_probabilities[0])
+            torch.testing.assert_close(debug_latents[0][1], expected)
+        finally:
+            hooks.close()
+
     def test_records_cosine_for_each_forced_noise_attempt(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         pass_logits = (

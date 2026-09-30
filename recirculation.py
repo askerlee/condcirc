@@ -536,10 +536,9 @@ class _Hooks:
         if normalized_source_override is not None:
             if normalized_source_override.shape != normalized_source.shape:
                 raise ValueError("The saved normalized source has an incompatible shape.")
-            self.prepared_source = normalized_source_override.to(
+            normalized_source = normalized_source_override.to(
                 device=destination.device, dtype=normalized_source.dtype
             )
-            return debug_latents
         select_perturbation_candidate = (
             (perturbation_probe is not None or self.cfg.replay_perturbation is not None)
             and (

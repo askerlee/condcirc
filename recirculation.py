@@ -55,6 +55,7 @@ class PerturbationSequence:
     replay_index: int = 0
     replay_application_count: int = 0
     source_shape: tuple[int, ...] | None = None
+    replay_early_exit: bool = False
 
 
 @dataclass(frozen=True)
@@ -212,10 +213,12 @@ def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) 
     if sequence.replayed is None:
         sequence.replayed = torch.load(config.replay_perturbation, map_location="cpu", weights_only=True)
     replayed = sequence.replayed
-    if not isinstance(replayed, Tensor) or sequence.replay_index >= len(replayed):
+    if not isinstance(replayed, Tensor):
         return False
+    if sequence.replay_index >= len(replayed):
+        return sequence.replay_early_exit
     if not bool(torch.all(replayed[sequence.replay_index] == 0).item()):
-        return False
+        return sequence.replay_early_exit
     marker_limit = min(sequence.replay_index + remaining, len(replayed))
     while sequence.replay_index < marker_limit and bool(
         torch.all(replayed[sequence.replay_index] == 0).item()
@@ -1030,6 +1033,11 @@ def recirculate(
                 or first_margin <= pre_margin_threshold
             )
             probability_gate = margin_gate
+            target_already_top_one = (
+                config.perturbation_target_token_id is not None
+                and int(first_logits[0, -1, :].argmax().item())
+                == config.perturbation_target_token_id
+            )
             should_recirculate = recirculation_allowed and (
                 force_recirculation
                 or (
@@ -1039,11 +1047,23 @@ def recirculate(
                         or similarity >= condition_threshold
                     )
                 )
-            ) and not (
-                config.perturbation_target_token_id is not None
-                and int(first_logits[0, -1, :].argmax().item())
-                == config.perturbation_target_token_id
-            )
+            ) and not target_already_top_one
+            if force_recirculation and config.perturbation_target_token_id is not None:
+                sequence = config.perturbation_sequence
+                sequence.replay_early_exit = False
+                if config.replay_perturbation is not None:
+                    sequence.replay_early_exit = replay_skips_remaining_latents(config, 1)
+                    if sequence.replay_early_exit:
+                        should_recirculate = False
+                    elif target_already_top_one:
+                        perturbation_replay(
+                            first_pass_residuals[hooks.source_index],
+                            config.replay_perturbation,
+                            sequence,
+                        )
+                elif target_already_top_one:
+                    sequence.source_shape = tuple(first_pass_residuals[hooks.source_index].shape)
+                    save_skipped_latent_perturbations(config, 1)
             if passes == 1 and adaptive_recirculation and not force_recirculation:
                 assert first_margin is not None
                 should_recirculate = (

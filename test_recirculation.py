@@ -480,6 +480,84 @@ class RecirculationCacheTest(unittest.TestCase):
         self.assertEqual(recirculated_flags, [False])
         self.assertEqual(candidate_probabilities, [[]])
 
+    def test_saves_and_replays_pre_recirculation_target_skip(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        step_calls: list[int] = []
+
+        def step(_token, cache):
+            hidden = torch.tensor([[[2.0, 1.0]]])
+            for block in blocks:
+                hidden = block(hidden)
+            step_calls.append(1)
+            return torch.tensor([[[0.0, 2.0]]]), cache
+
+        def run(config):
+            return recirculate(
+                torch.tensor([[1]]), blocks=blocks, cache=[], step=step,
+                rewind_one=lambda cache: cache, config=config,
+                passes=1, force_recirculation=True,
+                perturbation_probe=lambda *_args: self.fail("unexpected target probe"),
+                capture_cached_token=lambda _cache: None,
+                restore_cached_token=lambda _cache, _token: None,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "perturbations.pt"
+            config = RecirculationConfig(
+                pair=(2, 0), alpha=0.5, perturbation_target_token_id=1,
+                save_perturbation=path,
+            )
+            run(config)
+            self.assertEqual(len(step_calls), 1)
+            saved = torch.load(path, weights_only=True)
+            self.assertEqual(tuple(saved.shape), (1, 1, 1, 2))
+            self.assertFalse(torch.count_nonzero(saved))
+            save_skipped_latent_perturbations(config, 2)
+            self.assertEqual(len(torch.load(path, weights_only=True)), 3)
+            next_perturbation = torch.tensor([[[0.2, 0.0]]])
+            config.perturbation_sequence.saved.append(next_perturbation)
+            torch.save(torch.stack(config.perturbation_sequence.saved), path)
+
+            for target_id in (0, 1):
+                with self.subTest(target_id=target_id):
+                    step_calls.clear()
+                    replay_config = replace(
+                        config, save_perturbation=None, replay_perturbation=path,
+                        perturbation_target_token_id=target_id,
+                        perturbation_sequence=PerturbationSequence(),
+                    )
+                    logits, _ = run(replay_config)
+                    self.assertEqual(len(step_calls), 1)
+                    torch.testing.assert_close(logits, torch.tensor([[[0.0, 2.0]]]))
+                    self.assertEqual(replay_config.perturbation_sequence.replay_index, 1)
+                    self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
+                    self.assertEqual(replay_config.perturbation_sequence.replay_index, 3)
+                    torch.testing.assert_close(
+                        perturbation_replay(torch.ones_like(next_perturbation), path,
+                                            replay_config.perturbation_sequence),
+                        torch.ones_like(next_perturbation) + next_perturbation,
+                    )
+
+            step_calls.clear()
+            replay_config = replace(
+                config, save_perturbation=None, replay_perturbation=path,
+                perturbation_sequence=PerturbationSequence(
+                    replayed=torch.load(path, weights_only=True), replay_index=3,
+                ),
+            )
+            run(replay_config)
+            self.assertEqual(len(step_calls), 1)
+            self.assertEqual(replay_config.perturbation_sequence.replay_index, 4)
+            self.assertFalse(replay_skips_remaining_latents(replay_config, 2))
+
+            replay_config = replace(
+                replay_config, perturbation_target_token_id=0,
+                perturbation_sequence=PerturbationSequence(replayed=saved),
+            )
+            run(replay_config)
+            self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
+            self.assertEqual(replay_config.perturbation_sequence.replay_index, 1)
+
     def test_saves_and_replays_accumulated_perturbation(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         with tempfile.TemporaryDirectory() as directory:

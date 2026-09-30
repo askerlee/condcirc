@@ -534,6 +534,36 @@ class RecirculationCacheTest(unittest.TestCase):
             finally:
                 replay_hooks.close()
 
+    def test_partial_zero_replay_markers_force_early_exit(self) -> None:
+        source = torch.ones((1, 1, 2))
+        perturbation = torch.tensor([[[0.2, 0.0]]])
+        for entries, remaining, consumed in (
+            ([torch.zeros_like(source), perturbation], 2, 1),
+            ([torch.zeros_like(source)], 2, 1),
+            ([torch.zeros_like(source), torch.zeros_like(source), perturbation], 3, 2),
+        ):
+            with self.subTest(entry_count=len(entries)):
+                sequence = PerturbationSequence(replayed=torch.stack(entries))
+                config = RecirculationConfig(
+                    pair=(2, 0), alpha=0.5, replay_perturbation=Path("unused.pt"),
+                    perturbation_sequence=sequence,
+                )
+                self.assertTrue(replay_skips_remaining_latents(config, remaining))
+                self.assertEqual(sequence.replay_index, consumed)
+                if len(entries) > consumed:
+                    self.assertFalse(replay_skips_remaining_latents(config, remaining))
+                    self.assertEqual(sequence.replay_index, consumed)
+                    torch.testing.assert_close(
+                        perturbation_replay(source, config.replay_perturbation, sequence),
+                        source + perturbation,
+                    )
+                    self.assertEqual(sequence.replay_index, consumed + 1)
+                else:
+                    self.assertFalse(replay_skips_remaining_latents(config, remaining))
+                    self.assertIsNone(
+                        perturbation_replay(source, config.replay_perturbation, sequence)
+                    )
+
     def test_saves_and_replays_early_exit_placeholders(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         with tempfile.TemporaryDirectory() as directory:

@@ -216,11 +216,11 @@ def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) 
         return False
     if not bool(torch.all(replayed[sequence.replay_index] == 0).item()):
         return False
-    if sequence.replay_index + remaining > len(replayed) or not bool(
-        torch.all(replayed[sequence.replay_index:sequence.replay_index + remaining] == 0).item()
+    marker_limit = min(sequence.replay_index + remaining, len(replayed))
+    while sequence.replay_index < marker_limit and bool(
+        torch.all(replayed[sequence.replay_index] == 0).item()
     ):
-        raise ValueError("Replay early-exit marker must cover all remaining latent passes.")
-    sequence.replay_index += remaining
+        sequence.replay_index += 1
     return True
 
 

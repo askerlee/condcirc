@@ -571,6 +571,14 @@ class SinglePairAction(argparse.Action):
         setattr(namespace, self.dest, tuple(values))
 
 
+class KnowEditVariantAction(argparse.Action):
+    def __call__(
+        self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+        values: str, option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, None if values == "default" else values)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
     normalized_argv: list[str] = []
@@ -711,9 +719,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--knowedit-variant",
-        choices=("portability", "rephrased_prompt", "locality"),
+        action=KnowEditVariantAction,
+        choices=("default", "portability", "rephrased_prompt", "locality"),
         default=None,
-        help="Generate from a KnowEdit variant instead of the main prompt.",
+        help="Generate from a KnowEdit variant; default uses the main prompt, as when omitted.",
     )
     parser.add_argument(
         "--knowedit-variant-index",

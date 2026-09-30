@@ -843,6 +843,25 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port-lat3.pt")), "2-port-lat3")
         self.assertEqual(infer.replay_file_signature(Path("custom.pt")), "custom")
 
+    def test_knowedit_default_variant_matches_omission(self) -> None:
+        for options in ([], ["--knowedit-file", "example.json"], ["--ablation"]):
+            for variant_options in (
+                ["--knowedit-variant", "default"],
+                ["--knowedit-variant=default"],
+            ):
+                with self.subTest(options=options, variant_options=variant_options):
+                    self.assertEqual(
+                        vars(parse_args([*variant_options, *options])),
+                        vars(parse_args(options)),
+                    )
+        args = parse_args([
+            "--knowedit-file", "example.json",
+            "--knowedit-variant", "locality",
+            "--ablation", "--knowedit-variant", "default",
+        ])
+        self.assertEqual(args.knowedit_variant, "locality")
+        self.assertEqual(dict(args.ablations[0])["knowedit_variant"], None)
+
     def test_knowedit_variant_requires_valid_index_and_file(self) -> None:
         self.assertEqual(
             parse_args(["--knowedit-file", "example.json", "--knowedit-variant", "locality", "--knowedit-variant-index", "2"]).knowedit_variant_index,

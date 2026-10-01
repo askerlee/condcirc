@@ -584,7 +584,7 @@ class RecirculationCacheTest(unittest.TestCase):
             config.perturbation_sequence.saved.append(next_perturbation)
             torch.save(torch.stack(config.perturbation_sequence.saved), path)
 
-            for target_id in (0, 1):
+            for target_id in (None, 0, 1):
                 with self.subTest(target_id=target_id):
                     step_calls.clear()
                     replay_config = replace(
@@ -612,7 +612,7 @@ class RecirculationCacheTest(unittest.TestCase):
                 ),
             )
             run(replay_config)
-            self.assertEqual(len(step_calls), 1)
+            self.assertEqual(len(step_calls), 2)
             self.assertEqual(replay_config.perturbation_sequence.replay_index, 4)
             self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
 
@@ -811,7 +811,8 @@ class RecirculationCacheTest(unittest.TestCase):
             try:
                 skipped.prepare_injections(pre_recirculation_top_token_id=1)
                 self.assertEqual(skipped_config.perturbation_sequence.replay_index, 4)
-                self.assertEqual(skipped_config.perturbation_sequence.replay_application_count, 0)
+                self.assertEqual(skipped_config.perturbation_sequence.replay_application_count, 1)
+                torch.testing.assert_close(skipped.prepared_source, source + torch.tensor([[[0.2, 0.0]]]))
             finally:
                 skipped.close()
 

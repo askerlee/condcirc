@@ -359,7 +359,7 @@ class RecirculationStatsTest(unittest.TestCase):
             apply_chat_template=lambda *_args, **_kwargs: SimpleNamespace(
                 input_ids=torch.tensor([[3, 4, 5]])
             ),
-            encode=lambda *_args, **kwargs: torch.tensor([[1, 0]]) if kwargs.get("return_tensors") else [1, 0],
+            encode=lambda *_args, **kwargs: torch.tensor([[1, 0]]) if kwargs.get("return_tensors") else [1] if replay_exit and no_attempt else [1, 0],
             decode=lambda token, **_kwargs: "".join(
                 str(int(token_id)) for token_id in torch.as_tensor(token).flatten()
             ),
@@ -367,16 +367,18 @@ class RecirculationStatsTest(unittest.TestCase):
         calls = []
 
         def fake_recirculate(tokens, **kwargs):
+            if replay_exit and not kwargs.get("force_recirculation"):
+                self.assertIsNone(kwargs["config"].replay_perturbation)
             target_id = kwargs["config"].perturbation_target_token_id
             calls.append((tokens.tolist(), kwargs.get("cosine_reject"), target_id))
             target_attempt = sum(call_target == target_id for _, _, call_target in calls) if target_id is not None else 0
-            if replay_exit and target_id is not None:
+            if replay_exit and kwargs.get("force_recirculation"):
                 self.assertIsNotNone(kwargs["config"].replay_perturbation)
                 sequence = kwargs["config"].perturbation_sequence
                 if sequence.replayed is None:
                     sequence.replayed = torch.tensor(
                         [0.2] * hit_pass + [0.0] * (latent_tokens - hit_pass)
-                    ).repeat(2).reshape(-1, 1, 1, 1)
+                    ).repeat(3 if no_attempt else 2).reshape(-1, 1, 1, 1)
                 if bool(torch.count_nonzero(sequence.replayed[sequence.replay_index]).item()):
                     sequence.replay_application_count += 1
                 sequence.replay_index += 1
@@ -418,8 +420,16 @@ class RecirculationStatsTest(unittest.TestCase):
                 (False, 3, 1, True, False), (True, 3, 1, True, False),
                 (False, 3, 2, True, False), (True, 3, 2, True, False),
                 (False, 3, 1, False, True), (True, 3, 1, False, True),
+                (False, 3, 1, True, True), (True, 3, 1, True, True),
             ):
                 stream = io.StringIO()
+                short_target = replay_exit and no_attempt
+                if replay_exit:
+                    torch.save(
+                        torch.tensor([0.2] * hit_pass + [0.0] * (latent_tokens - hit_pass))
+                        .repeat(3 if short_target else 2).reshape(-1, 1, 1, 1),
+                        Path(directory) / "replay.pt",
+                    )
                 with (
                     self.subTest(debug=debug, latent_tokens=latent_tokens, hit_pass=hit_pass, replay_exit=replay_exit),
                     patch.object(sys, "argv", [
@@ -447,17 +457,18 @@ class RecirculationStatsTest(unittest.TestCase):
                 ):
                     calls.clear()
                     infer.main()
-                    self.assertIn("(perturb at 0)\n0(perturb at 1)\n0", stream.getvalue())
+                    self.assertIn("(perturb at 0)0(perturb at 1)0", stream.getvalue())
                     result = json.loads(Path("output.json").read_text())
                     self.assertEqual(result[0]["runs"][0]["output"], "00")
                     self.assertEqual(result[0]["runs"][0]["stats"]["recirculated_tokens"]["total"], 2)
                     self.assertEqual([tokens for tokens, _, _ in calls],
                                      [[[3, 4]], *[[[5]]] * hit_pass, *[[[0]]] * hit_pass, [[0]]])
                     self.assertEqual([target for _, _, target in calls],
-                                     [None, *[1] * hit_pass, *[0] * hit_pass, None])
+                                     [None, *[1] * hit_pass, *[None if short_target else 0] * hit_pass, None])
                     self.assertEqual([threshold for _, threshold, _ in calls],
                                  [0.8, *([None] * (hit_pass - 1) +
-                                     [0.8 if hit_pass == latent_tokens else None]) * 2, 0.8])
+                                     [0.8 if hit_pass == latent_tokens else None]) * 2,
+                                     None if short_target else 0.8])
                     if debug:
                         debug_file = Path("output-rep-replay-debug.json" if replay_exit else "output-debug.json")
                         comparisons = json.loads(debug_file.read_text())[0]["similarities"]

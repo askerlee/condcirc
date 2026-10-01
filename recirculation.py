@@ -215,7 +215,6 @@ def _load_replay_perturbations(
                 count, *([1] * (total.ndim - 1))
             )
             sequence.replayed = total / divisor
-            breakpoint()
     return sequence.replayed
 
 
@@ -582,14 +581,15 @@ class _Hooks:
                 device=destination.device, dtype=normalized_source.dtype
             )
         select_perturbation_candidate = (
-            (perturbation_probe is not None or self.cfg.replay_perturbation is not None)
-            and (
+            self.cfg.replay_perturbation is not None
+            or perturbation_probe is not None and (
                 self.cfg.perturbation_direction is not None
                 or self.cfg.perturbation_target_token_id is not None
             )
         )
         if (
             select_perturbation_candidate
+            and self.cfg.replay_perturbation is None
             and self.cfg.perturbation_target_token_id is not None
             and self.cfg.perturbation_target_token_id == pre_recirculation_top_token_id
         ):
@@ -1076,7 +1076,8 @@ def recirculate(
             )
             probability_gate = margin_gate
             target_already_top_one = (
-                config.perturbation_target_token_id is not None
+                config.replay_perturbation is None
+                and config.perturbation_target_token_id is not None
                 and int(first_logits[0, -1, :].argmax().item())
                 == config.perturbation_target_token_id
             )
@@ -1092,7 +1093,10 @@ def recirculate(
             ) and not target_already_top_one
             if perturbation_replay_exhausted(config):
                 should_recirculate = False
-            if force_recirculation and config.perturbation_target_token_id is not None:
+            if force_recirculation and (
+                config.replay_perturbation is not None
+                or config.perturbation_target_token_id is not None
+            ):
                 sequence = config.perturbation_sequence
                 sequence.replay_early_exit = False
                 if config.replay_perturbation is not None:

@@ -2504,7 +2504,8 @@ def main() -> None:
                 torch.softmax(logits[0, -1].float(), dim=-1)[target_id].item()
             )
             if (
-                0 < latent_index < run_args.perturb_latent_tokens - 1
+                run_config.replay_perturbation is None
+                and 0 < latent_index < run_args.perturb_latent_tokens - 1
                 and previous_post_probability is not None
                 and pass_probabilities[-1]
                 and len(sources) >= 2
@@ -2515,15 +2516,20 @@ def main() -> None:
 
         def recirculate_prompt(**kwargs: Any) -> tuple[Tensor, DynamicCache]:
             nonlocal early_target_pass, last_pass_replayed
+            prompt_config = dataclasses.replace(
+                kwargs["config"], replay_perturbation=None
+            )
             if (
                 not use_recirculation
                 or run_args.perturb_every_n_tokens != 1
                 or run_args.max_new_tokens == 0
                 or perturbation_replay_exhausted(run_config)
             ):
+                kwargs["config"] = prompt_config
                 return recirculate(input_ids, **kwargs)
             if input_ids.shape[1] > 1:
-                _, kwargs["cache"] = recirculate(input_ids[:, :-1], **kwargs)
+                prefix_kwargs = {**kwargs, "config": prompt_config}
+                _, kwargs["cache"] = recirculate(input_ids[:, :-1], **prefix_kwargs)
             centroid = (
                 recent_token_centroid(
                     model.get_input_embeddings(), input_ids, run_args.perturb_recent_m_tokens
@@ -2593,7 +2599,8 @@ def main() -> None:
                     run_config.perturbation_sequence.replay_application_count > replay_count
                 )
                 target_found = bool(
-                    target_token_id is not None
+                    run_config.replay_perturbation is None
+                    and target_token_id is not None
                     and (
                         top_k_token_ids and top_k_token_ids[-1]
                         and top_k_token_ids[-1][-1][0] == target_token_id
@@ -2858,7 +2865,7 @@ def main() -> None:
                         run_args.perturb_every_n_tokens,
                         run_args.perturb_for_k_tokens,
                         generated_token_count,
-                    ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
+                    ) and (run_config.replay_perturbation is not None or run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
                     periodic_perturbation_direction = None
                     repetition_recovery_direction = None
                     if (
@@ -2905,6 +2912,9 @@ def main() -> None:
                     )
                     token_run_config = dataclasses.replace(
                         run_config,
+                        replay_perturbation=(
+                            run_config.replay_perturbation if periodic_perturbation else None
+                        ),
                         noise_level_range=(
                             periodic_perturbation_noise_level_range(
                                 recovery_settings.noise_level_range,
@@ -3029,6 +3039,7 @@ def main() -> None:
                         )
                         if (
                             periodic_perturbation
+                            and run_config.replay_perturbation is None
                             and target_token_id is not None
                             and (
                                 token_pass_top_k_token_ids[-1]
@@ -3402,7 +3413,7 @@ def main() -> None:
                 run_args.perturb_every_n_tokens,
                 run_args.perturb_for_k_tokens,
                 token_index + 1,
-            ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
+            ) and (run_config.replay_perturbation is not None or run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
             periodic_perturbation_direction = None
             repetition_recovery_direction = None
             if (
@@ -3480,6 +3491,9 @@ def main() -> None:
                 on_debug_comparison(comparison)
             student_run_config = dataclasses.replace(
                 run_config,
+                replay_perturbation=(
+                    run_config.replay_perturbation if periodic_perturbation else None
+                ),
                 noise_level_range=(
                     periodic_perturbation_noise_level_range(
                         recovery_settings.noise_level_range,
@@ -3609,7 +3623,8 @@ def main() -> None:
                 )
                 if periodic_perturbation:
                     target_found = bool(
-                        target_token_id is not None
+                        run_config.replay_perturbation is None
+                        and target_token_id is not None
                         and (
                             pass_top_k_token_ids[-1]
                             and pass_top_k_token_ids[-1][-1][0] == target_token_id

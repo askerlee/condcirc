@@ -504,7 +504,9 @@ def indexed_perturbation_file(
     return path.with_name(f"{path.stem}-knowedit-{index}{suffix}{path.suffix}")
 
 
-def replay_file_signature(path: Path) -> str:
+def replay_file_signature(path: Path | Sequence[Path]) -> str:
+    if not isinstance(path, Path):
+        return "+".join(replay_file_signature(item) for item in path)
     match = re.search(r"(?:^|-)knowedit-(\d+(?:-[a-z_]+-\d+|-port)?(?:-lat\d+)?)$", path.stem)
     return match.group(1) if match is not None else path.stem
 
@@ -570,6 +572,14 @@ class SinglePairAction(argparse.Action):
         if getattr(namespace, self.dest) is not None:
             raise argparse.ArgumentError(self, "--pair may be specified only once per run")
         setattr(namespace, self.dest, tuple(values))
+
+
+class PerturbationReplayAction(argparse.Action):
+    def __call__(
+        self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+        values: Sequence[Path], option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values[0] if len(values) == 1 else tuple(values))
 
 
 class KnowEditVariantAction(argparse.Action):
@@ -724,6 +734,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("default", "portability", "rephrase", "locality"),
         default=None,
         help="Generate from a KnowEdit variant; default uses the main prompt, as when omitted.",
+    )
+    parser.add_argument(
+        "--knowedit-prompt",
+        default=None,
+        metavar="TEXT",
+        help="Override the KnowEdit question, retaining its template and selected target.",
+    )
+    parser.add_argument(
+        "--knowedit-target",
+        default=None,
+        metavar="TEXT",
+        help="Override the KnowEdit target used for towards-target perturbation, without changing evaluation targets.",
     )
     parser.add_argument(
         "--knowedit-variant-index",
@@ -1017,14 +1039,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=parse_perturbation_file,
         default="perturb.pt",
         metavar="FILE.pt",
-        help="Save selected token perturbations as a stacked .pt tensor; KnowEdit adds -knowedit-INDEX[-port], then -latL is appended.",
+        help="Save selected token perturbations as a stacked .pt tensor; KnowEdit adds -knowedit-INDEX[-port], then -latL is appended. Disabled whenever --replay-perturbation is set.",
     )
     parser.add_argument(
         "--replay-perturbation",
         type=parse_perturbation_file,
+        nargs="+",
+        action=PerturbationReplayAction,
         default=None,
         metavar="FILE.pt",
-        help="Replay saved token perturbations in order, then stop perturbing when exhausted.",
+        help=(
+            "Replay one or more saved perturbation files. Multiple files are averaged "
+            "up to the longest length, excluding exhausted files and all-zero vectors "
+            "at each position."
+        ),
     )
     parser.add_argument(
         "--cosine-top-k",
@@ -1206,6 +1234,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "bbeh_index",
         "knowedit_file",
         "knowedit_index",
+        "knowedit_prompt",
+        "knowedit_target",
         "list_queries",
         "max_new_tokens",
         "model",
@@ -1983,6 +2013,16 @@ def main() -> None:
         raise ValueError("--bbeh-index requires --bbeh-file.")
     if args.knowedit_index and args.knowedit_file is None:
         raise ValueError("--knowedit-index requires --knowedit-file.")
+    if args.knowedit_prompt is not None:
+        if args.knowedit_file is None:
+            raise ValueError("--knowedit-prompt requires --knowedit-file.")
+        if not args.knowedit_prompt.strip():
+            raise ValueError("--knowedit-prompt must not be empty.")
+    if args.knowedit_target is not None:
+        if args.knowedit_file is None:
+            raise ValueError("--knowedit-target requires --knowedit-file.")
+        if not args.knowedit_target.strip():
+            raise ValueError("--knowedit-target must not be empty.")
     if args.knowedit_variant is not None and args.knowedit_file is None:
         raise ValueError("--knowedit-variant requires --knowedit-file.")
     if args.knowedit_variant_index < 1:
@@ -3942,8 +3982,12 @@ def main() -> None:
                 index,
                 format_knowedit_prompt(
                     knowedit_examples[index - 1],
-                    selected_knowedit_variants[index][0],
-                ) if args.knowedit_variant is not None else format_knowedit_prompt(knowedit_examples[index - 1]),
+                    args.knowedit_prompt
+                    if args.knowedit_prompt is not None
+                    else selected_knowedit_variants[index][0]
+                    if args.knowedit_variant is not None
+                    else None,
+                ),
                 None,
                 None,
                 None,
@@ -4031,7 +4075,9 @@ def main() -> None:
                 target_ids = None
                 if run_args.perturb_mode == "towards-target":
                     target = (
-                        selected_knowedit_variants[prompt_index][1]
+                        args.knowedit_target
+                        if args.knowedit_target is not None
+                        else selected_knowedit_variants[prompt_index][1]
                         if args.knowedit_variant is not None
                         else knowedit_example.target_new
                     )

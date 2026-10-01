@@ -235,8 +235,10 @@ class RecirculationStatsTest(unittest.TestCase):
                     )
                     self.assertEqual(
                         calls[1][2].save_perturbation,
-                        Path(f"perturb-knowedit-1{'-portability-1' if portability_query is True else '-locality-2' if portability_query == 'locality' else '-rephrased_prompt-1' if portability_query == 'rephrased_prompt' else ''}-lat{latent_tokens}.pt")
-                        if knowedit else Path(f"perturb-lat{latent_tokens}.pt"),
+                        None if replay_file else (
+                            Path(f"perturb-knowedit-1{'-portability-1' if portability_query is True else '-locality-2' if portability_query == 'locality' else '-rephrased_prompt-1' if portability_query == 'rephrased_prompt' else ''}-lat{latent_tokens}.pt")
+                            if knowedit else Path(f"perturb-lat{latent_tokens}.pt")
+                        ),
                     )
                     if knowedit:
                         self.assertEqual(
@@ -842,6 +844,20 @@ class RecirculationStatsTest(unittest.TestCase):
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-lat3.pt")), "2-lat3")
         self.assertEqual(infer.replay_file_signature(Path("perturb-knowedit-2-port-lat3.pt")), "2-port-lat3")
         self.assertEqual(infer.replay_file_signature(Path("custom.pt")), "custom")
+
+    def test_parses_multiple_replay_perturbation_files(self) -> None:
+        args = parse_args([
+            "prompt", "--replay-perturbation", "first", "second.pt", "third",
+            "--max-new-tokens", "10",
+        ])
+        paths = (Path("first.pt"), Path("second.pt"), Path("third.pt"))
+        self.assertEqual(args.replay_perturbation, paths)
+        self.assertEqual(args.max_new_tokens, 10)
+        self.assertEqual(infer.replay_file_signature(paths), "first+second+third")
+        ablation_args = parse_args([
+            "--ablation", "--replay-perturbation", "first", "second.pt",
+        ])
+        self.assertEqual(dict(ablation_args.ablations[0])["replay_perturbation"], paths[:2])
 
     def test_knowedit_default_variant_matches_omission(self) -> None:
         for options in ([], ["--knowedit-file", "example.json"], ["--ablation"]):

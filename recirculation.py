@@ -71,7 +71,7 @@ class RecirculationConfig:
     periodic_perturbation_steps: int = 1
     periodic_perturbation_step_decay: float = 1.0
     save_perturbation: Path | None = None
-    replay_perturbation: Path | None = None
+    replay_perturbation: Path | Sequence[Path] | None = None
     perturbation_sequence: PerturbationSequence = field(
         default_factory=PerturbationSequence, repr=False, compare=False
     )
@@ -79,6 +79,10 @@ class RecirculationConfig:
     noise_decay_per_pass: float = 0.5
     eps: float = 1e-8
     mode: Literal["source", "layerwise"] = "source"
+
+    def __post_init__(self) -> None:
+        if self.replay_perturbation is not None:
+            object.__setattr__(self, "save_perturbation", None)
 
 
 @dataclass
@@ -182,12 +186,43 @@ def _distribution_cosine_similarity(
     return float(similarity.mean().item())
 
 
-def perturbation_replay(
-    normalized_source: Tensor, path: Path, sequence: PerturbationSequence
-) -> Tensor | None:
+def _load_replay_perturbations(
+    path: Path | Sequence[Path], sequence: PerturbationSequence
+) -> Tensor:
     if sequence.replayed is None:
-        sequence.replayed = torch.load(path, map_location="cpu", weights_only=True)
-    perturbations = sequence.replayed
+        paths = (path,) if isinstance(path, Path) else tuple(path)
+        if not paths:
+            raise ValueError("At least one replay perturbation file is required.")
+        tensors = []
+        for replay_path in paths:
+            tensor = torch.load(replay_path, map_location="cpu", weights_only=True)
+            if not isinstance(tensor, Tensor) or tensor.ndim < 1:
+                raise ValueError(f"Replay perturbations in {replay_path} must be a stacked tensor.")
+            if tensors and tensor.shape[1:] != tensors[0].shape[1:]:
+                raise ValueError("Replay perturbation files must have matching vector shapes.")
+            tensors.append(tensor)
+        if len(tensors) == 1:
+            sequence.replayed = tensors[0]
+        else:
+            count = max(len(tensor) for tensor in tensors)
+            total = torch.zeros((count, *tensors[0].shape[1:]), dtype=torch.float32)
+            contributors = torch.zeros(count, dtype=torch.long)
+            for tensor in tensors:
+                total[:len(tensor)] += tensor.float()
+                nonzero = (tensor != 0).reshape(len(tensor), tensor[0:1].numel()).any(dim=1)
+                contributors[:len(tensor)] += nonzero
+            divisor = contributors.clamp_min(1).reshape(
+                count, *([1] * (total.ndim - 1))
+            )
+            sequence.replayed = total / divisor
+            breakpoint()
+    return sequence.replayed
+
+
+def perturbation_replay(
+    normalized_source: Tensor, path: Path | Sequence[Path], sequence: PerturbationSequence
+) -> Tensor | None:
+    perturbations = _load_replay_perturbations(path, sequence)
     if (
         not isinstance(perturbations, Tensor)
         or perturbations.ndim != normalized_source.ndim + 1
@@ -210,20 +245,15 @@ def perturbation_replay_exhausted(config: RecirculationConfig) -> bool:
     if config.replay_perturbation is None:
         return False
     sequence = config.perturbation_sequence
-    if sequence.replayed is None:
-        sequence.replayed = torch.load(config.replay_perturbation, map_location="cpu", weights_only=True)
-    return isinstance(sequence.replayed, Tensor) and sequence.replay_index >= len(sequence.replayed)
+    replayed = _load_replay_perturbations(config.replay_perturbation, sequence)
+    return sequence.replay_index >= len(replayed)
 
 
 def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) -> bool:
     if config.replay_perturbation is None or remaining == 0:
         return False
     sequence = config.perturbation_sequence
-    if sequence.replayed is None:
-        sequence.replayed = torch.load(config.replay_perturbation, map_location="cpu", weights_only=True)
-    replayed = sequence.replayed
-    if not isinstance(replayed, Tensor):
-        return False
+    replayed = _load_replay_perturbations(config.replay_perturbation, sequence)
     if sequence.replay_index >= len(replayed):
         return True
     if not bool(torch.all(replayed[sequence.replay_index] == 0).item()):

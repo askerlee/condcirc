@@ -13,6 +13,7 @@ from recirculation import (
     _Hooks,
     _adaptive_noise_level,
     perturbation_replay,
+    perturbation_replay_exhausted,
     recirculate,
     replay_skips_remaining_latents,
     save_skipped_latent_perturbations,
@@ -20,6 +21,71 @@ from recirculation import (
 
 
 class RecirculationCacheTest(unittest.TestCase):
+    def test_replay_disables_checkpoint_saving(self) -> None:
+        save_path = Path("saved.pt")
+        replay_path = Path("replay.pt")
+        config = RecirculationConfig(pair=(2, 0), alpha=0.5, save_perturbation=save_path)
+        self.assertEqual(config.save_perturbation, save_path)
+        for replay in (replay_path, (replay_path,), (replay_path, Path("second.pt"))):
+            config = RecirculationConfig(
+                pair=(2, 0), alpha=0.5, save_perturbation=save_path,
+                replay_perturbation=replay,
+            )
+            self.assertIsNone(config.save_perturbation)
+            self.assertIsNone(replace(config, save_perturbation=save_path).save_perturbation)
+            config.perturbation_sequence.saved.append(torch.ones((1, 1, 2)))
+            with patch("recirculation.torch.save") as save:
+                save_skipped_latent_perturbations(config, 2)
+                save.assert_not_called()
+
+    def test_replays_average_of_nonzero_vectors_up_to_longest_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f"replay-{index}.pt" for index in range(3)]
+            entries = (
+                [[2.0, 0.0], [0.0, 0.0], [0.0, 0.0], [8.0, 8.0], [0.0, 0.0], [10.0, 12.0]],
+                [[4.0, 2.0], [6.0, 0.0], [0.0, 0.0], [4.0, 0.0], [6.0, 2.0]],
+                [[6.0, 4.0], [0.0, 0.0], [0.0, 0.0]],
+            )
+            for path, vectors in zip(paths, entries):
+                torch.save(torch.tensor(vectors).reshape(-1, 1, 1, 2), path)
+            config = RecirculationConfig(pair=(2, 0), alpha=0.5, replay_perturbation=paths)
+            source = torch.ones((1, 1, 2))
+            self.assertFalse(perturbation_replay_exhausted(config))
+            for expected in ([[[4.0, 2.0]]], [[[6.0, 0.0]]]):
+                torch.testing.assert_close(
+                    perturbation_replay(source, paths, config.perturbation_sequence),
+                    source + torch.tensor(expected),
+                )
+            self.assertTrue(replay_skips_remaining_latents(config, 1))
+            self.assertFalse(perturbation_replay_exhausted(config))
+            for expected in ([[[6.0, 4.0]]], [[[6.0, 2.0]]], [[[10.0, 12.0]]]):
+                torch.testing.assert_close(
+                    perturbation_replay(source, paths, config.perturbation_sequence),
+                    source + torch.tensor(expected),
+                )
+            self.assertTrue(perturbation_replay_exhausted(config))
+            self.assertIsNone(perturbation_replay(source, paths, config.perturbation_sequence))
+
+    def test_replay_average_with_empty_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f"replay-{index}.pt" for index in range(2)]
+            torch.save(torch.empty((0, 1, 1, 2)), paths[0])
+            torch.save(torch.ones((2, 1, 1, 2)), paths[1])
+            config = RecirculationConfig(pair=(2, 0), alpha=0.5, replay_perturbation=paths)
+            self.assertFalse(perturbation_replay_exhausted(config))
+            torch.testing.assert_close(config.perturbation_sequence.replayed, torch.ones((2, 1, 1, 2)))
+            torch.save(torch.empty((0, 1, 1, 2)), paths[1])
+            empty_config = replace(config, perturbation_sequence=PerturbationSequence())
+            self.assertTrue(perturbation_replay_exhausted(empty_config))
+
+    def test_replay_average_rejects_mismatched_vector_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f"replay-{index}.pt" for index in range(2)]
+            torch.save(torch.ones((2, 1, 1, 2)), paths[0])
+            torch.save(torch.ones((2, 1, 1, 3)), paths[1])
+            with self.assertRaisesRegex(ValueError, "matching vector shapes"):
+                perturbation_replay(torch.ones((1, 1, 2)), paths, PerturbationSequence())
+
     def test_saved_normalized_source_replaces_next_injection(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
         hooks = _Hooks(blocks, RecirculationConfig(pair=(2, 0), alpha=0.5))
@@ -728,7 +794,7 @@ class RecirculationCacheTest(unittest.TestCase):
             self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
             self.assertEqual(replay_config.perturbation_sequence.replay_index, 3)
             save_skipped_latent_perturbations(replay_config, 2, replayed_skips=True)
-            self.assertEqual(len(torch.load(path, weights_only=True)), 3)
+            self.assertEqual(len(torch.load(path, weights_only=True)), 4)
             torch.testing.assert_close(
                 perturbation_replay(source, path, replay_config.perturbation_sequence),
                 source + torch.tensor([[[0.2, 0.0]]]),

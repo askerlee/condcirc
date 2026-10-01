@@ -20,7 +20,7 @@ class KnowEditExample:
 
 
 def select_variant(example: KnowEditExample, variant: str, index: int) -> tuple[str, str]:
-    if variant == "rephrased_prompt":
+    if variant == "rephrase":
         prompts = ((example.rephrased_prompt, example.target_new),) if example.rephrased_prompt is not None else ()
     elif variant == "portability":
         prompts = tuple((prompt, answer) for _, prompt, answer in example.portability)

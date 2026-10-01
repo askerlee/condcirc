@@ -206,6 +206,15 @@ def perturbation_replay(
     return normalized_source + perturbation
 
 
+def perturbation_replay_exhausted(config: RecirculationConfig) -> bool:
+    if config.replay_perturbation is None:
+        return False
+    sequence = config.perturbation_sequence
+    if sequence.replayed is None:
+        sequence.replayed = torch.load(config.replay_perturbation, map_location="cpu", weights_only=True)
+    return isinstance(sequence.replayed, Tensor) and sequence.replay_index >= len(sequence.replayed)
+
+
 def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) -> bool:
     if config.replay_perturbation is None or remaining == 0:
         return False
@@ -216,7 +225,7 @@ def replay_skips_remaining_latents(config: RecirculationConfig, remaining: int) 
     if not isinstance(replayed, Tensor):
         return False
     if sequence.replay_index >= len(replayed):
-        return sequence.replay_early_exit
+        return True
     if not bool(torch.all(replayed[sequence.replay_index] == 0).item()):
         return sequence.replay_early_exit
     marker_limit = min(sequence.replay_index + remaining, len(replayed))
@@ -604,6 +613,9 @@ class _Hooks:
                 )
             else:
                 replayed_source = None
+            if self.cfg.replay_perturbation is not None and replayed_source is None:
+                self.prepared_source = normalized_source
+                return debug_latents
             if replayed_source is not None:
                 if bool(torch.count_nonzero(
                     self.cfg.perturbation_sequence.replayed[
@@ -1048,6 +1060,8 @@ def recirculate(
                     )
                 )
             ) and not target_already_top_one
+            if perturbation_replay_exhausted(config):
+                should_recirculate = False
             if force_recirculation and config.perturbation_target_token_id is not None:
                 sequence = config.perturbation_sequence
                 sequence.replay_early_exit = False

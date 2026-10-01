@@ -548,7 +548,7 @@ class RecirculationCacheTest(unittest.TestCase):
             run(replay_config)
             self.assertEqual(len(step_calls), 1)
             self.assertEqual(replay_config.perturbation_sequence.replay_index, 4)
-            self.assertFalse(replay_skips_remaining_latents(replay_config, 2))
+            self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
 
             replay_config = replace(
                 replay_config, perturbation_target_token_id=0,
@@ -637,10 +637,57 @@ class RecirculationCacheTest(unittest.TestCase):
                     )
                     self.assertEqual(sequence.replay_index, consumed + 1)
                 else:
-                    self.assertFalse(replay_skips_remaining_latents(config, remaining))
+                    self.assertTrue(replay_skips_remaining_latents(config, remaining))
                     self.assertIsNone(
                         perturbation_replay(source, config.replay_perturbation, sequence)
                     )
+
+    def test_exhausted_replay_keeps_first_pass_without_noise_or_probes(self) -> None:
+        blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+        first_logits = torch.tensor([[[2.0, 0.0]]])
+
+        def step(_token, cache):
+            hidden = torch.ones((1, 1, 2))
+            for block in blocks:
+                hidden = block(hidden)
+            cache.append(1)
+            return first_logits, cache
+
+        for replay_count in (0, 2):
+            for target_id in (None, 1):
+                with self.subTest(replay_count=replay_count, target_id=target_id):
+                    sequence = PerturbationSequence(
+                        replayed=torch.ones((replay_count, 1, 1, 2)),
+                        replay_index=replay_count,
+                    )
+                    config = RecirculationConfig(
+                        pair=(2, 0), alpha=0.5, noise_level_range=(0.1, 0.2),
+                        perturbation_target_token_id=target_id,
+                        perturbation_direction=torch.ones((1, 2)) if target_id is None else None,
+                        replay_perturbation=Path("unused.pt"),
+                        perturbation_sequence=sequence,
+                    )
+                    with patch("recirculation.torch.randn_like") as noise:
+                        for _ in range(2):
+                            cache = []
+                            flags = []
+                            logits, _ = recirculate(
+                                torch.tensor([[1]]), blocks=blocks, cache=cache, step=step,
+                                rewind_one=lambda _cache: self.fail("unexpected rewind"),
+                                config=config, passes=2, adaptive_recirculation=2,
+                                force_recirculation=True, post_margin_threshold=(0.1, 0.2),
+                                recirculated_flags=flags,
+                                perturbation_probe=lambda *_args: self.fail("unexpected probe"),
+                                decode_injected_source_latent=lambda *_args: self.fail("unexpected decode"),
+                                capture_cached_token=lambda *_args: self.fail("unexpected cache capture"),
+                                restore_cached_token=lambda *_args: self.fail("unexpected cache restore"),
+                            )
+                            torch.testing.assert_close(logits, first_logits)
+                            self.assertEqual(cache, [1])
+                            self.assertEqual(flags, [False])
+                        noise.assert_not_called()
+                    self.assertEqual(sequence.replay_index, replay_count)
+                    self.assertTrue(replay_skips_remaining_latents(config, 2))
 
     def test_saves_and_replays_early_exit_placeholders(self) -> None:
         blocks = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
@@ -762,15 +809,19 @@ class RecirculationCacheTest(unittest.TestCase):
             exhausted.injection_source = torch.ones((1, 1, 2))
             exhausted.noise_level = 0.3
             try:
-                with patch("recirculation.torch.randn_like", return_value=torch.tensor([[[1.0, 0.0]]])):
+                with patch("recirculation.torch.randn_like") as noise, patch.object(
+                    exhausted, "iteratively_find_perturbation_candidate"
+                ) as search:
                     exhausted.prepare_injections(lambda *_args: torch.zeros((1, 2)))
+                    exhausted.prepare_injections()
+                    noise.assert_not_called()
+                    search.assert_not_called()
                 torch.testing.assert_close(
-                    exhausted.prepared_source, torch.tensor([[[1.3, 1.0]]])
+                    exhausted.prepared_source, torch.ones((1, 1, 2))
                 )
                 self.assertEqual(replay_config.perturbation_sequence.replay_index, 2)
                 self.assertEqual(replay_config.perturbation_sequence.replay_application_count, 2)
-                with self.assertRaisesRegex(ValueError, "probe after replay is exhausted"):
-                    exhausted.prepare_injections()
+                self.assertTrue(replay_skips_remaining_latents(replay_config, 2))
             finally:
                 exhausted.close()
 
@@ -840,9 +891,9 @@ class RecirculationCacheTest(unittest.TestCase):
                     hooks.prepare_injections(lambda *_args: torch.zeros((1, 2)))
             finally:
                 hooks.close()
-            extended = torch.load(path, map_location="cpu", weights_only=True)
+            unchanged = torch.load(path, map_location="cpu", weights_only=True)
             torch.testing.assert_close(
-                extended, torch.cat((original, torch.tensor([[[[0.3, 0.0]]]])))
+                unchanged, original
             )
 
             shorter_run = _Hooks(blocks, replace(config, perturbation_sequence=PerturbationSequence()))
@@ -853,7 +904,7 @@ class RecirculationCacheTest(unittest.TestCase):
             finally:
                 shorter_run.close()
             torch.testing.assert_close(
-                torch.load(path, map_location="cpu", weights_only=True), extended
+                torch.load(path, map_location="cpu", weights_only=True), original
             )
 
     def test_replay_rejects_wrong_perturbation_shape(self) -> None:

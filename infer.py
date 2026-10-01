@@ -62,6 +62,7 @@ from recirculation import (  # noqa: E402
     AdjacentLayerSimilarityStats,
     RecirculationConfig,
     SimilarityStats,
+    perturbation_replay_exhausted,
     recirculate,
     replay_skips_remaining_latents,
     save_skipped_latent_perturbations,
@@ -720,7 +721,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--knowedit-variant",
         action=KnowEditVariantAction,
-        choices=("default", "portability", "rephrased_prompt", "locality"),
+        choices=("default", "portability", "rephrase", "locality"),
         default=None,
         help="Generate from a KnowEdit variant; default uses the main prompt, as when omitted.",
     )
@@ -1023,7 +1024,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=parse_perturbation_file,
         default=None,
         metavar="FILE.pt",
-        help="Replay saved token perturbations in order, then search for candidates.",
+        help="Replay saved token perturbations in order, then stop perturbing when exhausted.",
     )
     parser.add_argument(
         "--cosine-top-k",
@@ -2478,6 +2479,7 @@ def main() -> None:
                 not use_recirculation
                 or run_args.perturb_every_n_tokens != 1
                 or run_args.max_new_tokens == 0
+                or perturbation_replay_exhausted(run_config)
             ):
                 return recirculate(input_ids, **kwargs)
             if input_ids.shape[1] > 1:
@@ -2520,7 +2522,7 @@ def main() -> None:
             if top_k_token_ids is None and target_token_id is not None:
                 top_k_token_ids = []
                 kwargs["pass_top_k_token_ids"] = top_k_token_ids
-            print("(perturb at 0)", flush=True)
+            print("(perturb at 0)", flush=True, end="")
             latent_rewind_state = (
                 capture_dynamic_cache_rewind_state(kwargs["cache"])
                 if run_args.perturb_latent_tokens_keep_last_in_kv else None
@@ -2816,14 +2818,14 @@ def main() -> None:
                         run_args.perturb_every_n_tokens,
                         run_args.perturb_for_k_tokens,
                         generated_token_count,
-                    ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None)
+                    ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
                     periodic_perturbation_direction = None
                     repetition_recovery_direction = None
                     if (
                         periodic_perturbation
                         and generated_token_count % run_args.perturb_every_n_tokens == 0
                     ):
-                        print(f"(perturb at {generated_token_count})", flush=True)
+                        print(f"(perturb at {generated_token_count})", flush=True, end="")
                         if run_args.perturb_mode == "repel-history":
                             centroid = recent_token_centroid(
                                 model.get_input_embeddings(),
@@ -3360,14 +3362,14 @@ def main() -> None:
                 run_args.perturb_every_n_tokens,
                 run_args.perturb_for_k_tokens,
                 token_index + 1,
-            ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None)
+            ) and (run_args.perturb_mode != "towards-target" or target_token_id is not None) and not perturbation_replay_exhausted(run_config)
             periodic_perturbation_direction = None
             repetition_recovery_direction = None
             if (
                 periodic_perturbation
                 and (token_index + 1) % run_args.perturb_every_n_tokens == 0
             ):
-                print(f"(perturb at {token_index + 1})", flush=True)
+                print(f"(perturb at {token_index + 1})", flush=True, end="")
                 if run_args.perturb_mode == "repel-history":
                     centroid = recent_token_centroid(
                         model.get_input_embeddings(),
